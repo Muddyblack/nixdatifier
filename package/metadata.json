@@ -13,7 +13,7 @@
         "Id": "org.muddyblack.nixosGenerationExplorer",
         "License": "MIT",
         "Name": "nixdatifier",
-        "Version": "2.1.1",
+        "Version": "2.1.2",
         "Website": "https://github.com/Muddyblack/nixdatifier"
     },
     "X-Plasma-API-Minimum-Version": "6.0"
