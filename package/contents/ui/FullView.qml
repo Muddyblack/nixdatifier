@@ -55,6 +55,7 @@ Pane {
     required property string lastFlakeCheckTime
     required property int activeGenNum
     required property int bootedGenNum
+    property bool runningTestBuild: false
     required property int selectedGenNum
     required property var detailsCache
     required property string diffMode
@@ -284,7 +285,7 @@ Pane {
                             objectName: "headerGenerations"
                             spacing: 6
                             readonly property bool hasNext: fullView.activeGenNum > 0 && fullView.activeGenNum !== fullView.bootedGenNum
-                            readonly property string description: fullView.bootedGenNum > 0 ? qsTr("Booted generation #%1").arg(fullView.bootedGenNum) + (hasNext ? qsTr(" · Next boot #%1").arg(fullView.activeGenNum) : "") : qsTr("Next boot #%1").arg(fullView.activeGenNum)
+                            readonly property string description: (fullView.bootedGenNum > 0 ? qsTr("Booted generation #%1").arg(fullView.bootedGenNum) + (hasNext ? qsTr(" · Next boot #%1").arg(fullView.activeGenNum) : "") : qsTr("Next boot #%1").arg(fullView.activeGenNum)) + (fullView.runningTestBuild ? qsTr(" · Running a test build that reverts on reboot") : "")
                             visible: fullView.bootedGenNum > 0 || fullView.activeGenNum > 0
                             Accessible.role: Accessible.StaticText
                             Accessible.name: description
@@ -307,6 +308,14 @@ Pane {
                                 visible: parent.hasNext
                                 text: "#" + fullView.activeGenNum
                                 color: UI.Theme.changed
+                                font.pixelSize: 10 * fullView.fs
+                                font.weight: Font.Medium
+                            }
+                            Text {
+                                objectName: "testBuildLabel"
+                                visible: fullView.runningTestBuild
+                                text: qsTr("· test build")
+                                color: UI.Theme.highlightColor
                                 font.pixelSize: 10 * fullView.fs
                                 font.weight: Font.Medium
                             }

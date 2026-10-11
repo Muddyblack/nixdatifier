@@ -554,6 +554,15 @@ Item {
             compare(booted.text, "#661");
             verify(!next.visible, "When already booted, show the green generation only");
         }
+        function test_header_flags_running_test_build() {
+            const label = findChild(app, "testBuildLabel");
+            verify(!label.visible);
+            core.runningTestBuild = true;
+            wait(10);
+            verify(label.visible);
+            verify(findChild(app, "headerGenerations").description.indexOf("test build") >= 0);
+            core.runningTestBuild = false;
+        }
         function test_marker_survives_scroll_and_glow_disabled() {
             host.height = 480;
             cfg.enableGlow = false;
