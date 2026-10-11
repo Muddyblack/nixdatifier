@@ -39,7 +39,7 @@ stdenv.mkDerivation {
   doInstallCheck = true;
   installCheckPhase = ''
     runHook preInstallCheck
-    export HOME=$TMPDIR QT_QPA_PLATFORM=offscreen NIXDATIFIER_SMOKE_TEST=1 XDG_RUNTIME_DIR=$TMPDIR
+    export HOME=$TMPDIR QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software NIXDATIFIER_SMOKE_TEST=1 XDG_RUNTIME_DIR=$TMPDIR
     $out/bin/nixdatifier --version
     $out/bin/nixdatifier 2>&1 | tee smoke.log
     grep -q NIXDATIFIER_HOST_LOADED smoke.log

@@ -100,6 +100,12 @@ nixdatifier --autostart                      # start at login (writes ~/.config/
 
 Settings are stored in `~/.config/nixdatifier/standalone.json`.
 
+**Graphics.** Without working OpenGL/EGL (e.g. niri without
+`hardware.graphics.enable = true`), the app falls back to Qt's CPU renderer
+automatically. Shader effects are disabled in that mode. Set `QT_QUICK_BACKEND`
+to choose a renderer yourself. The Quickshell panel (`#hyprland`) has no
+click-outside dismiss outside Hyprland; use Escape or the tray toggle.
+
 **Tray support differs by desktop.** The tray icon uses the StatusNotifier standard:
 
 | Desktop | Tray icon |

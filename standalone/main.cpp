@@ -2,9 +2,11 @@
 #include <QDir>
 #include <QFile>
 #include <QLocalSocket>
+#include <QOpenGLContext>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
+#include <QQuickWindow>
 #include <QStandardPaths>
 #include <QTextStream>
 #include <QtQml>
@@ -139,6 +141,18 @@ int main(int argc, char **argv) {
     app.setQuitOnLastWindowClosed(false);
     if (qEnvironmentVariableIsEmpty("QT_QUICK_CONTROLS_STYLE"))
         QQuickStyle::setStyle("Fusion");
+
+    // Without a usable OpenGL/EGL (a missing GPU driver, or niri without
+    // hardware.graphics) Qt Quick cannot create a window and the app would sit
+    // in the tray with nothing to show. Fall back to the CPU renderer, unless
+    // the user picked a backend themselves.
+    if (qEnvironmentVariableIsEmpty("QT_QUICK_BACKEND") && qEnvironmentVariableIsEmpty("QSG_RHI_BACKEND")) {
+        QOpenGLContext probe;
+        if (!probe.create()) {
+            fputs("nixdatifier: OpenGL is unavailable, using the software renderer.\n", stderr);
+            QQuickWindow::setSceneGraphBackend(QStringLiteral("software"));
+        }
+    }
 
     const QString dataDir = findDataDir(QCoreApplication::applicationDirPath());
     if (dataDir.isEmpty()) {

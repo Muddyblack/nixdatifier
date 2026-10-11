@@ -417,7 +417,9 @@ ShellRoot {
         }
     }
     HyprlandFocusGrab {
-        active: root.popupOpen && !core.pinned && !root.smokeTest
+        // Other layer-shell compositors (including niri) do not implement
+        // Hyprland's focus-grab protocol. Escape and the tray still dismiss.
+        active: !!Quickshell.env("HYPRLAND_INSTANCE_SIGNATURE") && root.popupOpen && !core.pinned && !root.smokeTest
         windows: [popup]
         onCleared: root.popupOpen = false
     }
