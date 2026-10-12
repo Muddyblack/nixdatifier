@@ -44,6 +44,7 @@ Kirigami.Page {
     property alias cfg_showPackageIcons: state.showPackageIcons
     property alias cfg_compactStyle: state.compactStyle
     property alias cfg_compactShowBadge: state.compactShowBadge
+    property alias cfg_compactAnimateIcon: state.compactAnimateIcon
     property alias cfg_popupWidth: state.popupWidth
     property alias cfg_popupHeight: state.popupHeight
     property alias cfg_gcCustomCommand: state.gcCustomCommand
@@ -86,6 +87,7 @@ Kirigami.Page {
     property alias cfg_showPackageIconsDefault: defaults.showPackageIcons
     property alias cfg_compactStyleDefault: defaults.compactStyle
     property alias cfg_compactShowBadgeDefault: defaults.compactShowBadge
+    property alias cfg_compactAnimateIconDefault: defaults.compactAnimateIcon
     property alias cfg_popupWidthDefault: defaults.popupWidth
     property alias cfg_popupHeightDefault: defaults.popupHeight
     property alias cfg_gcCustomCommandDefault: defaults.gcCustomCommand

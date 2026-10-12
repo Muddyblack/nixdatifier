@@ -129,6 +129,9 @@
         <entry name="compactShowBadge" type="Bool">
             <default>true</default>
         </entry>
+        <entry name="compactAnimateIcon" type="Bool">
+            <default>true</default>
+        </entry>
 
         <!-- Remembered popup size -->
         <entry name="popupWidth" type="Int">

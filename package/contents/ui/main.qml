@@ -46,7 +46,7 @@ PlasmoidItem {
         isSpinning: core.isSpinning
         compactStyle: plasmoid.configuration.compactStyle
         compactShowBadge: plasmoid.configuration.compactShowBadge
-        enableMotion: plasmoid.configuration.enableMotion
+        enableMotion: plasmoid.configuration.enableMotion && plasmoid.configuration.compactAnimateIcon
         iconStyle: core.iconStyle
         onToggleExpanded: plasmoidRoot.expanded = !plasmoidRoot.expanded
     }

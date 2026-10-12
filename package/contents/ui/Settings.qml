@@ -35,6 +35,7 @@ QtObject {
     property bool showPackageIcons: true
     property string compactStyle: "icon"
     property bool compactShowBadge: true
+    property bool compactAnimateIcon: true
     property int popupWidth: 600
     property int popupHeight: 740
     property string gcCustomCommand: ""
