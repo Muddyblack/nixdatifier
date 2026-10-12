@@ -35,6 +35,27 @@ Item {
             compare(Project.releaseVersion('{"tag_name":"v2.0.4","draft":false,"prerelease":false}'), "2.0.4");
         }
 
+        function test_installed_version_comes_from_host() {
+            const editor = createTemporaryObject(editorComponent, host, {
+                settings: cfg,
+                currentVersion: "9.8.7",
+                currentTab: 4
+            });
+            verify(editor !== null);
+            const loader = findChild(editor, "projectInfoLoader");
+            tryVerify(function () {
+                return loader.item !== null;
+            });
+            compare(loader.item.currentVersion, "9.8.7");
+            loader.item.latestVersion = "9.8.7";
+            compare(loader.item.versionStatus, "Up to date");
+            editor.currentVersion = "9.8.6";
+            compare(loader.item.currentVersion, "9.8.6");
+            compare(loader.item.versionStatus, "Update available");
+            editor.currentVersion = "";
+            compare(loader.item.versionStatus, "Version comparison unavailable");
+        }
+
         function test_settings_tabs_and_narrow_layout() {
             const editor = createTemporaryObject(editorComponent, host, {
                 settings: cfg,

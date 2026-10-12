@@ -2,7 +2,7 @@
 #
 # Draws the README artwork for Nixdatifier.
 #
-#   perl readme/generate.pl
+#   perl docs/readme/generate.pl
 #
 # These are crisp, pixel-perfect illustrations of the real Nixdatifier UI.
 # Rendered in SVG so they stay sharp at any zoom level, scale effortlessly,
@@ -16,9 +16,9 @@ use MIME::Base64 qw(encode_base64);
 
 my $DIR = dirname($0);
 my $ICON_PNG = do {
-    my $path = -f "$DIR/../package/icon-emblem.png" ? "$DIR/../package/icon-emblem.png"
-             : -f "$DIR/../package/icon.png" ? "$DIR/../package/icon.png"
-             : "$DIR/../package/icon-emblem.png";
+    my $path = -f "$DIR/../../package/icon-emblem.png" ? "$DIR/../../package/icon-emblem.png"
+             : -f "$DIR/../../package/icon.png" ? "$DIR/../../package/icon.png"
+             : "$DIR/../../package/icon-emblem.png";
     my $tmp = "/tmp/nixdatifier-emblem-128.png";
     if (system("magick", $path, "-resize", "128x128", $tmp) == 0 && -f $tmp) {
         open my $fh, '<:raw', $tmp or die "$tmp: $!";

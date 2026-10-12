@@ -10,6 +10,7 @@ QQC.Pane {
     required property var settings
     property bool hyprland: false
     property bool infoOnlineEnabled: true
+    property string currentVersion: ""
     property int currentTab: 0
     onCurrentTabChanged: {
         if (scroll.contentItem)
@@ -266,6 +267,7 @@ QQC.Pane {
                     active: editor.onScreen && editor.currentTab === 4
                     sourceComponent: ProjectInfoPane {
                         showBranding: false
+                        currentVersion: editor.currentVersion
                         onlineEnabled: editor.infoOnlineEnabled
                     }
                 }

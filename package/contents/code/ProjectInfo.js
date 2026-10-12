@@ -42,7 +42,6 @@ function contributors(text) {
     } catch (error) { return []; }
 }
 
-var currentVersion = "2.0.3";
 var latestReleaseUrl = "https://api.github.com/repos/Muddyblack/nixdatifier/releases/latest";
 var releasesPage = repository + "/releases";
 

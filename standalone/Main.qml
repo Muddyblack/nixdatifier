@@ -218,6 +218,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 settings: draft
+                currentVersion: host.version
             }
             RowLayout {
                 Layout.alignment: Qt.AlignRight
