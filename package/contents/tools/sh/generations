@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Emit: active-store-path, booted-store-path, then one stat line per system-N-link.
+# Emit: active-store-path, booted-store-path, then one stat line per system-N-link,
+# then "current <store-path>" when /run/current-system resolves.
 readlink -f /nix/var/nix/profiles/system 2>/dev/null
 readlink -f /run/booted-system 2>/dev/null
 find /nix/var/nix/profiles -maxdepth 1 -name 'system-*-link' -type l \
     -exec stat --format='%y %N' {} + 2>/dev/null
+current=$(readlink -e /run/current-system 2>/dev/null) && echo "current $current"
 exit 0

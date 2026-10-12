@@ -36,6 +36,7 @@ FullView {
     lastFlakeCheckTime: engine.lastFlakeCheckTime
     activeGenNum: engine.activeGenNum
     bootedGenNum: engine.bootedGenNum
+    runningTestBuild: engine.runningTestBuild
     selectedGenNum: engine.selectedGenNum
     detailsCache: engine.detailsCache
     diffMode: engine.diffMode

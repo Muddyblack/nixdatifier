@@ -349,6 +349,19 @@ Item {
             compare(core.updatingInput, "");
             verify(core.toasts[0].err);
         }
+        function test_parse_generations_detects_unregistered_test_build() {
+            const stat = n => "2026-10-11 12:39:05.133214540 -0400 '/nix/var/nix/profiles/system-" + n + "-link' -> '/nix/store/" + n + "-sys'";
+            core.parseGenerations(["/nix/store/162-sys", "/nix/store/161-sys", stat(162), stat(161), "current /nix/store/x-test-sys"].join("\n"));
+            compare(core.activeGenNum, 162);
+            compare(core.bootedGenNum, 161);
+            verify(core.runningTestBuild, "current-system matching no generation is a test build");
+            core.parseGenerations(["/nix/store/162-sys", "/nix/store/161-sys", stat(162), stat(161), "current /nix/store/162-sys"].join("\n"));
+            verify(!core.runningTestBuild);
+            core.parseGenerations(["/nix/store/162-sys", stat(162), stat(161)].join("\n"));
+            compare(core.activeGenNum, 162);
+            compare(core.bootedGenNum, -1);
+            verify(!core.runningTestBuild, "An unresolvable current-system is not a test build");
+        }
         function test_terminal_completion_tracks_exit_not_generations() {
             core.runCustomCommand("false", "Test");
             verify(core.isBusy);

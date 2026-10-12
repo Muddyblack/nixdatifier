@@ -16,6 +16,8 @@ Item {
                 genLine += " (active) · Booted: #" + root.bootedGenNum;
             lines.push(genLine);
         }
+        if (root.runningTestBuild)
+            lines.push("Running a test build that reverts on reboot");
 
         if (root.nixosVersion !== "")
             lines.push((root.isNixOS ? "NixOS " : "Nix ") + root.nixosVersion);
@@ -125,6 +127,7 @@ Item {
     property var generations: []
     property string activeStorePath: ""
     property string bootedStorePath: ""
+    property bool runningTestBuild: false
     property int activeGenNum: -1
     property int bootedGenNum: -1
     property int selectedGenNum: -1
@@ -1587,7 +1590,12 @@ Item {
         const list = [];
         let activeNum = -1;
         let bootedNum = -1;
+        let currentPath = "";
         for (let i = startIdx; i < lines.length; i++) {
+            if (lines[i].startsWith("current ")) {
+                currentPath = lines[i].slice(8).trim();
+                continue;
+            }
             const m = lines[i].match(/^([\d-]+ [\d:]+)\.\d+ [+-]\d+ '([^']*system-(\d+)-link)' -> '([^']+)'/);
             if (!m)
                 continue;
@@ -1609,6 +1617,8 @@ Item {
         }
 
         list.sort((a, b) => b.number - a.number);
+        // `nixos-rebuild test` / `nh os test` activate a closure without registering a generation.
+        root.runningTestBuild = currentPath !== "" && !list.some(g => g.storePath === currentPath);
         // Keep the preceding closure even when the displayed history is limited.
         for (let i = 0; i + 1 < list.length; ++i) {
             list[i].previousNumber = list[i + 1].number;
