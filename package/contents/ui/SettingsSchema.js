@@ -370,6 +370,14 @@ var fields = [
     "type": "Bool"
   },
   {
+    "key": "compactAnimateIcon",
+    "tab": "Design",
+    "group": "Panel",
+    "label": "Animate panel icon while working",
+    "help": "Turn off if the spinning icon interferes with your panel or tray.",
+    "type": "Bool"
+  },
+  {
     "key": "popupWidth",
     "tab": "Design",
     "group": "Popup size",

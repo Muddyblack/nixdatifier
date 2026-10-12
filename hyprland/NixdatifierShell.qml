@@ -84,6 +84,7 @@ ShellRoot {
             property bool showPackageIcons: true
             property string compactStyle: "icon"
             property bool compactShowBadge: true
+            property bool compactAnimateIcon: true
             property int popupWidth: 600
             property int popupHeight: 740
             property string gcCustomCommand: ""
@@ -139,7 +140,7 @@ ShellRoot {
             statusWriteTimer.restart()
         JsonAdapter {
             property bool working: core.isSpinning
-            property bool motion: cfg.enableMotion
+            property bool motion: cfg.enableMotion && cfg.compactAnimateIcon
             property string iconStyle: cfg.iconStyle
             property string accent: String(cfg.accentColor)
             property string summary: core.toolTipMainText + "\n" + core.toolTipSubText
@@ -218,7 +219,7 @@ ShellRoot {
                 isBusy: core.isBusy
                 isLoadingGens: core.isLoadingGens
                 isSpinning: core.isSpinning
-                enableMotion: cfg.enableMotion
+                enableMotion: cfg.enableMotion && cfg.compactAnimateIcon
                 compactStyle: "pill"
                 compactShowBadge: cfg.compactShowBadge
                 iconStyle: cfg.iconStyle
