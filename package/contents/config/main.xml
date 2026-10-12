@@ -84,6 +84,10 @@
             <!-- folders untouched for this many days are offered for cleanup -->
             <default>180</default>
         </entry>
+        <entry name="impermanenceAllDisks" type="Bool">
+            <!-- security scan and cleanup also walk separately mounted data disks (/mnt/…) -->
+            <default>false</default>
+        </entry>
         <entry name="diffFilterEnabled" type="Bool">
             <default>true</default>
         </entry>

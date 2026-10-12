@@ -3,7 +3,6 @@ import QtQuick.Layouts
 import QtQuick.Controls
 import QtQuick.Effects
 import "shared" as UI
-import "components"
 
 Pane {
     id: fullView
@@ -78,8 +77,11 @@ Pane {
     required property real diskStoreBytes
     required property real diskReclaimableBytes
     required property real diskFreeBytes
+    property string diskUsageError: ""
+    property bool isProbingDiskUsage: false
 
     readonly property string storeLabel: UI.Theme.formatBytes(diskStoreBytes) || "—"
+    readonly property string storeMeasurementHint: diskUsageError ? qsTr("Refresh failed; showing the last measurement. %1").arg(diskUsageError) : qsTr("Logical store contents and estimated GC candidates use NAR sizes. Actual space freed depends on shared files, compression and snapshots. Old generations remain protected until removed.")
     readonly property string reclaimableLabel: diskReclaimableBytes < 0 ? "—" : diskReclaimableBytes === 0 ? "0 B" : UI.Theme.formatBytes(diskReclaimableBytes)
 
     // Invoked from a timeline card's right-click "Compare with…" menu.
@@ -144,7 +146,10 @@ Pane {
     property bool isListingImpermanence: false
     property bool isScanningImpermanence: false
     property bool isAnalyzingImpermanence: false
+    property var impermanenceRemovalStates: ({})
     property bool isRemovingImpermanence: false
+    property var impermanenceSizes: null
+    property bool isMeasuringImpermanence: false
     property int impermanenceStaleDays: 180
 
     // ── System health tool state ─────────────────────────────────────────────
@@ -153,6 +158,7 @@ Pane {
 
     signal viewModeChanged(string mode)
     signal refreshRequested
+    signal diskUsageRefreshRequested
     signal checkFlakeRequested
     signal selectGen(int genNum)
     signal collapseGen
@@ -165,9 +171,12 @@ Pane {
     signal clearHistoryRequested
     signal storeUsageRequested(string path)
     signal impermanenceListRequested(string path, bool force)
+    signal impermanenceListCancelRequested
+    signal impermanenceSizesRequested(bool force)
     signal impermanenceScanRequested(bool force)
     signal impermanenceAnalyzeRequested(bool force)
     signal impermanenceRemoveRequested(string path, string name)
+    signal impermanenceRemoveManyRequested(var items)
     signal impermanenceOpenRequested(string path)
     signal clamScanRequested
     signal devEnvRequested(string path)
@@ -266,6 +275,7 @@ Pane {
         anchors.fill: parent
         radius: fullView.bgRadius
         color: fullView.showBg ? fullView.bgColor : "transparent"
+        border.width: fullView.showBg ? 1 : 0
         border.color: UI.Theme.wash(fullView.accentColor, .18)
     }
     ColumnLayout {
@@ -274,7 +284,6 @@ Pane {
         visible: !fullView.commandsOpen && !fullView.toolsOverlayOpen
         spacing: 0
         ColumnLayout {
-            id: header
             Layout.fillWidth: true
             Layout.leftMargin: fullView.contentMargin
             Layout.rightMargin: fullView.contentMargin
@@ -531,7 +540,7 @@ Pane {
                         wrapMode: Text.WordWrap
                         color: fullView.textColor
                         font.pixelSize: fullView.fpx(9)
-                        text: fullView.pendingCleanup ? qsTr("Run this cleanup? Old generations may be removed.") : qsTr("%1 generation #%2?").arg(fullView.pendingAction === "delete" ? qsTr("Delete") : fullView.pendingAction === "switch" ? qsTr("Activate now") : qsTr("Set next boot to")).arg(fullView.pendingGenNum)
+                        text: fullView.pendingCleanup ? (fullView.pendingCleanup === "gc" ? qsTr("Collect unused store paths? Existing generations are kept.") : fullView.pendingCleanup === "gc-14d" ? qsTr("Remove generations older than 14 days from the profiles Nix can access, then collect unused paths? Each profile’s current generation is kept.") : fullView.pendingCleanup === "gc-all" ? qsTr("Remove all non-current generations from the profiles Nix can access, then collect unused paths? Removed rollback points cannot be restored by this app.") : qsTr("Run custom cleanup: %1").arg(fullView.gcCustomCommand)) : qsTr("%1 generation #%2?").arg(fullView.pendingAction === "delete" ? qsTr("Delete") : fullView.pendingAction === "switch" ? qsTr("Activate now") : qsTr("Set next boot to")).arg(fullView.pendingGenNum)
                     }
                     UI.ActionButton {
                         text: qsTr("Cancel")
@@ -739,19 +748,25 @@ Pane {
                 isListing: fullView.isListingImpermanence
                 isScanning: fullView.isScanningImpermanence
                 isAnalyzing: fullView.isAnalyzingImpermanence
+                removalStates: fullView.impermanenceRemovalStates
                 isRemoving: fullView.isRemovingImpermanence
+                sizes: fullView.impermanenceSizes
+                isMeasuring: fullView.isMeasuringImpermanence
                 staleDays: fullView.impermanenceStaleDays
 
                 onListRequested: (path, force) => fullView.impermanenceListRequested(path, force)
+                onListCancelRequested: fullView.impermanenceListCancelRequested()
+                onSizesRequested: force => fullView.impermanenceSizesRequested(force)
                 onScanRequested: force => fullView.impermanenceScanRequested(force)
                 onAnalyzeRequested: force => fullView.impermanenceAnalyzeRequested(force)
                 onRemoveRequested: (path, name) => fullView.impermanenceRemoveRequested(path, name)
+                onRemoveManyRequested: items => fullView.impermanenceRemoveManyRequested(items)
                 onOpenRequested: path => fullView.impermanenceOpenRequested(path)
                 onClamScanRequested: fullView.clamScanRequested()
                 onCopyToClipboard: t => fullView.copyToClipboard(t)
             }
 
-            ScrollView {
+            UI.ScrollView {
                 id: toolsScroll
                 objectName: "toolsView"
                 anchors.fill: parent
@@ -836,7 +851,7 @@ Pane {
                                 Layout.fillWidth: true
                                 Text {
                                     Layout.fillWidth: true
-                                    text: qsTr("Nix store")
+                                    text: qsTr("Nix store · logical size")
                                     color: fullView.textColor
                                     font.pixelSize: 10 * fullView.fs
                                 }
@@ -844,6 +859,17 @@ Pane {
                                     text: fullView.storeLabel
                                     color: "#93a5bd"
                                     font.pixelSize: 9 * fullView.fs
+                                }
+                                UI.ActionButton {
+                                    objectName: "refreshStoreUsage"
+                                    text: fullView.isProbingDiskUsage ? qsTr("Measuring…") : qsTr("Refresh")
+                                    glyph: fullView.svg("ic_refresh")
+                                    flatStyle: true
+                                    implicitHeight: 23 * fullView.fs
+                                    font.pixelSize: 9 * fullView.fs
+                                    tip: fullView.diskUsageError || qsTr("Recalculate logical size, estimated reclaimable space and free space")
+                                    enabled: !fullView.isProbingDiskUsage
+                                    onClicked: fullView.diskUsageRefreshRequested()
                                 }
                             }
                             Rectangle {
@@ -865,7 +891,7 @@ Pane {
                                     width: fullView.diskStoreBytes > 0 ? parent.width * Math.max(0, Math.min(1, fullView.diskReclaimableBytes / fullView.diskStoreBytes)) : 0
                                     color: UI.Theme.changed
                                 }
-                                ToolTip.text: qsTr("Reclaimable portion of the Nix store")
+                                ToolTip.text: fullView.storeMeasurementHint
                                 ToolTip.visible: storageHover.hovered
                                 HoverHandler {
                                     id: storageHover
@@ -880,7 +906,7 @@ Pane {
                                     font.pixelSize: 9 * fullView.fs
                                 }
                                 Text {
-                                    text: qsTr("%1 reclaimable").arg(fullView.reclaimableLabel)
+                                    text: qsTr("≈ %1 reclaimable").arg(fullView.reclaimableLabel)
                                     color: UI.Theme.changed
                                     font.pixelSize: 9 * fullView.fs
                                 }
@@ -890,7 +916,6 @@ Pane {
                     UI.ActionButton {
                         Layout.topMargin: 13
                         visible: fullView.isNixOS
-                        height: visible ? implicitHeight : 0
                         text: qsTr("Clean up old generations…")
                         glyph: fullView.svg("ic_delete")
                         font.pixelSize: 10 * fullView.fs
@@ -927,7 +952,7 @@ Pane {
                     objectName: "footerStatus"
                     Layout.fillWidth: true
                     elide: Text.ElideRight
-                    readonly property string storage: fullView.storeLabel + qsTr(" store  ·  %1 reclaimable").arg(fullView.reclaimableLabel)
+                    readonly property string storage: fullView.storeLabel + qsTr(" logical  ·  ≈ %1 reclaimable").arg(fullView.reclaimableLabel)
                     text: fullView.isSpinning ? fullView.busyLabel || qsTr("Working…") : storage
                     color: fullView.isSpinning ? fullView.accentColor : "#8f9db0"
                     font.pixelSize: 9 * fullView.fs
@@ -935,7 +960,7 @@ Pane {
                         id: footerHover
                     }
                     ToolTip.visible: footerHover.hovered
-                    ToolTip.text: fullView.isSpinning ? text + "\n" + storage : storage
+                    ToolTip.text: (fullView.isSpinning ? text + "\n" + storage : storage) + "\n" + fullView.storeMeasurementHint
                 }
                 UI.ActionButton {
                     id: feedbackButton

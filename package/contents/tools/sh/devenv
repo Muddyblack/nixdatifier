@@ -39,6 +39,7 @@ lowprio() {
 
 resolve() {
     local dir="$1"
+    # shellcheck disable=SC2088  # a literal "~", not an expansion
     [[ "$dir" == "~" || "$dir" == "~/"* ]] && dir="${HOME:-/root}${dir#\~}"
     realpath -m -- "$dir" 2>/dev/null || printf '%s' "$1"
 }

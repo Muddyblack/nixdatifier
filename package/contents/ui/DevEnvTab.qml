@@ -92,7 +92,7 @@ Item {
         return state === "allowed" ? UI.Theme.positive : state === "blocked" || state === "unknown" ? UI.Theme.changed : state === "denied" ? UI.Theme.negative : UI.Theme.muted;
     }
 
-    ScrollView {
+    UI.ScrollView {
         id: scroll
         anchors.fill: parent
         clip: true

@@ -56,6 +56,8 @@ FullView {
     diskStoreBytes: engine.diskStoreBytes
     diskReclaimableBytes: engine.diskReclaimableBytes
     diskFreeBytes: engine.diskFreeBytes
+    diskUsageError: engine.diskUsageError
+    isProbingDiskUsage: engine._diskProbeRunning
     hashResult: engine.hashResult
     isProbingHash: engine.isProbingHash
     actionHistory: engine.actionHistory
@@ -95,6 +97,7 @@ FullView {
     onCompareRequested: (a, b) => engine.comparePair(a, b)
     onDiffViewModeChanged: engine.settings.diffViewMode = diffViewMode
     onRefreshRequested: () => engine.refreshGenerations()
+    onDiskUsageRefreshRequested: () => engine.probeDiskUsage(true)
     onCheckFlakeRequested: () => engine.checkFlakeUpdates()
     onSelectGen: n => engine.loadGenDetails(n)
     onCollapseGen: () => engine.selectedGenNum = -1
@@ -123,12 +126,18 @@ FullView {
     isListingImpermanence: engine.isListingImpermanence
     isScanningImpermanence: engine.isScanningImpermanence
     isAnalyzingImpermanence: engine.isAnalyzingImpermanence
+    impermanenceRemovalStates: engine.impermanenceRemovalStates
     isRemovingImpermanence: engine.isRemovingImpermanence
+    impermanenceSizes: engine.impermanenceSizes
+    isMeasuringImpermanence: engine.isMeasuringImpermanence
     impermanenceStaleDays: engine.settings.impermanenceStaleDays || 180
     onImpermanenceListRequested: (path, force) => engine.listImpermanence(path, force)
+    onImpermanenceListCancelRequested: engine.closeImpermanenceFolder()
+    onImpermanenceSizesRequested: force => engine.measureImpermanence(force)
     onImpermanenceScanRequested: force => engine.scanImpermanence(force)
     onImpermanenceAnalyzeRequested: force => engine.analyzeImpermanence(force)
     onImpermanenceRemoveRequested: (path, name) => engine.removeImpermanencePath(path, name)
+    onImpermanenceRemoveManyRequested: items => engine.removeImpermanencePaths(items)
     onImpermanenceOpenRequested: path => engine.openImpermanencePath(path)
     onClamScanRequested: engine.runClamScan()
     devEnvResult: engine.devEnvResult

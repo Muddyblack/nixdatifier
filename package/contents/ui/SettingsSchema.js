@@ -218,6 +218,14 @@ var fields = [
     "max": 3650
   },
   {
+    "key": "impermanenceAllDisks",
+    "tab": "Behavior",
+    "group": "Impermanence",
+    "label": "Scan and clean up separate data disks too",
+    "help": "Off: only the persistent folders and /home. Data disks such as /mnt/… keep their files anyway and take long to walk.",
+    "type": "Bool"
+  },
+  {
     "key": "diffFilterEnabled",
     "tab": "Behavior",
     "group": "Package changes",

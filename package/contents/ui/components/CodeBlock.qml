@@ -39,7 +39,7 @@ ColumnLayout {
             contentHeight: edit.implicitHeight
             boundsBehavior: Flickable.StopAtBounds
             interactive: contentHeight > height
-            ScrollBar.vertical: ScrollBar {
+            ScrollBar.vertical: UI.ScrollBar {
                 policy: ScrollBar.AsNeeded
             }
             TextEdit {

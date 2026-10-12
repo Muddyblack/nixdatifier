@@ -1,6 +1,4 @@
 import QtQuick
-import QtQuick.Layouts
-import QtQuick.Controls
 import "shared" as UI
 
 Item {
@@ -125,6 +123,7 @@ Item {
 
     // ── Generations state ─────────────────────────────────────────────────────
     property var generations: []
+    onGenerationsChanged: pruneGenerationCaches()
     property string activeStorePath: ""
     property string bootedStorePath: ""
     property bool runningTestBuild: false
@@ -162,6 +161,37 @@ Item {
     //   source = "nixpkgs" | "plasmoid" | ""   ("" means we looked it up and
     //   found nothing — used to suppress repeated lookups)
     property var metaCache: ({})
+
+    // These caches outlive the popup. Bound retained results across repeated
+    // comparisons, package lookups and visits to different development folders.
+    function boundedCache(cache, limit) {
+        const keys = Object.keys(cache);
+        if (keys.length <= limit)
+            return cache;
+        const kept = {};
+        keys.slice(-limit).forEach(key => kept[key] = cache[key]);
+        return kept;
+    }
+
+    function hasGeneration(number) {
+        return root.generations.some(g => g.number === Number(number));
+    }
+
+    function pruneGenerationCaches() {
+        const keep = (cache, valid) => {
+            const next = {};
+            Object.keys(cache).forEach(key => {
+                if (valid(key))
+                    next[key] = cache[key];
+            });
+            return next;
+        };
+        root.detailsCache = keep(root.detailsCache, root.hasGeneration);
+        root.configDiffCache = keep(root.configDiffCache, root.hasGeneration);
+        root.generationCounts = keep(root.generationCounts, root.hasGeneration);
+        root.pairDiffCache = keep(root.pairDiffCache, key => key.split("_").every(root.hasGeneration));
+        root.countsQueue = root.countsQueue.filter(pair => root.hasGeneration(pair.number));
+    }
 
     // ── Action tracking (exposed to FullView for busy bar text) ───────────────
     property string currentActionType: ""
@@ -253,7 +283,10 @@ Item {
     property bool isScanningImpermanence: false
     property bool isAnalyzingImpermanence: false
     property bool isRemovingImpermanence: false
-    readonly property bool isImpermanenceBusy: isProbingImpermanence || isListingImpermanence || isScanningImpermanence || isAnalyzingImpermanence || isRemovingImpermanence
+    // { <target path>: { kind, size, newest } } | { isError, value } | null
+    property var impermanenceSizes: null
+    property bool isMeasuringImpermanence: false
+    readonly property bool isImpermanenceBusy: isMeasuringImpermanence || isProbingImpermanence || isListingImpermanence || isScanningImpermanence || isAnalyzingImpermanence || isRemovingImpermanence
     property int _impListSeq: 0
 
     // ── Hash tool state ───────────────────────────────────────────────────────
@@ -341,6 +374,7 @@ Item {
         clipboardHelper.text = text;
         clipboardHelper.selectAll();
         clipboardHelper.copy();
+        clipboardHelper.text = "";
         root.pushToast(qsTr("Copied to clipboard"), false);
     }
 
@@ -439,30 +473,67 @@ Item {
         });
     }
 
-    // Disk usage is by far the most expensive probe we run: `du -sb /nix/store`
-    // walks every inode in the store and `nix-collect-garbage --dry-run` walks
-    // the whole GC graph. On a large store that is tens of seconds of pegged
-    // CPU and disk. So it is never on a background timer — it runs only when
-    // the popup is actually open (the numbers are only rendered there), it is
-    // rate-limited by diskProbeTtlMs, and never overlaps with itself.
-    // Pass force=true after an operation that actually changed the store.
+    // Database sizes avoid walking store files. The shared cache also watches
+    // store/profile changes; the short in-process guard coalesces open/refresh
+    // events without hiding changes for the entire cache lifetime.
     readonly property int diskProbeTtlMs: 30 * 60 * 1000
     property real _lastDiskProbeMs: 0
+    property real _lastDiskRequestMs: 0
     property bool _diskProbeRunning: false
+    property bool _diskProbeDirty: false
+    property string diskUsageError: ""
 
     function probeDiskUsage(force) {
+        if (force)
+            root._diskProbeDirty = true;
         if (root._diskProbeRunning)
             return;
-        const now = Date.now();
+        // Operations can finish after the window closes. Refresh on next open.
+        if (root.autoStart && !root.expanded)
+            return;
+        const refresh = root._diskProbeDirty;
+        if (!refresh && root._lastDiskRequestMs > 0 && Date.now() - root._lastDiskRequestMs < 5000)
+            return;
+        root._diskProbeDirty = false;
         root._diskProbeRunning = true;
-        root._lastDiskProbeMs = now;
-        sh(shq(root.scriptDir + "run") + " cached disk " + (force ? 0 : Math.round(root.diskProbeTtlMs / 1000)) + " -- " + shq(root.scriptDir + "diskusage"), function (cmd, out, err, code) {
+        root._lastDiskRequestMs = Date.now();
+        sh(shq(root.scriptDir + "run") + " cached disk:nar-v1 " + (refresh ? 0 : Math.round(root.diskProbeTtlMs / 1000)) + " -- " + shq(root.scriptDir + "diskusage"), function (cmd, out, err, code) {
             root._diskProbeRunning = false;
-            root._lastDiskProbeMs = Date.now();
-            const p = (out || "").split("\x1e");
-            root.diskStoreBytes = parseInt((p[0] || "").trim(), 10) || 0;
-            root.diskReclaimableBytes = (p[1] || "").trim() === "" ? -1 : Number(p[1]);
-            root.diskFreeBytes = parseInt((p[2] || "").trim(), 10) || 0;
+            // A mutation/forced refresh arrived during this snapshot. Do not
+            // display it or lose the request; run one fresh probe afterward.
+            if (root._diskProbeDirty) {
+                root.probeDiskUsage(true);
+                return;
+            }
+            const p = (out || "").trim().split("\x1e");
+            const valid = p.length >= 3 && p.slice(0, 3).every(v => /^\d+$/.test(v.trim()) && isFinite(Number(v)));
+            if (code !== 0 || !valid) {
+                root.diskUsageError = (err || qsTr("Could not measure the Nix store.")).trim();
+                root.probeFreeDiskSpace();
+                if (refresh)
+                    root.pushToast(root.diskUsageError, true);
+                return;
+            }
+            root.diskUsageError = "";
+            root.diskStoreBytes = Number(p[0]);
+            root.diskReclaimableBytes = Number(p[1]);
+            root.diskFreeBytes = Number(p[2]);
+            root._lastDiskProbeMs = /^\d+$/.test(p[3] || "") ? Number(p[3]) * 1000 : Date.now();
+            if (Date.now() - root._lastDiskProbeMs > 5000)
+                root.probeFreeDiskSpace();
+        });
+    }
+
+    property bool _diskFreeProbeRunning: false
+    function probeFreeDiskSpace() {
+        if (root._diskFreeProbeRunning)
+            return;
+        root._diskFreeProbeRunning = true;
+        sh(shq(root.scriptDir + "diskusage") + " --free", function (cmd, out, err, code) {
+            root._diskFreeProbeRunning = false;
+            const value = (out || "").trim();
+            if (code === 0 && /^\d+$/.test(value) && isFinite(Number(value)))
+                root.diskFreeBytes = Number(value);
         });
     }
 
@@ -549,6 +620,8 @@ Item {
 
     // ── Store usage tool ──────────────────────────────────────────────────────
     function probeStoreUsage(path) {
+        if (root.isProbingStoreUsage)
+            return;
         root.storeUsageResult = null;
         const clean = String(path || "").trim();
         // Client-side check mirrors the shell script's own validation — this is
@@ -560,10 +633,8 @@ Item {
             };
             return;
         }
-        if (root.isProbingStoreUsage)
-            return;
         root.isProbingStoreUsage = true;
-        sh(shq(root.scriptDir + "run") + " cached " + shq("storeusage:" + clean) + " 300 -- " + shq(root.scriptDir + "store-usage") + " " + shq(clean), function (cmd, out, err, code) {
+        sh(shq(root.scriptDir + "run") + " cached " + shq("storeusage:v2:" + clean) + " 300 -- " + shq(root.scriptDir + "store-usage") + " " + shq(clean), function (cmd, out, err, code) {
             root.isProbingStoreUsage = false;
             if (code !== 0) {
                 root.storeUsageResult = {
@@ -573,10 +644,18 @@ Item {
                 return;
             }
             const p = (out || "").split("\x1e");
-            const exists = (p[3] || "").trim() === "1";
+            const present = (p[3] || "").trim();
+            if ((present !== "0" && present !== "1") || (present === "1" && !/^\d+$/.test((p[2] || "").trim()))) {
+                root.storeUsageResult = {
+                    isError: true,
+                    value: qsTr("Incomplete store path inspection.")
+                };
+                return;
+            }
+            const exists = present === "1";
             root.storeUsageResult = {
                 isError: false,
-                path: clean,
+                path: (p[4] || clean).trim(),
                 exists: exists,
                 roots: (p[0] || "").split("\n").map(s => s.trim()).filter(s => s),
                 referrers: (p[1] || "").split("\n").map(s => s.trim()).filter(s => s),
@@ -586,12 +665,19 @@ Item {
     }
 
     // ── Impermanence tool ─────────────────────────────────────────────────────
-    function unescapePath(text) {
-        return String(text || "").replace(/\\(\\|x[0-9a-fA-F]{2})/g, (m, g) => g === "\\" ? "\\" : String.fromCharCode(parseInt(g.slice(1), 16)));
+    // The data-disk choice is part of the command, so cached results of the
+    // other choice are never reused.
+    function impermanenceCommand(mode, arg) {
+        const wide = root.settings.impermanenceAllDisks && (mode === "scan" || mode === "cleanup") ? "env NIXDATIFIER_IMP_ALL=1 " : "";
+        return wide + shq(root.scriptDir + "impermanence") + " " + mode + " " + shq(root.settings.impermanencePaths || "") + (arg === undefined ? "" : " " + shq(arg));
     }
 
-    function impermanenceCommand(mode, arg) {
-        return shq(root.scriptDir + "impermanence") + " " + mode + " " + shq(root.settings.impermanencePaths || "") + (arg === undefined ? "" : " " + shq(arg));
+    // A helper's output parsed, or the reason it failed.
+    function impermanenceResult(code, out, err, failure, parse) {
+        return code === 0 ? parse(out || "") : {
+            isError: true,
+            value: (err || out || failure).trim()
+        };
     }
 
     // Cheap: reads the mount table. Decides whether the tool is offered at all.
@@ -655,6 +741,53 @@ Item {
         return result;
     }
 
+    // Size and last change of every persisted entry, keyed by where it appears.
+    property bool _impSizesDirty: false
+    function measureImpermanence(force) {
+        if (root.isMeasuringImpermanence) {
+            if (force)
+                root._impSizesDirty = true;
+            return;
+        }
+        root._impSizesDirty = false;
+        root.isMeasuringImpermanence = true;
+        sh(shq(root.scriptDir + "run") + " cached impermanence " + (force ? 0 : 300) + " -- " + impermanenceCommand("sizes"), function (cmd, out, err, code) {
+            root.isMeasuringImpermanence = false;
+            if (root._impSizesDirty) {
+                root.measureImpermanence(true);
+                return;
+            }
+            root.impermanenceSizes = root.impermanenceResult(code, out, err, qsTr("Could not measure the persistent folders"), root.parseImpermanenceSizes);
+        });
+    }
+
+    function parseImpermanenceSizes(raw) {
+        const sizes = {};
+        for (const line of raw.split("\n")) {
+            const f = line.split("\t");
+            if (f[0] === "E" && f.length >= 6)
+                sizes[f[4]] = {
+                    kind: f[1],
+                    size: Number(f[2]) || 0,
+                    newest: parseInt(f[3], 10) || 0,
+                    // ok | partial (a lower bound) | failed (unknown, not zero)
+                    status: f[6] || "ok"
+                };
+        }
+        return sizes;
+    }
+
+    // Folders already measured: dir -> { at, listing }. One walk also yields
+    // the level below it, so stepping down or back up needs no new walk.
+    property var _impListCache: ({})
+    readonly property int _impListFresh: 10 * 60 * 1000
+    readonly property int _impListMaxFolders: 300
+    readonly property int _impListMaxRows: 60000
+
+    // Whether a folder is open in the tab; work that finishes later (a delete)
+    // must not start a walk for a folder the user already left.
+    property bool _impFolderOpen: false
+
     // Lists one folder level. An empty path opens the first persistent root.
     function listImpermanence(path, force) {
         let dir = path;
@@ -664,21 +797,140 @@ Item {
                 return;
             dir = first.path;
         }
+        root._impFolderOpen = true;
+        const known = force ? null : root._impListCache[dir];
+        if (known && Date.now() - known.at < root._impListFresh) {
+            root.cancelImpermanenceListing();
+            root.impermanenceListing = known.listing;
+            return;
+        }
+        const cancel = root.isListingImpermanence ? impermanenceCommand("cancel-list") + " && " : "";
         const seq = ++root._impListSeq;
         root.isListingImpermanence = true;
-        sh(shq(root.scriptDir + "run") + " cached impermanence " + (force ? 0 : 120) + " -- " + impermanenceCommand("list", dir), function (cmd, out, err, code) {
+        sh(cancel + shq(root.scriptDir + "run") + " cached impermanence " + (force ? 0 : 600) + " -- " + impermanenceCommand("list", dir), function (cmd, out, err, code) {
             if (seq !== root._impListSeq)
                 return;
             root.isListingImpermanence = false;
-            if (code !== 0) {
-                root.impermanenceListing = {
-                    isError: true,
-                    value: (err || out || qsTr("Could not read this folder")).trim()
-                };
-                return;
-            }
-            root.impermanenceListing = root.parseImpermanenceListing(out || "");
+            const listing = root.impermanenceResult(code, out, err, qsTr("Could not read this folder"), root.parseImpermanenceListing);
+            if (!listing.isError)
+                root._rememberListing(listing, force);
+            root.impermanenceListing = listing;
         });
+    }
+
+    // Nothing shows the remembered folders while the popup is closed, and one
+    // walk can hold tens of thousands of rows. Let them go after a while, so an
+    // idle widget keeps no such memory; the helper's own cache keeps the next
+    // visit cheap, and a quick reopen still finds everything in place.
+    function releaseImpermanenceMemory() {
+        root._impListCache = ({});
+        const listing = root.impermanenceListing;
+        // Only read while a walk is remembered; the folder on screen keeps its rows.
+        if (listing && !listing.isError)
+            listing.children = ({});
+    }
+    Timer {
+        objectName: "impermanenceReleaseTimer"
+        interval: 120000
+        running: !root.expanded && Object.keys(root._impListCache).length > 0
+        onTriggered: root.releaseImpermanenceMemory()
+    }
+
+    // The folder view was left: forget it is open and stop its walk.
+    function closeImpermanenceFolder() {
+        root._impFolderOpen = false;
+        root.cancelImpermanenceListing();
+    }
+
+    // Nobody waits for the walk in progress any more; stop it instead of
+    // letting it keep the disk busy.
+    function cancelImpermanenceListing() {
+        if (!root.isListingImpermanence)
+            return;
+        ++root._impListSeq;
+        root.isListingImpermanence = false;
+        sh(impermanenceCommand("cancel-list"), null);
+    }
+
+    // `fresh`: measured just now on request (a refresh), not served from the
+    // helper's cache. Then everything remembered below this folder is older
+    // than what the walk just saw, so it is replaced or dropped.
+    function _rememberListing(listing, fresh) {
+        const now = Date.now();
+        const cache = Object.assign({}, root._impListCache);
+        if (fresh)
+            for (const p of Object.keys(cache))
+                if (p.indexOf(listing.dir + "/") === 0)
+                    delete cache[p];
+        // Rows held: its own items, plus the level below it for a real walk.
+        // Derived entries share their arrays with that walk but count them
+        // too, since they keep them alive once the walk's entry is dropped.
+        const below = Object.keys(listing.children).reduce((sum, k) => sum + listing.children[k].length, 0);
+        cache[listing.dir] = {
+            at: now,
+            rows: listing.items.length + below,
+            listing: listing
+        };
+        const keep = {};
+        keep[listing.dir] = true;
+        for (const item of listing.items) {
+            const items = listing.children[item.label];
+            const own = cache[item.path];
+            // A folder measured by its own walk knows one level more; keep that.
+            if (item.kind !== "d" || !items || (own && !own.listing.derived && now - own.at < root._impListFresh))
+                continue;
+            keep[item.path] = true;
+            cache[item.path] = {
+                at: now,
+                rows: items.length,
+                listing: {
+                    isError: false,
+                    derived: true,
+                    partial: listing.partial,
+                    dir: item.path,
+                    area: listing.area,
+                    total: item.size,
+                    files: item.count,
+                    newest: item.newest,
+                    items: items,
+                    children: {}
+                }
+            };
+        }
+        // Bounded by folders and by rows: a few huge folders weigh as much as
+        // many small ones. The oldest go first, then the smallest subfolders of
+        // what was just measured (items come largest first); never the folder
+        // itself. A subfolder dropped here is simply walked when opened.
+        let count = Object.keys(cache).length;
+        let rows = Object.keys(cache).reduce((sum, p) => sum + cache[p].rows, 0);
+        const order = Object.keys(cache).filter(p => !keep[p]).sort((a, b) => cache[a].at - cache[b].at);
+        for (let i = listing.items.length - 1; i >= 0; --i)
+            if (keep[listing.items[i].path])
+                order.push(listing.items[i].path);
+        while ((count > root._impListMaxFolders || rows > root._impListMaxRows) && order.length) {
+            const p = order.shift();
+            rows -= cache[p].rows;
+            delete cache[p];
+            --count;
+        }
+        root._impListCache = cache;
+    }
+
+    function _listingItem(dir, f, at) {
+        return {
+            kind: f[at],
+            size: Number(f[at + 1]) || 0,
+            count: parseInt(f[at + 2], 10) || 0,
+            newest: parseInt(f[at + 3], 10) || 0,
+            mtime: parseInt(f[at + 4], 10) || 0,
+            mode: f[at + 5],
+            owner: f[at + 6],
+            flags: f[at + 7],
+            link: UI.Theme.unescapePath(f[at + 8]),
+            name: UI.Theme.unescapePath(f[at + 9]),
+            label: f[at + 9],
+            path: dir + "/" + f[at + 9]
+        };
     }
 
     function parseImpermanenceListing(raw) {
@@ -689,8 +941,13 @@ Item {
             total: 0,
             files: 0,
             newest: 0,
-            items: []
+            items: [],
+            partial: false,
+            moreCount: 0,
+            moreBytes: 0,
+            children: {}   // child label -> its items, from the same walk
         };
+        const tooMany = {};
         for (const line of raw.split("\n")) {
             const f = line.split("\t");
             if (f[0] === "D") {
@@ -700,22 +957,28 @@ Item {
                 listing.files = parseInt(f[4], 10) || 0;
                 listing.newest = parseInt(f[5], 10) || 0;
             } else if (f[0] === "C" && f.length >= 11) {
-                listing.items.push({
-                    kind: f[1],
-                    size: Number(f[2]) || 0,
-                    count: parseInt(f[3], 10) || 0,
-                    newest: parseInt(f[4], 10) || 0,
-                    mtime: parseInt(f[5], 10) || 0,
-                    mode: f[6],
-                    owner: f[7],
-                    flags: f[8],
-                    link: root.unescapePath(f[9]),
-                    name: root.unescapePath(f[10]),
-                    label: f[10],
-                    path: listing.dir + "/" + f[10]
-                });
+                listing.items.push(root._listingItem(listing.dir, f, 1));
+            } else if (f[0] === "G" && f.length >= 12) {
+                const kids = listing.children[f[1]] || (listing.children[f[1]] = []);
+                kids.push(root._listingItem(listing.dir + "/" + f[1], f, 2));
+            } else if (f[0] === "X") {
+                tooMany[f[1]] = true;
+            } else if (f[0] === "P") {
+                // Some folders below could not be read: totals are lower bounds.
+                listing.partial = true;
+            } else if (f[0] === "R") {
+                // The smallest entries of a huge folder, summed up, not listed.
+                listing.moreCount = parseInt(f[1], 10) || 0;
+                listing.moreBytes = Number(f[2]) || 0;
             }
         }
+        // Folders with too many entries to list here are walked when opened;
+        // folders with none at all are known to be empty.
+        for (const label of Object.keys(tooMany))
+            delete listing.children[label];
+        for (const item of listing.items)
+            if (item.kind === "d" && !tooMany[item.label] && !listing.children[item.label])
+                listing.children[item.label] = [];
         return listing;
     }
 
@@ -723,16 +986,9 @@ Item {
         if (root.isScanningImpermanence)
             return;
         root.isScanningImpermanence = true;
-        sh(shq(root.scriptDir + "run") + " cached impermanence " + (force ? 0 : 300) + " -- " + impermanenceCommand("scan", "14"), function (cmd, out, err, code) {
+        sh(shq(root.scriptDir + "run") + " cached impermanence " + (force ? 0 : 3600) + " -- " + impermanenceCommand("scan", "14"), function (cmd, out, err, code) {
             root.isScanningImpermanence = false;
-            if (code !== 0) {
-                root.impermanenceScan = {
-                    isError: true,
-                    value: (err || out || qsTr("Could not scan the persistent folders")).trim()
-                };
-                return;
-            }
-            root.impermanenceScan = root.parseImpermanenceScan(out || "");
+            root.impermanenceScan = root.impermanenceResult(code, out, err, qsTr("Could not scan the persistent folders"), root.parseImpermanenceScan);
         });
     }
 
@@ -758,8 +1014,8 @@ Item {
                 severity: f[0],
                 category: f[1],
                 path: f[2],
-                pathText: root.unescapePath(f[2]),
-                detail: root.unescapePath(f[3])
+                pathText: UI.Theme.unescapePath(f[2]),
+                detail: UI.Theme.unescapePath(f[3])
             });
         }
         return scan;
@@ -770,16 +1026,9 @@ Item {
             return;
         root.isAnalyzingImpermanence = true;
         const days = Math.max(14, root.settings.impermanenceStaleDays || 180);
-        sh(shq(root.scriptDir + "run") + " cached impermanence " + (force ? 0 : 300) + " -- " + impermanenceCommand("cleanup", String(days)), function (cmd, out, err, code) {
+        sh(shq(root.scriptDir + "run") + " cached impermanence " + (force ? 0 : 3600) + " -- " + impermanenceCommand("cleanup", String(days)), function (cmd, out, err, code) {
             root.isAnalyzingImpermanence = false;
-            if (code !== 0) {
-                root.impermanenceCleanup = {
-                    isError: true,
-                    value: (err || out || qsTr("Could not analyze the persistent folders")).trim()
-                };
-                return;
-            }
-            root.impermanenceCleanup = root.parseImpermanenceCleanup(out || "", days);
+            root.impermanenceCleanup = root.impermanenceResult(code, out, err, qsTr("Could not analyze the persistent folders"), raw => root.parseImpermanenceCleanup(raw, days));
         });
     }
 
@@ -801,7 +1050,8 @@ Item {
                     size: Number(f[2]) || 0,
                     newest: parseInt(f[3], 10) || 0,
                     path: f[4],
-                    pathText: root.unescapePath(f[4])
+                    pathText: UI.Theme.unescapePath(f[4]),
+                    partial: f[5] === "partial"
                 });
             } else if (f[0] === "S" && f.length >= 6) {
                 result.stale.push({
@@ -810,7 +1060,7 @@ Item {
                     count: parseInt(f[3], 10) || 0,
                     newest: parseInt(f[4], 10) || 0,
                     path: f[5],
-                    pathText: root.unescapePath(f[5])
+                    pathText: UI.Theme.unescapePath(f[5])
                 });
             }
         }
@@ -822,41 +1072,153 @@ Item {
     // Deletes one path inside a persistent folder. The helper refuses anything
     // that would break the system; root-owned content is retried through pkexec.
     function removeImpermanencePath(path, name) {
-        if (root.isRemovingImpermanence || !path)
-            return;
-        root.isRemovingImpermanence = true;
-        const label = qsTr("Delete %1").arg(name || root.unescapePath(path));
-        const base = impermanenceCommand("remove", path);
-        const finish = function (code, text) {
-            root.isRemovingImpermanence = false;
-            root.recordHistoryEntry("impermanence-remove", label, -1, code, text || root.unescapePath(path));
-            if (code !== 0) {
-                root.pushToast(code === 77 ? qsTr("Some of it belongs to another user. Enable pkexec in Settings to delete it.") : (text || qsTr("Could not delete %1").arg(name)).replace(/^ERROR:\s*/, ""), true);
-                return;
+        removeImpermanencePaths([
+            {
+                path: path,
+                name: name
             }
-            root.pushToast(qsTr("Deleted %1").arg(name || root.unescapePath(path)), false);
-            // The listing, the scan and the analysis all describe what was just deleted.
-            const dir = root.impermanenceListing && !root.impermanenceListing.isError ? root.impermanenceListing.dir : "";
-            if (dir)
-                root.listImpermanence(dir, true);
-            if (root.impermanenceScan)
-                root.scanImpermanence(true);
-            if (root.impermanenceCleanup)
-                root.analyzeImpermanence(true);
+        ]);
+    }
+
+    // Deletes paths one after another and reports them together. Deletes asked
+    // for while others are still running join the queue instead of waiting.
+    // Per-path progress remains visible until the helper confirms the outcome.
+    property var impermanenceRemovalStates: ({})
+    // `paths` is one path or a list, so queuing a large batch copies the map once.
+    function setImpermanenceRemovalState(paths, state, message) {
+        const next = Object.assign({}, root.impermanenceRemovalStates);
+        for (const path of [].concat(paths)) {
+            delete next[path];   // re-added last, so key order is age order
+            next[path] = {
+                state: state,
+                message: message || ""
+            };
+        }
+        // Failures stay for review, but not forever: keep the latest 200.
+        const failed = Object.keys(next).filter(p => next[p].state === "failed");
+        for (const p of failed.slice(0, Math.max(0, failed.length - 200)))
+            delete next[p];
+        root.impermanenceRemovalStates = next;
+    }
+    property var _impRemoval: null   // { queue, done, removed: [paths], failures }
+    function removeImpermanencePaths(items) {
+        const seen = {};
+        const add = (items || []).filter(function (i) {
+            if (!i || !i.path || seen[i.path])
+                return false;
+            seen[i.path] = true;
+            const current = root.impermanenceRemovalStates[i.path];
+            return !current || (current.state !== "queued" && current.state !== "deleting");
+        });
+        if (add.length === 0)
+            return;
+        root.setImpermanenceRemovalState(add.map(i => i.path), "queued", "");
+        if (root._impRemoval) {
+            root._impRemoval.queue = root._impRemoval.queue.concat(add);
+            return;
+        }
+        root._impRemoval = {
+            queue: add,
+            done: [],
+            removed: [],
+            failures: []
         };
+        root.isRemovingImpermanence = true;
+        root._stepImpermanenceRemoval();
+    }
+
+    function _stepImpermanenceRemoval() {
+        const run = root._impRemoval;
+        if (run.queue.length === 0) {
+            root._reportImpermanenceRemoval(run);
+            const remaining = Object.assign({}, root.impermanenceRemovalStates);
+            for (const path of run.removed)
+                delete remaining[path];
+            root.impermanenceRemovalStates = remaining;
+            root._impRemoval = null;
+            root.isRemovingImpermanence = false;
+            return;
+        }
+        const item = run.queue.shift();
+        const name = item.name || UI.Theme.unescapePath(item.path);
+        run.done.push(item);
+        root.setImpermanenceRemovalState(item.path, "deleting", "");
+        root._removeImpermanenceOne(item.path, function (code, text) {
+            root.recordHistoryEntry("impermanence-remove", qsTr("Delete %1").arg(name), -1, code, text || UI.Theme.unescapePath(item.path));
+            if (code === 0) {
+                run.removed.push(item.path);
+                root.setImpermanenceRemovalState(item.path, "deleted", "");
+            } else {
+                const why = code === 77 ? qsTr("Permission denied. Enable pkexec in Settings to retry.") : (text || qsTr("Deletion failed")).replace(/^ERROR:\s*/, "");
+                root.setImpermanenceRemovalState(item.path, "failed", why);
+                run.failures.push({
+                    name: name,
+                    code: code,
+                    text: text
+                });
+            }
+            root._stepImpermanenceRemoval();
+        });
+    }
+
+    // Root-owned content is retried through pkexec when that is allowed.
+    function _removeImpermanenceOne(path, done) {
+        const base = impermanenceCommand("remove", path);
         sh(base, function (c, out, err, code) {
             if (code === 77 && root.settings.usePkexec) {
                 sh(root.privileged(base), function (c2, out2, err2, code2) {
-                    finish(code2, (err2 || out2 || "").trim());
+                    done(code2, (err2 || out2 || "").trim());
                 });
                 return;
             }
-            finish(code, (err || out || "").trim());
+            done(code, (err || out || "").trim());
+        });
+    }
+
+    function _reportImpermanenceRemoval(run) {
+        const total = run.done.length, removed = run.removed.length;
+        if (run.failures.length > 0) {
+            const f = run.failures[0];
+            const why = f.code === 77 ? qsTr("Some of it belongs to another user. Enable pkexec in Settings to delete it.") : (f.text || qsTr("Could not delete %1").arg(f.name)).replace(/^ERROR:\s*/, "");
+            root.pushToast(total === 1 ? why : qsTr("Deleted %1 of %2. %3: %4").arg(removed).arg(total).arg(f.name).arg(why), true);
+        } else {
+            root.pushToast(total === 1 ? qsTr("Deleted %1").arg(run.done[0].name || UI.Theme.unescapePath(run.done[0].path)) : qsTr("Deleted %1 items").arg(removed), false);
+        }
+        // Even a delete that failed half-way may have removed part of its
+        // contents, so cached sizes are stale after any attempt. Folder totals
+        // up the tree changed too; measure again when visited.
+        root._impListCache = ({});
+        // Drop what is gone from the results on hand instead of scanning again:
+        // the scan and the analysis are slow, and nothing else changed.
+        const gone = p => run.removed.some(r => p === r || p.indexOf(r + "/") === 0);
+        const listing = root.impermanenceListing;
+        if (listing && !listing.isError)
+            root.impermanenceListing = Object.assign({}, listing, {
+                items: listing.items.filter(i => !gone(i.path))
+            });
+        const cleanup = root.impermanenceCleanup;
+        if (cleanup && !cleanup.isError)
+            root.impermanenceCleanup = Object.assign({}, cleanup, {
+                temp: cleanup.temp.filter(t => !gone(t.path)),
+                stale: cleanup.stale.filter(s => !gone(s.path))
+            });
+        const scan = root.impermanenceScan;
+        if (scan && !scan.isError)
+            root.impermanenceScan = Object.assign({}, scan, {
+                findings: scan.findings.filter(f => !f.path || !gone(f.path))
+            });
+        sh(shq(root.scriptDir + "run") + " invalidate impermanence", function () {
+            // Do not bring back a folder the user left while deleting.
+            const current = root.impermanenceListing;
+            if (root._impFolderOpen && root.expanded && root.activeViewMode === "impermanence" && current && !current.isError)
+                root.listImpermanence(current.dir, true);
+            if (root.impermanenceSizes)
+                root.measureImpermanence(true);
         });
     }
 
     function openImpermanencePath(path) {
-        sh("xdg-open " + shq(root.unescapePath(path)), null);
+        sh("xdg-open " + shq(UI.Theme.unescapePath(path)), null);
     }
 
     // Signature-based scanning needs ClamAV; it runs in a terminal so the
@@ -983,7 +1345,7 @@ Item {
         const put = value => {
             const next = Object.assign({}, root.shellPackages);
             next[key] = value;
-            root.shellPackages = next;
+            root.shellPackages = root.boundedCache(next, 32);
         };
         put({
             state: "loading",
@@ -1223,6 +1585,8 @@ Item {
         root.isLoadingConfigDiff = true;
         sh(shq(root.scriptDir + "config-diff") + " " + baseNum + " " + genNum, function (cmd, out, err, code) {
             root.isLoadingConfigDiff = false;
+            if (!root.hasGeneration(genNum))
+                return;
             const parts = (out || "").split("\x1e");
             const cache = Object.assign({}, root.configDiffCache);
             cache[genNum] = {
@@ -1277,6 +1641,8 @@ Item {
 
         sh(shq(root.scriptDir + "details") + " " + shq(link) + " " + shq(basePath), function (cmd, out, err, code) {
             root.isLoadingDetails = false;
+            if (!root.hasGeneration(genNum))
+                return;
             if (code !== 0) {
                 root.pushToast(err || qsTr("Could not compare generation"), true);
                 return;
@@ -1303,6 +1669,8 @@ Item {
         // base = B, target = A → diff shows what A has on top of B
         sh(shq(root.scriptDir + "details") + " " + shq(linkA) + " " + shq(linkB), function (cmd, out, err, code) {
             root.isLoadingPairDiff = false;
+            if (!root.hasGeneration(genA) || !root.hasGeneration(genB))
+                return;
             if (code !== 0) {
                 root.pushToast(err || qsTr("Could not compare generations"), true);
                 return;
@@ -1345,7 +1713,7 @@ Item {
         cache[genA + "_" + genB] = {
             diff: diffList
         };
-        root.pairDiffCache = cache;
+        root.pairDiffCache = root.boundedCache(cache, 24);
         root.loadIcons(diffList);
         root.loadMeta(diffList);
     }
@@ -1361,7 +1729,7 @@ Item {
             path: "",
             message: qsTr("Resolving store path…")
         };
-        root.storePathCache = cache;
+        root.storePathCache = root.boundedCache(cache, 256);
         sh(shq(root.scriptDir + "store-path") + " " + shq(pkg.storeProfile) + " " + shq(pkg.name) + " " + shq(version), function (cmd, out, err, code) {
             const next = Object.assign({}, root.storePathCache);
             const paths = (out || "").trim().split("\n").filter(p => p.startsWith("/nix/store/"));
@@ -1369,7 +1737,7 @@ Item {
                 path: paths.join("\n"),
                 message: code ? qsTr("Path unavailable") : qsTr("No matching output in this closure")
             };
-            root.storePathCache = next;
+            root.storePathCache = root.boundedCache(next, 256);
         });
     }
 
@@ -1398,7 +1766,7 @@ Item {
                 if (!(n in updated))
                     updated[n] = "";
             });
-            root.iconCache = updated;
+            root.iconCache = root.boundedCache(updated, 4096);
         });
     }
 
@@ -1432,7 +1800,7 @@ Item {
                         source: ""
                     };
             });
-            root.metaCache = updated;
+            root.metaCache = root.boundedCache(updated, 4096);
         });
     }
 
@@ -1877,16 +2245,16 @@ Item {
         sh(cmd, function (c, out, err, code) {
             root.isBusy = false;
             root.recordHistoryEntry(mode, root.currentActionType, -1, code, (err || out || "").trim());
+            root.refreshGenerations();
+            root.probeDiskUsage(true);
             if (code !== 0) {
                 root.pushToast(qsTr("GC failed: ") + (err || out || "").trim(), true);
                 return;
             }
-            const freed = (out || "").match(/(\d[\d,.]* \w+B?) freed/i);
+            const freed = ((out || "") + "\n" + (err || "")).match(/(\d[\d,.]* \w+B?) freed/i);
             const msg = freed ? qsTr("GC complete — %1 freed.").arg(freed[1]) : qsTr("GC complete.");
             root.pushToast(msg, false);
             root.notify(qsTr("Nix — garbage collected"), msg, false);
-            root.refreshGenerations();
-            root.probeDiskUsage(true);
         }, true);
     }
 
@@ -1977,7 +2345,7 @@ Item {
             for (let i = 0; i < records.length; i++) {
                 const parts = records[i].split("\x1e");
                 const genNum = parseInt(parts[0], 10);
-                if (!(genNum > 0))
+                if (!(genNum > 0) || !root.hasGeneration(genNum))
                     continue;
                 // Don't overwrite a fully-loaded entry (which has diff data).
                 if (cache[genNum] !== undefined && !cache[genNum].partial)
@@ -2183,7 +2551,7 @@ Item {
             // The very first open always populates the disk chips; after that
             // it follows the auto-refresh preference. Either way it is
             // TTL-guarded, so reopening the popup does not re-walk the store.
-            if (root._lastDiskProbeMs === 0 || root.settings.autoRefreshOnOpen)
+            if (root._diskProbeDirty || root._lastDiskProbeMs === 0 || root.settings.autoRefreshOnOpen)
                 probeDiskUsage();
         }
     }
@@ -2255,7 +2623,6 @@ Item {
         // Watch the cache directory for writes to our specific filename.
         // Watching the directory means inotifywait works even before the file exists.
         const cacheDir = root.cacheDirExpr;
-        const cacheName = root.flakeCacheName;
         const probe = "command -v inotifywait >/dev/null 2>&1 || { echo unsupported; exit 0; }; mkdir -p " + cacheDir + "; inotifywait -t 300 -e close_write -e moved_to -q --include '(flake.lock|flake-.*)' " + cacheDir + " " + shq(root.flakePath) + " >/dev/null 2>&1; code=$?; if [ $code -eq 0 ]; then echo changed; elif [ $code -eq 2 ]; then echo timeout; else echo failed; fi";
         sh(probe, function (cmd, out, err, code) {
             root._watcherArmed = false;

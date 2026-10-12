@@ -109,8 +109,8 @@ ColumnLayout {
                 }
                 UI.Icon {
                     source: Qt.resolvedUrl(release.open ? "../assets/ic_chevron_up.svg" : "../assets/ic_chevron_down.svg")
-                    width: 12
-                    height: 12
+                    implicitWidth: 12
+                    implicitHeight: 12
                     isMask: true
                     color: "#8293ab"
                 }

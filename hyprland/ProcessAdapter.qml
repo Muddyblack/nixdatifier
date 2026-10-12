@@ -24,9 +24,12 @@ Process {
         _finished = true;
         const cb = callback;
         callback = null;
-        if (cb)
-            cb(sourceCommand, out, err, exitCode);
-        destroy();
+        try {
+            if (cb)
+                cb(sourceCommand, out, err, exitCode);
+        } finally {
+            destroy();
+        }
     }
     onExited: (exitCode, exitStatus) => finish(output.text, errors.text, exitCode)
     // FailedToStart changes running without emitting exited; without this the

@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Layouts
-import QtQuick.Controls
 import "shared" as UI
 import "components"
 
@@ -33,7 +32,7 @@ Item {
     }
     anchors.fill: parent
     visible: activeViewMode === "diff"
-    ScrollView {
+    UI.ScrollView {
         id: scroll
         anchors.fill: parent
         clip: true

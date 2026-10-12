@@ -9,10 +9,15 @@
 # <extra-roots> is a colon-separated list of additional persistent roots from
 # the settings (may be empty). Modes:
 #   detect  <extra>                  persistent areas and the entries persisted into them
-#   list    <extra> <dir>            one folder level: size, count, newest change, flags
+#   sizes   <extra>                  size and newest change of every persisted entry
+#   cancel-list <extra>              stop a listing that is still walking
+#   list    <extra> <dir>            two folder levels: size, count, newest change, flags
 #   scan    <extra> <recent-days>    autostart hooks and other suspicious things
 #   cleanup <extra> <stale-days>     temporary, regenerable and long-untouched data
 #   remove  <extra> <path>           delete one path inside a persistent area (guarded)
+#
+# scan and cleanup skip separately mounted data disks other than /home unless
+# NIXDATIFIER_IMP_ALL=1 is set.
 #
 # Paths in the output have control characters and backslashes written as
 # \xHH / \\ so every record stays on one line; `remove` accepts that form.
@@ -24,7 +29,7 @@ export LC_ALL=C
 
 mode="${1:-}"
 extra="${2:-}"
-[ $# -ge 2 ] && shift 2 || shift $#
+if [ $# -ge 2 ]; then shift 2; else shift $#; fi
 
 # Tests point these at fixtures.
 mountinfo="${NIXDATIFIER_MOUNTINFO:-/proc/self/mountinfo}"
@@ -97,7 +102,7 @@ ROOTFS=
 within() { [[ "$1" == "$2" || "$1" == "$2"/* ]]; }
 
 compute() {
-    local table out line kind a b c
+    local table out kind a b c
     table=$(mount_table)
     ROOTFS=$(awk -F'\t' '$1 == "/" { f = $4 } END { print f }' <<<"$table")
 
@@ -176,8 +181,8 @@ compute() {
     IFS=$' \t\n'
 
     # Separately mounted data filesystems keep their content across reboots too.
-    local mp rt dv ft covered p i
-    while IFS=$'\t' read -r mp rt dv ft; do
+    local mp ft covered p i
+    while IFS=$'\t' read -r mp _ _ ft; do
         case "$ft" in ext2 | ext3 | ext4 | btrfs | xfs | f2fs | zfs | jfs | bcachefs | ntfs | ntfs3 | fuseblk | vfat | exfat | reiserfs) ;; *) continue ;; esac
         [[ "$mp" == / || "$mp" =~ ^/(nix|boot|efi|run|proc|sys|dev|tmp)(/|$) ]] && continue
         covered=0
@@ -210,7 +215,7 @@ add_root() { # path via binds
 
 # Prints the area a path belongs to (empty if none).
 area_of() {
-    local p best= a
+    local p best='' a
     p=$1
     for a in "${PERSIST[@]+"${PERSIST[@]}"}" "${MOUNTAREAS[@]+"${MOUNTAREAS[@]}"}"; do
         [ -n "$a" ] && within "$p" "$a" && [ ${#a} -gt ${#best} ] && best=$a
@@ -225,8 +230,23 @@ all_areas() {
     done
 }
 
-# Home directories inside the areas: <area>/home/*, <area>/root, or the
-# children of an area that is itself /home.
+# What scan and cleanup walk: the persist roots, plus a separately mounted
+# /home or /root, where most leftovers live. Other data disks (/mnt/…) keep
+# their files whatever impermanence does and are large, so they are only
+# walked when asked for with NIXDATIFIER_IMP_ALL=1.
+scan_areas() {
+    local a
+    for a in "${PERSIST[@]+"${PERSIST[@]}"}"; do
+        [ -n "$a" ] && printf '%s\n' "$a"
+    done
+    for a in "${MOUNTAREAS[@]+"${MOUNTAREAS[@]}"}"; do
+        [ "$a" = /home ] || [ "$a" = /root ] || [ "${NIXDATIFIER_IMP_ALL:-0}" = 1 ] || continue
+        printf '%s\n' "$a"
+    done
+}
+
+# Home directories inside the scanned areas: <area>/home/*, <area>/root, or
+# the children of an area that is itself /home.
 homes() {
     local a h
     while IFS= read -r a; do
@@ -236,7 +256,25 @@ homes() {
         elif [ -d "$a/home" ]; then
             for h in "$a"/home/*/; do [ -d "$h" ] && printf '%s\n' "${h%/}"; done
         fi
-    done < <(all_areas) | sort -u
+    done < <(scan_areas) | sort -u
+}
+
+# A persisted entry is reachable twice: at its source inside the persist root
+# and at its live location (often under a separately mounted /home). Scans
+# walk the source and skip the live copy, so nothing is counted twice.
+bound_view() {
+    local t
+    for t in "${BIND_T[@]+"${BIND_T[@]}"}"; do
+        within "$1" "$t" && return 0
+    done
+    return 1
+}
+bound_prunes() { # dir -> BP: extra `find` prune terms for live copies below dir
+    BP=()
+    local t
+    for t in "${BIND_T[@]+"${BIND_T[@]}"}"; do
+        [[ "$t" == "$1"/* ]] && BP+=(-o -path "$(printf '%s' "$t" | sed 's/[][*?\\]/\\&/g')")
+    done
 }
 
 fsnums() { df -B1 --output=size,used,avail -- "$1" 2>/dev/null | awk 'NR == 2 { printf "%s\t%s\t%s", $1, $2, $3 }'; }
@@ -259,15 +297,91 @@ do_detect() {
         printf 'entry\t%s\t%s\t%s\n' "$kind" "${BIND_T[$i]}" "${BIND_S[$i]}"
     done | sort -t$'\t' -k3,3
     # Single files that impermanence links instead of binding.
-    local r l
+    local r
     for r in "${PERSIST[@]+"${PERSIST[@]}"}"; do
         [ -d /etc ] || continue
         find /etc -maxdepth 3 -type l -lname "$r/*" -printf 'entry\tl\t%p\t%l\n' 2>/dev/null
     done
 }
 
+# ── measuring ────────────────────────────────────────────────────────────────
+# Bytes on disk and newest change below a path, in one `du` pass. These run
+# in parallel through xargs, so they take their arguments and print one
+# record each; a single short write keeps parallel records from mixing.
+# Each record ends in a status, so a failure never reads as an empty folder:
+# ok, partial (something below could not be read, the size is a lower bound)
+# or failed (nothing could be measured).
+measure_du() { # path -> "size newest status"
+    local out code size newest
+    out=$(du -sx -B1 --time --time-style=+%s -- "$1" 2>/dev/null)
+    code=$?
+    read -r size newest _ <<<"${out##*$'\n'}"
+    if [[ ! "$size" =~ ^[0-9]+$ ]]; then
+        echo "0 0 failed"
+    elif ((code)); then
+        echo "$size ${newest:-0} partial"
+    else
+        echo "$size ${newest:-0} ok"
+    fi
+}
+measure_entry() { # kind source target
+    local size newest status
+    read -r size newest status < <(measure_du "$2")
+    printf '%s\002%s\002%s\002%s\002%s\002%s\n' "$1" "$size" "$newest" "${3//$'\n'/$'\001'}" "${2//$'\n'/$'\001'}" "$status"
+}
+measure_path() { # label path
+    local size newest status
+    read -r size newest status < <(measure_du "$2")
+    # Gone or unreadable as a whole: nothing to offer for cleanup.
+    [ "$status" = failed ] && return 0
+    printf 'T\002%s\002%s\002%s\002%s\002%s\n' "$1" "$size" "$newest" "${2//$'\n'/$'\001'}" "$status"
+}
+# xargs starts these in child shells, which is why nothing here calls them directly.
+# shellcheck disable=SC2329
+export -f measure_du measure_entry measure_path
+
+# ── sizes ────────────────────────────────────────────────────────────────────
+# One record per persisted entry: kind, bytes on disk, newest change, target
+# and source. Measured four at a time at low priority; the order is not fixed.
+do_sizes() {
+    compute
+    local i kind
+    for i in "${!BIND_T[@]}"; do
+        kind=d
+        [ -f "${BIND_S[$i]}" ] && kind=f
+        printf '%s\0%s\0%s\0' "$kind" "${BIND_S[$i]}" "${BIND_T[$i]}"
+    done | lowprio xargs -0 -r -n3 -P4 bash -c 'measure_entry "$1" "$2" "$3"' _ |
+        awk -F'\002' "$AWK_LIB"'
+        { printf "E\t%s\t%s\t%d\t%s\t%s\t%s\n", $1, $2, $3, esc($4), esc($5), $6 }'
+}
+
 # ── list ─────────────────────────────────────────────────────────────────────
+# The widget only ever wants the newest listing. Each listing runs as its own
+# process group and stops the one before, so walking in and out of large
+# folders never piles up walks that keep the disk busy.
+list_pidfile() { printf '%s/impermanence-list.pid' "${XDG_CACHE_HOME:-$HOME/.cache}/nixdatifier"; }
+stop_listing() {
+    local old
+    old=$(cat -- "$(list_pidfile)" 2>/dev/null) || return 0
+    [[ "$old" =~ ^[0-9]+$ ]] && [ "$old" != "$$" ] || return 0
+    # Only a listing of ours: the number may since belong to something else.
+    tr '\0' ' ' 2>/dev/null <"/proc/$old/cmdline" | grep -q 'impermanence list' || return 0
+    kill -TERM -- "-$old" 2>/dev/null
+    return 0
+}
+
+# Prints the folder (D), its children (C) and, so the widget can step one
+# level down without another walk, its grandchildren (G, grouped by child;
+# X marks a child with too many to list). One walk of the tree in total.
 do_list() {
+    if [ -z "${NIXDATIFIER_LIST_GROUP:-}" ] && [ -z "${NIXDATIFIER_MOUNTINFO:-}" ] && command -v setsid >/dev/null 2>&1; then
+        NIXDATIFIER_LIST_GROUP=1 exec setsid --wait "$0" list "$extra" "$@"
+    fi
+    stop_listing
+    if [ -n "${NIXDATIFIER_LIST_GROUP:-}" ]; then
+        mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}/nixdatifier"
+        printf '%s\n' "$$" >"$(list_pidfile)"
+    fi
     compute
     local dir=${1:-} rp area
     rp=$(realpath -m -- "$(printf '%b' "$dir")" 2>/dev/null)
@@ -276,10 +390,38 @@ do_list() {
         echo "ERROR: not a persistent folder" >&2
         exit 2
     fi
+    # Unreadable folders make every total below them a lower bound; say so (P)
+    # instead of passing the numbers off as complete.
+    # Global, not local: the traps run after this function has returned.
+    LIST_ERRS=$(mktemp)
+    LIST_SIZES=$(mktemp)
+    trap 'rm -f "$LIST_ERRS" "$LIST_SIZES"' EXIT
+    trap 'rm -f "$LIST_ERRS" "$LIST_SIZES"; exit 143' TERM
     {
-        lowprio find "$rp" -mindepth 1 -maxdepth 1 -type l -printf 'L\002%P\002%l\0' 2>/dev/null
-        lowprio find "$rp" -mindepth 1 -xdev -printf 'F\002%y\002%b\002%T@\002%m\002%u\002%d\002%P\0' 2>/dev/null
-    } | tr '\n\0' '\001\n' | awk -F'\002' -v dir="$rp" -v area="$area" "$AWK_LIB"'
+        lowprio find "$rp" -mindepth 1 -maxdepth 2 -type l -printf 'L\002%P\002%l\0' 2>/dev/null
+        # %U, not %u: a name lookup for every file makes the walk 30 times slower.
+        lowprio find "$rp" -mindepth 1 -xdev -printf 'F\002%y\002%b\002%T@\002%m\002%U\002%d\002%P\0' 2>"$LIST_ERRS"
+    } | tr '\n\0' '\001\n' | awk -F'\002' -v dir="$rp" -v area="$area" -v sizes="$LIST_SIZES" "$AWK_LIB"'
+    function uname(u,   c, line, f) {
+        if (u == "") return ""
+        if (!(u in names)) {
+            names[u] = u
+            c = "getent passwd " (u + 0)
+            if ((c | getline line) > 0) { split(line, f, ":"); names[u] = f[1] }
+            close(c)
+        }
+        return names[u]
+    }
+    function flags(k, md, name, execs,   f) {
+        f = ""
+        if (k == "f" && isx(md)) f = f "x"
+        if (issuid(md)) f = f "s"
+        if (isww(md) && k != "l") f = f "w"
+        if (name ~ /^\./) f = f "h"
+        if (name ~ /[\001-\037\177]/ || name ~ /^ / || name ~ / $/) f = f "c"
+        if (k == "d" && execs > 0) f = f "e"
+        return f
+    }
     $1 == "L" { link[$2] = $3; next }
     $1 == "F" {
         name = $8
@@ -293,25 +435,69 @@ do_list() {
         if ($4 > gnewest) gnewest = $4
         if ($2 == "f" && isx($5)) execs[top]++
         if ($7 == 1) { kind[top] = $2; own[top] = $4; md[top] = $5; ow[top] = $6 }
+        if (!p) next
+        rest = substr(name, p + 1)
+        q = index(rest, "/")
+        leaf = q ? substr(rest, 1, q - 1) : rest
+        k = top "/" leaf
+        if (!(k in seen2)) {
+            if (++kids[top] > 2000) { over[top] = 1; next }
+            seen2[k] = 1; order2[++n2] = k; par[k] = top; nm[k] = leaf
+        }
+        sz2[k] += $3 * 512
+        if ($2 != "d") cnt2[k]++
+        if ($4 > newest2[k]) newest2[k] = $4
+        if ($2 == "f" && isx($5)) execs2[k]++
+        if ($7 == 2) { kind2[k] = $2; own2[k] = $4; md2[k] = $5; ow2[k] = $6 }
     }
     END {
-        cmd = "sort -t \"\t\" -k3,3nr"
         printf "D\t%s\t%s\t%d\t%d\t%s\n", esc(dir), esc(area), tot, total, int(gnewest)
         fflush()
+        # A folder with 100 000 entries must not cost the widget 100 000 rows
+        # in memory: the largest 3000 children are listed, the rest is summed
+        # up in one R record. The size of the 3000th largest is the cut.
+        maxc = 3000
+        cut = -1
+        if (n > maxc) {
+            for (i = 1; i <= n; i++) print sz[order[i]] > sizes
+            close(sizes)
+            c = "sort -nr \"" sizes "\" | sed -n " maxc "p"
+            c | getline cut
+            close(c)
+            cut += 0
+        }
+        cmd = "sort -t \"\t\" -k3,3nr"
         for (i = 1; i <= n; i++) {
             t = order[i]
-            f = ""
-            if (kind[t] == "f" && isx(md[t])) f = f "x"
-            if (issuid(md[t])) f = f "s"
-            if (isww(md[t]) && kind[t] != "l") f = f "w"
-            if (t ~ /^\./) f = f "h"
-            if (t ~ /[\001-\037\177]/ || t ~ /^ / || t ~ / $/) f = f "c"
-            if (kind[t] == "d" && execs[t] > 0) f = f "e"
+            if (cut >= 0 && (sz[t] < cut || shown >= maxc)) { hide[t] = 1; leftn++; leftb += sz[t]; continue }
+            shown++
             lk = (t in link) ? link[t] : ""
-            printf "C\t%s\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\n", kind[t], sz[t], cnt[t], newest[t], own[t], md[t], ow[t], f, esc(lk), esc(t) | cmd
+            printf "C\t%s\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\n", kind[t], sz[t], cnt[t], newest[t], own[t], md[t], uname(ow[t]), flags(kind[t], md[t], t, execs[t]), esc(lk), esc(t) | cmd
         }
         close(cmd)
+        if (leftn) printf "R\t%d\t%d\n", leftn, leftb
+        # The level below costs at most 30 000 rows in total. A child is listed
+        # completely or not at all (X), so a short list never passes as whole.
+        budget = 30000
+        for (i = 1; i <= n; i++) {
+            t = order[i]
+            if ((t in hide) || (t in over) || !(t in kids)) continue
+            if (budget < kids[t]) { over[t] = 1; continue }
+            budget -= kids[t]
+        }
+        cmd = "sort -t \"\t\" -k4,4nr"
+        for (i = 1; i <= n2; i++) {
+            k = order2[i]
+            if ((par[k] in over) || (par[k] in hide)) continue
+            lk = (k in link) ? link[k] : ""
+            printf "G\t%s\t%s\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\n", esc(par[k]), kind2[k], sz2[k], cnt2[k], newest2[k], own2[k], md2[k], uname(ow2[k]), flags(kind2[k], md2[k], nm[k], execs2[k]), esc(lk), esc(nm[k]) | cmd
+        }
+        close(cmd)
+        for (t in over) if (!(t in hide)) printf "X\t%s\n", esc(t)
     }'
+    if grep -q 'Permission denied' "$LIST_ERRS" 2>/dev/null; then
+        printf 'P\t%s\n' "$(grep -c 'Permission denied' "$LIST_ERRS")"
+    fi
 }
 
 # ── scan ─────────────────────────────────────────────────────────────────────
@@ -416,13 +602,29 @@ check_system() { # persist root
     done
 }
 
+# `find -nouser -o -nogroup` asks the user database about every file, which
+# takes minutes on a large home. Comparing numbers against the known users and
+# groups, fetched once, finds the same files in a fraction of a second.
+orphan_test() { # -> ORPH: find expression for files with an unknown owner or group
+    local id
+    local -a us=() gs=()
+    while IFS=: read -r _ _ id _; do [[ "$id" =~ ^[0-9]+$ ]] && us+=(! -uid "$id"); done < <(getent passwd 2>/dev/null)
+    while IFS=: read -r _ _ id _; do [[ "$id" =~ ^[0-9]+$ ]] && gs+=(! -gid "$id"); done < <(getent group 2>/dev/null)
+    if [ ${#us[@]} -eq 0 ] || [ ${#gs[@]} -eq 0 ]; then
+        ORPH=(-false)
+        return
+    fi
+    ORPH=(\( "${us[@]}" \) -o \( "${gs[@]}" \))
+}
+
 do_scan() {
     compute
+    orphan_test
     recent=${1:-14}
     [[ "$recent" =~ ^[0-9]+$ ]] || recent=14
     local a h r tag sev path
     {
-        emit meta scope "" "$(all_areas | paste -sd, -)"
+        emit meta scope "" "$(scan_areas | paste -sd, -)"
         if command -v clamscan >/dev/null 2>&1; then
             emit meta clamav "$(command -v clamscan)" available
         else
@@ -432,6 +634,7 @@ do_scan() {
         for r in "${PERSIST[@]+"${PERSIST[@]}"}"; do check_system "$r"; done
         while IFS= read -r a; do
             [ -n "$a" ] || continue
+            bound_prunes "$a"
             while IFS=$'\002' read -r -d '' tag path; do
                 case "$tag" in
                 S) emit_capped 80 high "Setuid or setgid file" "$path" "Runs with another user's rights" ;;
@@ -440,14 +643,14 @@ do_scan() {
                 O) emit_capped 40 low "Orphaned owner" "$path" "Owner or group no longer exists" ;;
                 X) emit_capped 80 medium "Program in a data folder" "$path" "$(magic "$path") in a place for documents, downloads or temp files" ;;
                 esac
-            done < <(lowprio find "$a" -xdev \( "${PRUNE[@]}" \) -prune -o \( \
+            done < <(lowprio find "$a" -xdev \( "${PRUNE[@]}" "${BP[@]+"${BP[@]}"}" \) -prune -o \( \
                 \( -type f -perm /6000 -printf 'S\002%p\0' \) , \
                 \( \( -type f -o -type d \) -perm -0002 ! -perm -1000 ! -path '*/.cache/*' -printf 'W\002%p\0' \) , \
                 \( \( -name '*[[:cntrl:]]*' -o -name ' *' -o -name '* ' -o -regex '.*/\.\.[^/]+' \) -printf 'N\002%p\0' \) , \
-                \( \( -nouser -o -nogroup \) -printf 'O\002%p\0' \) , \
+                \( \( "${ORPH[@]}" \) -printf 'O\002%p\0' \) , \
                 \( -type f -perm /111 \( -path '*/Downloads/*' -o -path '*/Desktop/*' -o -path '*/Documents/*' -o -path '*/Pictures/*' -o -path '*/Videos/*' -o -path '*/Music/*' -o -path '*/Public/*' -o -path '*/tmp/*' \) -printf 'X\002%p\0' \) \
                 \) 2>/dev/null)
-        done < <(all_areas)
+        done < <(scan_areas)
     } | tr '\n\0' '\001\n' | awk -F'\002' "$AWK_LIB"'
         { printf "%s\t%s\t%s\t%s\n", $1, esc($2), esc($3), esc($4) }'
 }
@@ -455,50 +658,55 @@ do_scan() {
 # ── cleanup ──────────────────────────────────────────────────────────────────
 do_cleanup() {
     compute
-    local days=${1:-180} a h now cutoff label path size newest n=0
+    local days=${1:-180} a h now cutoff label path n=0
     [[ "$days" =~ ^[0-9]+$ ]] || days=180
     now=$(date +%s)
     cutoff=$((now - days * 86400))
     # Records are lines of \002-separated fields; a newline inside a name is
-    # carried as \001 and written out escaped by the final awk.
-    measure() { # label path
-        local clean=${2//$'\n'/$'\001'}
-        read -r size newest < <(lowprio find "$2" -xdev -printf '%b %T@\n' 2>/dev/null | awk '{ s += $1 * 512; if ($2 > m) m = $2 } END { printf "%d %d\n", s, m }')
-        printf 'T\002%s\002%s\002%s\002%s\n' "$1" "${size:-0}" "${newest:-0}" "$clean"
-    }
+    # carried as \001 and written out escaped by the final awk. Candidates are
+    # collected first and measured four at a time.
     {
         printf 'M\002%s\002%s\n' "$cutoff" "$days"
-        # Regenerable folders and leftovers, wherever they are.
-        while IFS= read -r a; do
-            [ -n "$a" ] || continue
-            while IFS=$'\002' read -r -d '' label path; do
-                [ $n -ge 400 ] && break
-                n=$((n + 1))
-                measure "$label" "$path"
-            done < <(lowprio find "$a" -xdev \( -path '*/var/lib/docker' -o -path '*/var/lib/containers' -o -path '*/.local/share/containers' -o -path '*/.local/share/Steam' -o -path '*/.steam' -o -path '*/.wine' -o -path '*/.var/app' -o -path '*/.git' -o -path '*/var/lib/flatpak' -o -path '*/lost+found' \) -prune -o \
+        {
+            # Every application's cache and the trash, one entry each. These come
+            # first and have their own budget: they are usually the biggest wins,
+            # and a tree full of node_modules must not crowd them out.
+            while IFS= read -r h; do
+                [ -n "$h" ] || continue
+                for path in "$h"/.cache/* "$h"/.local/share/Trash; do
+                    [ -d "$path" ] || continue
+                    bound_view "$path" && continue
+                    [ $n -ge 300 ] && break
+                    n=$((n + 1))
+                    label="Application cache"
+                    [[ "$path" == */Trash ]] && label="Trash"
+                    printf '%s\0%s\0' "$label" "$path"
+                done
+            done < <(homes)
+            # Regenerable folders and leftovers, wherever they are. The caches and
+            # the trash above are skipped so nothing is counted twice.
+            n=0
+            while IFS= read -r a; do
+                [ -n "$a" ] || continue
+                bound_prunes "$a"
+                while IFS=$'\002' read -r -d '' label path; do
+                    [ $n -ge 400 ] && break
+                    n=$((n + 1))
+                    printf '%s\0%s\0' "$label" "$path"
+                done < <(lowprio find "$a" -xdev \( -path '*/var/lib/docker' -o -path '*/var/lib/containers' -o -path '*/.local/share/containers' -o -path '*/.local/share/Steam' -o -path '*/.steam' -o -path '*/.wine' -o -path '*/.var/app' -o -path '*/.git' -o -path '*/var/lib/flatpak' -o -path '*/lost+found' -o -path '*/home/*/.cache' -o -path '*/root/.cache' -o -path '*/.local/share/Trash' "${BP[@]+"${BP[@]}"}" \) -prune -o \
                 \( -type d \( -name node_modules -o -name __pycache__ -o -name .pytest_cache -o -name .mypy_cache -o -name .ruff_cache -o -name .tox -o -name .next -o -name .nuxt -o -name .parcel-cache -o -name .turbo \) -prune -printf 'Build or dependency cache\002%p\0' \) -o \
                 \( -type d \( -name GPUCache -o -name 'Code Cache' -o -name ShaderCache -o -name GrShaderCache -o -name DawnCache -o -name CachedData \) -prune -printf 'Application cache\002%p\0' \) -o \
                 \( -type f \( -name '*.tmp' -o -name '*.temp' -o -name '*~' -o -name '*.swp' -o -name '*.crdownload' -o -name '*.part' \) -printf 'Temporary file\002%p\0' \) -o \
                 \( -type f -path '*/var/lib/systemd/coredump/*' -printf 'Core dump\002%p\0' \) -o \
                 \( -type f -path '*/var/log/*' \( -name '*.gz' -o -name '*.xz' -o -name '*.zst' -o -name '*.old' -o -name '*.journal~' -o -regex '.*\.[0-9]+' \) -printf 'Rotated log\002%p\0' \) \
                 2>/dev/null)
-        done < <(all_areas)
-        # Every application's cache and the trash, one entry each.
-        while IFS= read -r h; do
-            [ -n "$h" ] || continue
-            for path in "$h"/.cache/* "$h"/.local/share/Trash; do
-                [ -d "$path" ] || continue
-                [ $n -ge 400 ] && break
-                n=$((n + 1))
-                label="Application cache"
-                [[ "$path" == */Trash ]] && label="Trash"
-                measure "$label" "$path"
-            done
-        done < <(homes)
+            done < <(scan_areas)
+        } | lowprio xargs -0 -r -n2 -P4 bash -c 'measure_path "$1" "$2"' _
         # Folders in the home directories that nothing has touched for a long time.
         while IFS= read -r h; do
             [ -n "$h" ] || continue
-            lowprio find "$h" -mindepth 1 -xdev \( "${PRUNE[@]}" -o -path '*/.cache' -o -path '*/.ssh' -o -path '*/.gnupg' -o -path '*/.pki' -o -path '*/keyrings' -o -path '*/.local/share/Trash' \) -prune -o \
+            bound_prunes "$h"
+            lowprio find "$h" -mindepth 1 -xdev \( "${PRUNE[@]}" -o -path '*/.cache' -o -path '*/.ssh' -o -path '*/.gnupg' -o -path '*/.pki' -o -path '*/keyrings' -o -path '*/.local/share/Trash' "${BP[@]+"${BP[@]}"}" \) -prune -o \
                 -printf 'F\002%y\002%b\002%T@\002%P\0' 2>/dev/null |
                 tr '\n\0' '\001\n' | awk -F'\002' -v home="${h//$'\n'/$'\001'}" -v cutoff="$cutoff" '
                 $1 == "F" {
@@ -520,17 +728,18 @@ do_cleanup() {
                         printf "S\002%s\002%d\002%d\002%d\002%s/%s\n", type[key], sz[key], cnt[key], newest[key], home, key
                     }
                 }'
-        done < <(homes)
+        # The 500 largest are plenty to choose from, and keep the list bounded.
+        done < <(homes) | sort -t $'\002' -k3,3nr | head -n 500
     } | awk -F'\002' "$AWK_LIB"'
         $1 == "M" { printf "M\t%s\t%s\n", $2, $3; next }
-        $1 == "T" { printf "T\t%s\t%s\t%d\t%s\n", esc($2), $3, $4, esc($5); next }
+        $1 == "T" { printf "T\t%s\t%s\t%d\t%s\t%s\n", esc($2), $3, $4, esc($5), $6; next }
         $1 == "S" { printf "S\t%s\t%s\t%s\t%d\t%s\n", $2, $3, $4, $5, esc($6) }'
 }
 
 # ── remove ───────────────────────────────────────────────────────────────────
 do_remove() {
     compute
-    local raw=${1:-} p par rp area rel depth s comp
+    local raw=${1:-} p par rp area rel depth s
     p=$(printf '%b' "$raw")
     [[ "$p" == /* ]] || { echo "ERROR: path must be absolute" >&2; exit 2; }
     # Resolve the folder, not the last component: removing a link must not follow it.
@@ -582,6 +791,8 @@ do_remove() {
 
 case "$mode" in
 detect) do_detect ;;
+sizes) do_sizes ;;
+cancel-list) stop_listing ;;
 list) do_list "$@" ;;
 scan) do_scan "$@" ;;
 cleanup) do_cleanup "$@" ;;

@@ -1,50 +1,59 @@
 #!/usr/bin/env bash
-# Usage: diskusage
-# Emits three lines separated by \x1e:
-#   [0] Total /nix/store size on disk (bytes)
-#   [1] Reclaimable by garbage collection (bytes); "" if not computable
-#   [2] /nix filesystem free space (bytes)
+# Four \x1e-separated fields: total NAR bytes, dead-path NAR bytes,
+# available bytes on the store filesystem, measurement time (Unix seconds).
+# NAR sizes describe logical contents, NOT physical space freed by GC:
+# hard links, compression and filesystem snapshots change the latter.
+set -euo pipefail
+export LC_ALL=C
 export PATH="$PATH:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/root/.nix-profile/bin"
-
-# Both measurements below are heavy: `du` stats every inode in the store and
-# `nix-store --gc --print-dead` walks the whole GC graph. The widget already
-# runs this on demand rather than on a timer, but when it does run it must not
-# compete with the desktop for CPU or disk — so everything here goes through
-# the lowest scheduling and I/O priority we can get.
 lowprio() {
     if command -v ionice >/dev/null 2>&1; then
-        nice -n 19 ionice -c 3 "$@"
+        nice -n 19 ionice -c 3 timeout --kill-after=5s 120s "$@"
     else
-        nice -n 19 "$@"
+        nice -n 19 timeout --kill-after=5s 120s "$@"
     fi
 }
-
-# Total store size — walks the filesystem, so keep it out of the desktop's way
-lowprio du -sb /nix/store 2>/dev/null | awk '{print $1}'
-printf '\x1e'
-
-# Reclaimable: sum the NAR sizes of every dead path, read from the Nix
-# database. `nix-collect-garbage --dry-run` cannot be used for this — current
-# Nix only prints "N store paths would be deleted", with no byte total, so the
-# old parser here came back empty (or read the path count as bytes).
-# JSON mode rather than `-s`: --print-dead also lists entries that are not
-# valid store objects (stale locks and the like), which abort `-s` mid-list
-# but come back as null in JSON. --json-format is required by Nix ≥ 2.34 and
-# unknown to older releases, hence the retry without it.
-dead_list=$(mktemp -t nixdatifier-dead.XXXXXX) && {
-    trap 'rm -f "$dead_list"' EXIT
-    lowprio nix-store --gc --print-dead 2>/dev/null > "$dead_list"
-    if [ -s "$dead_list" ]; then
-        { nix --extra-experimental-features nix-command path-info --stdin --json --json-format 1 < "$dead_list" 2>/dev/null \
-            || nix --extra-experimental-features nix-command path-info --stdin --json < "$dead_list" 2>/dev/null; } \
-          | grep -o '"narSize":[0-9]*' \
-          | awk -F: '{ s += $2 } END { if (NR) printf "%.0f", s }'
-    else
-        printf '0'
-    fi
+free_space() {
+    local available
+    available=$(timeout --kill-after=1s 5s df -B1 --output=avail /nix/store | awk 'NR == 2 {print $1}')
+    [[ "$available" =~ ^[0-9]+$ ]] || { echo 'Could not read free store space.' >&2; return 1; }
+    printf '%s' "$available"
 }
-printf '\x1e'
+# Free space changes independently of Nix; this cheap read refreshes cached UI.
+if [[ "${1:-}" == --free ]]; then
+    free_space
+    exit
+fi
+work=$(mktemp -d -t nixdatifier-disk.XXXXXXXX)
+trap 'rm -rf -- "$work"' EXIT
 
-# Free space on the filesystem holding /nix
-df -B1 --output=avail /nix 2>/dev/null | tail -n1 | tr -d ' '
-exit 0
+# Query the graph and the size metadata independently. No inode walk and no
+# process per store path. Keep output from a failed attempt out of the parser.
+lowprio nix-store --gc --print-dead >"$work/dead" 2>"$work/gc-error" &
+gc_pid=$!
+lowprio nix --extra-experimental-features nix-command path-info --all --size >"$work/paths" 2>"$work/size-error" &
+sizes_pid=$!
+status=0
+wait "$gc_pid" || status=1
+wait "$sizes_pid" || status=1
+if (( status )); then
+    cat "$work/gc-error" "$work/size-error" >&2
+    echo 'Could not measure Nix store contents and garbage collection candidates.' >&2
+    exit 1
+fi
+
+# The stable numeric output avoids serialising/parsing references, hashes and
+# signatures for every path. Store names cannot contain whitespace. Validate
+# every record instead of silently treating malformed output as zero.
+# Ignore invalid/stale lock files from --print-dead: they have no NAR size.
+read -r total reclaimable < <(awk '
+    FILENAME == ARGV[1] { if (NF) dead[$0] = 1; next }
+    NF != 2 || $1 !~ /^\/nix\/store\// || $2 !~ /^[0-9]+$/ { invalid = 1; next }
+    !seen[$1]++ { total += $2; if ($1 in dead) reclaimable += $2 }
+    END { if (invalid) exit 1; printf "%.0f %.0f\n", total, reclaimable }
+' "$work/dead" "$work/paths") || { echo 'Could not parse Nix store sizes.' >&2; exit 1; }
+free=$(free_space)
+[[ "$total" =~ ^[0-9]+$ && "$reclaimable" =~ ^[0-9]+$ && "$free" =~ ^[0-9]+$ ]] || {
+    echo 'Incomplete Nix store measurement.' >&2; exit 1;
+}
+printf '%s\x1e%s\x1e%s\x1e%s\n' "$total" "$reclaimable" "$free" "$(date +%s)"

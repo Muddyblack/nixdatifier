@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls
 import QtQuick.Layouts
 import "../shared" as UI
 
@@ -13,7 +12,7 @@ ColumnLayout {
         text: (root.expanded ? "▾ " : "▸ ") + root.title
         onClicked: root.expanded = !root.expanded
     }
-    ScrollView {
+    UI.ScrollView {
         visible: root.expanded
         Layout.fillWidth: true
         Layout.preferredHeight: Math.min(180, content.implicitHeight)

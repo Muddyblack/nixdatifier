@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls
 import "shared" as UI
-import "components"
 
 Item {
     id: timelineTab
@@ -266,7 +265,7 @@ Item {
             onHeightChanged: Qt.callLater(timelineTab.updateTravel)
             onModelChanged: Qt.callLater(timelineTab.updateTravel)
             onCountChanged: Qt.callLater(timelineTab.updateTravel)
-            ScrollBar.vertical: ScrollBar {
+            ScrollBar.vertical: UI.ScrollBar {
                 policy: ScrollBar.AsNeeded
             }
 

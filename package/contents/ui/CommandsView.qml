@@ -73,7 +73,7 @@ FocusScope {
             implicitHeight: 1
             color: UI.Theme.line
         }
-        ScrollView {
+        UI.ScrollView {
             id: scroll
             objectName: "commandsScroll"
             Layout.fillWidth: true
