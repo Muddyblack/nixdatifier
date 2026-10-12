@@ -76,6 +76,14 @@
             <!-- encrypted source file, e.g. /etc/nixos/secrets/secrets.yaml -->
             <default></default>
         </entry>
+        <entry name="impermanencePaths" type="String">
+            <!-- extra persistent roots, colon-separated, e.g. /persist:/mnt/data — empty = auto-detect -->
+            <default></default>
+        </entry>
+        <entry name="impermanenceStaleDays" type="Int">
+            <!-- folders untouched for this many days are offered for cleanup -->
+            <default>180</default>
+        </entry>
         <entry name="diffFilterEnabled" type="Bool">
             <default>true</default>
         </entry>

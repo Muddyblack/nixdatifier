@@ -116,6 +116,21 @@ FullView {
     onHashRequested: (mode, input) => engine.runHashProbe(mode, input)
     onClearHistoryRequested: () => engine.clearHistory()
     onStoreUsageRequested: path => engine.probeStoreUsage(path)
+    impermanence: engine.impermanence
+    impermanenceListing: engine.impermanenceListing
+    impermanenceScan: engine.impermanenceScan
+    impermanenceCleanup: engine.impermanenceCleanup
+    isListingImpermanence: engine.isListingImpermanence
+    isScanningImpermanence: engine.isScanningImpermanence
+    isAnalyzingImpermanence: engine.isAnalyzingImpermanence
+    isRemovingImpermanence: engine.isRemovingImpermanence
+    impermanenceStaleDays: engine.settings.impermanenceStaleDays || 180
+    onImpermanenceListRequested: (path, force) => engine.listImpermanence(path, force)
+    onImpermanenceScanRequested: force => engine.scanImpermanence(force)
+    onImpermanenceAnalyzeRequested: force => engine.analyzeImpermanence(force)
+    onImpermanenceRemoveRequested: (path, name) => engine.removeImpermanencePath(path, name)
+    onImpermanenceOpenRequested: path => engine.openImpermanencePath(path)
+    onClamScanRequested: engine.runClamScan()
     devEnvResult: engine.devEnvResult
     devEnvProjects: engine.devEnvProjects
     systemFlakePath: engine.flakePath

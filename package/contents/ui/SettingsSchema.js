@@ -200,6 +200,24 @@ var fields = [
     "type": "String"
   },
   {
+    "key": "impermanencePaths",
+    "tab": "Behavior",
+    "group": "Impermanence",
+    "label": "Extra persistent folders",
+    "help": "Colon-separated, e.g. /persist:/mnt/data. Leave empty to detect them from the mounts.",
+    "type": "String"
+  },
+  {
+    "key": "impermanenceStaleDays",
+    "tab": "Behavior",
+    "group": "Impermanence",
+    "label": "Offer cleanup for folders untouched for (days)",
+    "help": "",
+    "type": "Int",
+    "min": 14,
+    "max": 3650
+  },
+  {
     "key": "diffFilterEnabled",
     "tab": "Behavior",
     "group": "Package changes",

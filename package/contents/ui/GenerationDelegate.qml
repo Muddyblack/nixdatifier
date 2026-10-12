@@ -454,7 +454,7 @@ Item {
             Layout.fillWidth: true
             visible: !!genDelegate.configDiff.status && genDelegate.configDiff.status !== "missing"
             title: qsTr("Configuration changes")
-            TextArea {
+            TextEdit {
                 width: parent.width
                 readOnly: true
                 selectByMouse: true

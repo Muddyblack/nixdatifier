@@ -66,7 +66,7 @@ Item {
     property bool initialized: false
     property int activeJobs: 0
     signal configureRequested
-    readonly property string busyLabel: isBusy ? (currentActionType || qsTr("Running command…")) : isCheckingFlake ? qsTr("Checking flake inputs…") : isDryRunning ? qsTr("Previewing package changes…") : isLoadingDetails || isLoadingPairDiff ? qsTr("Loading package changes…") : isProbingHash ? qsTr("Calculating hash…") : isProbingStoreUsage ? qsTr("Inspecting store path…") : isProbingDevEnv ? qsTr("Inspecting development environment…") : isLoadingSecrets ? qsTr("Inspecting secrets…") : _diskProbeRunning ? qsTr("Measuring Nix store…") : countingChanges ? qsTr("Counting package changes…") : activeJobs > 0 ? qsTr("Refreshing system information…") : ""
+    readonly property string busyLabel: isBusy ? (currentActionType || qsTr("Running command…")) : isCheckingFlake ? qsTr("Checking flake inputs…") : isDryRunning ? qsTr("Previewing package changes…") : isLoadingDetails || isLoadingPairDiff ? qsTr("Loading package changes…") : isProbingHash ? qsTr("Calculating hash…") : isProbingStoreUsage ? qsTr("Inspecting store path…") : isProbingDevEnv ? qsTr("Inspecting development environment…") : isLoadingSecrets ? qsTr("Inspecting secrets…") : isImpermanenceBusy ? qsTr("Inspecting persistent folders…") : _diskProbeRunning ? qsTr("Measuring Nix store…") : countingChanges ? qsTr("Counting package changes…") : activeJobs > 0 ? qsTr("Refreshing system information…") : ""
 
     // ── Script directory ──────────────────────────────────────────────────────
     readonly property string scriptDir: Qt.resolvedUrl("../tools/sh/").toString().replace("file://", "")
@@ -141,7 +141,7 @@ Item {
     property bool isLoadingConfigDiff: false
 
     // ── Active spinner state (panel spinner spins if any action or probe is running) ──
-    readonly property bool isSpinning: root.activeJobs > 0 || root._diskProbeRunning || root.isBusy || root.isLoadingGens || root.isLoadingDetails || root.isLoadingPairDiff || root.isCheckingFlake || root.isDryRunning || root.isProbingHash || root.isProbingStoreUsage || root.isProbingDevEnv || root.isLoadingSecrets || root.isLoadingConfigDiff
+    readonly property bool isSpinning: root.activeJobs > 0 || root._diskProbeRunning || root.isBusy || root.isLoadingGens || root.isLoadingDetails || root.isLoadingPairDiff || root.isCheckingFlake || root.isDryRunning || root.isProbingHash || root.isProbingStoreUsage || root.isProbingDevEnv || root.isLoadingSecrets || root.isLoadingConfigDiff || root.isImpermanenceBusy
 
     property var detailsCache: ({})
     property string diffMode: "prev"
@@ -228,6 +228,33 @@ Item {
         })
     property var deployedSecrets: emptySecrets
     property var sourceSecrets: emptySecrets
+
+    // ── Impermanence state ───────────────────────────────────────────────────
+    // Folders that survive a reboot on a system whose root is wiped on boot.
+    // Paths are kept in the helper's escaped form (\xHH for control characters)
+    // so they can be handed back to it unchanged; *Text fields are for display.
+    readonly property var emptyImpermanence: ({
+            detected: false,
+            volatile: false,
+            volatileWhy: "",
+            rootFs: "",
+            areas: [],
+            entries: []
+        })
+    property var impermanence: emptyImpermanence
+    // { dir, area, total, files, newest, items: [...] } | { isError, value } | null
+    property var impermanenceListing: null
+    // { clamav, scope, findings: [...] } | { isError, value } | null
+    property var impermanenceScan: null
+    // { cutoff, days, temp: [...], stale: [...] } | { isError, value } | null
+    property var impermanenceCleanup: null
+    property bool isProbingImpermanence: false
+    property bool isListingImpermanence: false
+    property bool isScanningImpermanence: false
+    property bool isAnalyzingImpermanence: false
+    property bool isRemovingImpermanence: false
+    readonly property bool isImpermanenceBusy: isProbingImpermanence || isListingImpermanence || isScanningImpermanence || isAnalyzingImpermanence || isRemovingImpermanence
+    property int _impListSeq: 0
 
     // ── Hash tool state ───────────────────────────────────────────────────────
     property var hashResult: null   // { value: string, isError: bool } | null
@@ -556,6 +583,301 @@ Item {
                 closureBytes: parseInt((p[2] || "").trim(), 10) || 0
             };
         });
+    }
+
+    // ── Impermanence tool ─────────────────────────────────────────────────────
+    function unescapePath(text) {
+        return String(text || "").replace(/\\(\\|x[0-9a-fA-F]{2})/g, (m, g) => g === "\\" ? "\\" : String.fromCharCode(parseInt(g.slice(1), 16)));
+    }
+
+    function impermanenceCommand(mode, arg) {
+        return shq(root.scriptDir + "impermanence") + " " + mode + " " + shq(root.settings.impermanencePaths || "") + (arg === undefined ? "" : " " + shq(arg));
+    }
+
+    // Cheap: reads the mount table. Decides whether the tool is offered at all.
+    function probeImpermanence() {
+        if (root.isProbingImpermanence)
+            return;
+        root.isProbingImpermanence = true;
+        sh(impermanenceCommand("detect"), function (cmd, out, err, code) {
+            root.isProbingImpermanence = false;
+            root.impermanence = code === 0 ? root.parseImpermanence(out || "") : root.emptyImpermanence;
+        });
+    }
+
+    function parseImpermanence(raw) {
+        const result = {
+            detected: false,
+            volatile: false,
+            volatileWhy: "",
+            rootFs: "",
+            areas: [],
+            entries: []
+        };
+        for (const line of raw.split("\n")) {
+            const f = line.split("\t");
+            if (f[0] === "volatile") {
+                result.volatile = f[1] === "yes";
+                result.volatileWhy = f[2] || "";
+            } else if (f[0] === "rootfs") {
+                result.rootFs = f[1] || "";
+            } else if (f[0] === "persist") {
+                result.areas.push({
+                    kind: "persist",
+                    path: f[1],
+                    via: f[2] || "",
+                    binds: parseInt(f[3], 10) || 0,
+                    fsType: f[4] || "",
+                    total: Number(f[5]) || 0,
+                    used: Number(f[6]) || 0,
+                    avail: Number(f[7]) || 0
+                });
+            } else if (f[0] === "mount") {
+                result.areas.push({
+                    kind: "mount",
+                    path: f[1],
+                    via: "",
+                    binds: 0,
+                    fsType: f[2] || "",
+                    total: Number(f[3]) || 0,
+                    used: Number(f[4]) || 0,
+                    avail: Number(f[5]) || 0
+                });
+            } else if (f[0] === "entry") {
+                result.entries.push({
+                    kind: f[1],
+                    target: f[2],
+                    source: f[3] || ""
+                });
+            }
+        }
+        result.detected = result.areas.some(a => a.kind === "persist");
+        return result;
+    }
+
+    // Lists one folder level. An empty path opens the first persistent root.
+    function listImpermanence(path, force) {
+        let dir = path;
+        if (!dir) {
+            const first = root.impermanence.areas.find(a => a.kind === "persist");
+            if (!first)
+                return;
+            dir = first.path;
+        }
+        const seq = ++root._impListSeq;
+        root.isListingImpermanence = true;
+        sh(shq(root.scriptDir + "run") + " cached impermanence " + (force ? 0 : 120) + " -- " + impermanenceCommand("list", dir), function (cmd, out, err, code) {
+            if (seq !== root._impListSeq)
+                return;
+            root.isListingImpermanence = false;
+            if (code !== 0) {
+                root.impermanenceListing = {
+                    isError: true,
+                    value: (err || out || qsTr("Could not read this folder")).trim()
+                };
+                return;
+            }
+            root.impermanenceListing = root.parseImpermanenceListing(out || "");
+        });
+    }
+
+    function parseImpermanenceListing(raw) {
+        const listing = {
+            isError: false,
+            dir: "",
+            area: "",
+            total: 0,
+            files: 0,
+            newest: 0,
+            items: []
+        };
+        for (const line of raw.split("\n")) {
+            const f = line.split("\t");
+            if (f[0] === "D") {
+                listing.dir = f[1];
+                listing.area = f[2];
+                listing.total = Number(f[3]) || 0;
+                listing.files = parseInt(f[4], 10) || 0;
+                listing.newest = parseInt(f[5], 10) || 0;
+            } else if (f[0] === "C" && f.length >= 11) {
+                listing.items.push({
+                    kind: f[1],
+                    size: Number(f[2]) || 0,
+                    count: parseInt(f[3], 10) || 0,
+                    newest: parseInt(f[4], 10) || 0,
+                    mtime: parseInt(f[5], 10) || 0,
+                    mode: f[6],
+                    owner: f[7],
+                    flags: f[8],
+                    link: root.unescapePath(f[9]),
+                    name: root.unescapePath(f[10]),
+                    label: f[10],
+                    path: listing.dir + "/" + f[10]
+                });
+            }
+        }
+        return listing;
+    }
+
+    function scanImpermanence(force) {
+        if (root.isScanningImpermanence)
+            return;
+        root.isScanningImpermanence = true;
+        sh(shq(root.scriptDir + "run") + " cached impermanence " + (force ? 0 : 300) + " -- " + impermanenceCommand("scan", "14"), function (cmd, out, err, code) {
+            root.isScanningImpermanence = false;
+            if (code !== 0) {
+                root.impermanenceScan = {
+                    isError: true,
+                    value: (err || out || qsTr("Could not scan the persistent folders")).trim()
+                };
+                return;
+            }
+            root.impermanenceScan = root.parseImpermanenceScan(out || "");
+        });
+    }
+
+    function parseImpermanenceScan(raw) {
+        const scan = {
+            isError: false,
+            clamav: false,
+            scope: "",
+            findings: []
+        };
+        for (const line of raw.split("\n")) {
+            const f = line.split("\t");
+            if (f.length < 4)
+                continue;
+            if (f[0] === "meta") {
+                if (f[1] === "clamav")
+                    scan.clamav = f[3] === "available";
+                else if (f[1] === "scope")
+                    scan.scope = f[3];
+                continue;
+            }
+            scan.findings.push({
+                severity: f[0],
+                category: f[1],
+                path: f[2],
+                pathText: root.unescapePath(f[2]),
+                detail: root.unescapePath(f[3])
+            });
+        }
+        return scan;
+    }
+
+    function analyzeImpermanence(force) {
+        if (root.isAnalyzingImpermanence)
+            return;
+        root.isAnalyzingImpermanence = true;
+        const days = Math.max(14, root.settings.impermanenceStaleDays || 180);
+        sh(shq(root.scriptDir + "run") + " cached impermanence " + (force ? 0 : 300) + " -- " + impermanenceCommand("cleanup", String(days)), function (cmd, out, err, code) {
+            root.isAnalyzingImpermanence = false;
+            if (code !== 0) {
+                root.impermanenceCleanup = {
+                    isError: true,
+                    value: (err || out || qsTr("Could not analyze the persistent folders")).trim()
+                };
+                return;
+            }
+            root.impermanenceCleanup = root.parseImpermanenceCleanup(out || "", days);
+        });
+    }
+
+    function parseImpermanenceCleanup(raw, days) {
+        const result = {
+            isError: false,
+            cutoff: 0,
+            days: days,
+            temp: [],
+            stale: []
+        };
+        for (const line of raw.split("\n")) {
+            const f = line.split("\t");
+            if (f[0] === "M") {
+                result.cutoff = parseInt(f[1], 10) || 0;
+            } else if (f[0] === "T" && f.length >= 5) {
+                result.temp.push({
+                    label: f[1],
+                    size: Number(f[2]) || 0,
+                    newest: parseInt(f[3], 10) || 0,
+                    path: f[4],
+                    pathText: root.unescapePath(f[4])
+                });
+            } else if (f[0] === "S" && f.length >= 6) {
+                result.stale.push({
+                    kind: f[1],
+                    size: Number(f[2]) || 0,
+                    count: parseInt(f[3], 10) || 0,
+                    newest: parseInt(f[4], 10) || 0,
+                    path: f[5],
+                    pathText: root.unescapePath(f[5])
+                });
+            }
+        }
+        result.temp.sort((a, b) => b.size - a.size);
+        result.stale.sort((a, b) => b.size - a.size);
+        return result;
+    }
+
+    // Deletes one path inside a persistent folder. The helper refuses anything
+    // that would break the system; root-owned content is retried through pkexec.
+    function removeImpermanencePath(path, name) {
+        if (root.isRemovingImpermanence || !path)
+            return;
+        root.isRemovingImpermanence = true;
+        const label = qsTr("Delete %1").arg(name || root.unescapePath(path));
+        const base = impermanenceCommand("remove", path);
+        const finish = function (code, text) {
+            root.isRemovingImpermanence = false;
+            root.recordHistoryEntry("impermanence-remove", label, -1, code, text || root.unescapePath(path));
+            if (code !== 0) {
+                root.pushToast(code === 77 ? qsTr("Some of it belongs to another user. Enable pkexec in Settings to delete it.") : (text || qsTr("Could not delete %1").arg(name)).replace(/^ERROR:\s*/, ""), true);
+                return;
+            }
+            root.pushToast(qsTr("Deleted %1").arg(name || root.unescapePath(path)), false);
+            // The listing, the scan and the analysis all describe what was just deleted.
+            const dir = root.impermanenceListing && !root.impermanenceListing.isError ? root.impermanenceListing.dir : "";
+            if (dir)
+                root.listImpermanence(dir, true);
+            if (root.impermanenceScan)
+                root.scanImpermanence(true);
+            if (root.impermanenceCleanup)
+                root.analyzeImpermanence(true);
+        };
+        sh(base, function (c, out, err, code) {
+            if (code === 77 && root.settings.usePkexec) {
+                sh(root.privileged(base), function (c2, out2, err2, code2) {
+                    finish(code2, (err2 || out2 || "").trim());
+                });
+                return;
+            }
+            finish(code, (err || out || "").trim());
+        });
+    }
+
+    function openImpermanencePath(path) {
+        sh("xdg-open " + shq(root.unescapePath(path)), null);
+    }
+
+    // Signature-based scanning needs ClamAV; it runs in a terminal so the
+    // progress and verdicts are visible.
+    function runClamScan() {
+        if (root.isBusy)
+            return;
+        const roots = root.impermanence.areas.map(a => shq(a.path)).join(" ");
+        if (!roots)
+            return;
+        root.isBusy = true;
+        root.currentActionType = qsTr("Scanning with ClamAV…");
+        const cmd = "clamscan --recursive --infected --exclude-dir='/(var/lib/docker|var/lib/containers)' " + roots;
+        sh(shq(root.scriptDir + "terminal") + " " + shq(root.terminalApp) + " " + shq("") + " " + shq(cmd), function (c, out, err, code) {
+            root.isBusy = false;
+            // clamscan exits 1 when it found something, which is a result, not a failure.
+            const message = code === 0 ? qsTr("ClamAV found nothing in the persistent folders.") : code === 1 ? qsTr("ClamAV reported infected files. Review the terminal output.") : qsTr("ClamAV exited with status %1. %2").arg(code).arg((err || "").trim());
+            root.recordHistoryEntry("clamscan", qsTr("ClamAV scan"), -1, code === 1 ? 0 : code, qsTr("(output not captured — command ran in a terminal window)"));
+            root.pushToast(message, code > 1);
+            root.notify("Nixdatifier", message, code > 0);
+        }, true);
     }
 
     // ── Development environments (direnv / flakes), independent of NixOS ──────
@@ -1815,6 +2137,7 @@ Item {
                 root.pushToast(qsTr("Could not detect the system. System actions are unavailable."), true);
             }
         });
+        root.probeImpermanence();
         loadHistory();
         // Deliberately no probeDiskUsage() here — it is deferred to the first
         // time the popup is opened, so a widget that is never clicked never
@@ -1890,6 +2213,10 @@ Item {
         function onSecretsSourcePathChanged() {
             if (root.autoStart)
                 root.probeSecrets();
+        }
+        function onImpermanencePathsChanged() {
+            if (root.autoStart)
+                root.probeImpermanence();
         }
     }
     // Full network probe on the configured interval.

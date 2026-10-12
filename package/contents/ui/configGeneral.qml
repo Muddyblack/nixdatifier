@@ -30,6 +30,8 @@ Kirigami.Page {
     property alias cfg_showFlakeSection: state.showFlakeSection
     property alias cfg_secretsPath: state.secretsPath
     property alias cfg_secretsSourcePath: state.secretsSourcePath
+    property alias cfg_impermanencePaths: state.impermanencePaths
+    property alias cfg_impermanenceStaleDays: state.impermanenceStaleDays
     property alias cfg_diffFilterEnabled: state.diffFilterEnabled
     property alias cfg_timelineColor: state.timelineColor
     property alias cfg_accentColor: state.accentColor
@@ -73,6 +75,8 @@ Kirigami.Page {
     property alias cfg_showFlakeSectionDefault: defaults.showFlakeSection
     property alias cfg_secretsPathDefault: defaults.secretsPath
     property alias cfg_secretsSourcePathDefault: defaults.secretsSourcePath
+    property alias cfg_impermanencePathsDefault: defaults.impermanencePaths
+    property alias cfg_impermanenceStaleDaysDefault: defaults.impermanenceStaleDays
     property alias cfg_diffFilterEnabledDefault: defaults.diffFilterEnabled
     property alias cfg_timelineColorDefault: defaults.timelineColor
     property alias cfg_accentColorDefault: defaults.accentColor
@@ -96,6 +100,6 @@ Kirigami.Page {
     SettingsEditor {
         anchors.fill: parent
         settings: state
-        currentVersion: Plasmoid.metaData.version
+        currentVersion: (typeof Plasmoid !== "undefined" && Plasmoid.metaData) ? Plasmoid.metaData.version : ""
     }
 }

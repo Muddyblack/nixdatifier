@@ -65,7 +65,7 @@ Pane {
     required property bool showCommandButtons
     required property var customCommands
     property string gcCustomCommand: ""
-    required property string activeViewMode   // "timeline" | "updates" | "diff" | "tools" | "secrets" | "hash" | "history" | "storeusage"
+    required property string activeViewMode   // "timeline" | "updates" | "diff" | "tools" | "secrets" | "hash" | "history" | "storeusage" | "impermanence"
     required property var deployedSecrets  // { path, exists, lastModified, age }
     required property var sourceSecrets    // { path, exists, lastModified, kind }
     required property string hostname
@@ -129,6 +129,24 @@ Pane {
     property var devSpace: []
     property bool isMeasuringSpace: false
 
+    // ── Persistent folders (impermanence) tab state ─────────────────────────
+    property var impermanence: ({
+            detected: false,
+            volatile: false,
+            volatileWhy: "",
+            rootFs: "",
+            areas: [],
+            entries: []
+        })
+    property var impermanenceListing: null
+    property var impermanenceScan: null
+    property var impermanenceCleanup: null
+    property bool isListingImpermanence: false
+    property bool isScanningImpermanence: false
+    property bool isAnalyzingImpermanence: false
+    property bool isRemovingImpermanence: false
+    property int impermanenceStaleDays: 180
+
     // ── System health tool state ─────────────────────────────────────────────
     property var healthResult: null
     property bool isProbingHealth: false
@@ -146,6 +164,12 @@ Pane {
     signal hashRequested(string mode, string input)
     signal clearHistoryRequested
     signal storeUsageRequested(string path)
+    signal impermanenceListRequested(string path, bool force)
+    signal impermanenceScanRequested(bool force)
+    signal impermanenceAnalyzeRequested(bool force)
+    signal impermanenceRemoveRequested(string path, string name)
+    signal impermanenceOpenRequested(string path)
+    signal clamScanRequested
     signal devEnvRequested(string path)
     signal devEnvDiscoverRequested
     signal devEnvActionRequested(string kind, string dir)
@@ -563,6 +587,12 @@ Pane {
                                     nixosOnly: true
                                 },
                                 {
+                                    key: "impermanence",
+                                    label: qsTr("Persistent folders"),
+                                    glyph: "ic_disk",
+                                    nixosOnly: false
+                                },
+                                {
                                     key: "tools",
                                     label: qsTr("Tools"),
                                     glyph: "ic_grid",
@@ -580,7 +610,7 @@ Pane {
                                 scaleFactor: fullView.fs
                                 showIcon: fullView.width >= 440
                                 onClicked: fullView.viewModeChanged(modelData.key)
-                                visible: !modelData.nixosOnly || fullView.isNixOS
+                                visible: (!modelData.nixosOnly || fullView.isNixOS) && (modelData.key !== "impermanence" || fullView.impermanence.detected)
                                 width: visible ? implicitWidth : 0
                             }
                         }
@@ -694,6 +724,31 @@ Pane {
                 onCompareRequested: (a, b) => fullView.compareRequested(a, b)
                 onCopyToClipboard: t => fullView.copyToClipboard(t)
                 onDiffViewModePicked: mode => fullView.diffViewMode = mode
+            }
+
+            ImpermanenceTab {
+                anchors.fill: parent
+                activeViewMode: fullView.activeViewMode
+                accentColor: fullView.accentColor
+                textColor: fullView.textColor
+                fs: fullView.fs
+                impermanence: fullView.impermanence
+                listing: fullView.impermanenceListing
+                scan: fullView.impermanenceScan
+                cleanup: fullView.impermanenceCleanup
+                isListing: fullView.isListingImpermanence
+                isScanning: fullView.isScanningImpermanence
+                isAnalyzing: fullView.isAnalyzingImpermanence
+                isRemoving: fullView.isRemovingImpermanence
+                staleDays: fullView.impermanenceStaleDays
+
+                onListRequested: (path, force) => fullView.impermanenceListRequested(path, force)
+                onScanRequested: force => fullView.impermanenceScanRequested(force)
+                onAnalyzeRequested: force => fullView.impermanenceAnalyzeRequested(force)
+                onRemoveRequested: (path, name) => fullView.impermanenceRemoveRequested(path, name)
+                onOpenRequested: path => fullView.impermanenceOpenRequested(path)
+                onClamScanRequested: fullView.clamScanRequested()
+                onCopyToClipboard: t => fullView.copyToClipboard(t)
             }
 
             ScrollView {

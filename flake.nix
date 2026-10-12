@@ -50,6 +50,7 @@
               set -euo pipefail
               export PATH=${runtimePath}:\$PATH
               export QT_QUICK_CONTROLS_STYLE=Fusion
+              export QT_LOGGING_RULES="default.warning=false;\''${QT_LOGGING_RULES:-}"
               runtime_dir="\''${XDG_RUNTIME_DIR:-/tmp}/nixdatifier-\$USER"
               mkdir -p "\$runtime_dir"
               chmod 700 "\$runtime_dir"
