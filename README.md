@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <img src="./readme/panel.svg" width="280" alt="Nixdatifier desktop panel pill">
+  <img src="./docs/readme/panel.svg" width="280" alt="Nixdatifier desktop panel pill">
 </p>
 
 <p align="center">
@@ -42,17 +42,17 @@
 
 | Generations timeline | Flake updates |
 | --- | --- |
-| <img src="./readme/demo_timeline.svg" alt="Generations Timeline Tab" width="440"> | <img src="./readme/demo_updates.svg" alt="Flake Updates Tab" width="440"> |
+| <img src="./docs/readme/demo_timeline.svg" alt="Generations Timeline Tab" width="440"> | <img src="./docs/readme/demo_updates.svg" alt="Flake Updates Tab" width="440"> |
 | Booted and next-boot generations on one rail, with per-generation package counts and inline actions. | Pending upstream inputs, revision changes, and package previews before you update. |
 
 | Compare generations | Tools & Nix store |
 | --- | --- |
-| <img src="./readme/demo_diff.svg" alt="Compare Generations Tab" width="440"> | <img src="./readme/demo_tools.svg" alt="Tools Tab" width="440"> |
+| <img src="./docs/readme/demo_diff.svg" alt="Compare Generations Tab" width="440"> | <img src="./docs/readme/demo_tools.svg" alt="Tools Tab" width="440"> |
 | Package additions, removals, and upgrades between any two generations. | Store size, reclaimable space, cleanup, and the built-in tools. |
 
 | Secrets inspector | Custom commands |
 | --- | --- |
-| <img src="./readme/demo_secrets.svg" alt="Secrets Tab" width="440"> | <img src="./readme/demo_commands.svg" alt="Commands Panel" width="440"> |
+| <img src="./docs/readme/demo_secrets.svg" alt="Secrets Tab" width="440"> | <img src="./docs/readme/demo_commands.svg" alt="Commands Panel" width="440"> |
 | Deployed and encrypted source secrets for sops-nix and agenix. | Your own terminal commands, run from the flake directory. |
 
 ---
