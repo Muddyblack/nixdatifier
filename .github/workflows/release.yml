@@ -16,6 +16,19 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Tag matches package/metadata.json
+        run: |
+          declared="$(jq -r '.KPlugin.Version' package/metadata.json)"
+          if [ "v${declared}" != "${GITHUB_REF_NAME}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match metadata.json version ${declared}" >&2
+            exit 1
+          fi
+
+      - uses: cachix/install-nix-action@v31
+
+      - name: Lint and test
+        run: nix develop --command bash -c 'bash scripts/lint.sh && bash tests/run.sh'
+
       - name: Build .plasmoid
         run: make pack
 

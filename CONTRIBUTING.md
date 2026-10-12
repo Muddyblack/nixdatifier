@@ -19,6 +19,7 @@ Without Nix you need:
 | `qt6.qtdeclarative` | `qmllint`, `qmlformat`, `qmltestrunner` |
 | `kdePackages.plasma-sdk` / `kpackage` | `plasmoidviewer`, `kpackagetool6` |
 | `pre-commit` | QML lint and format hooks |
+| `ruff`, `shellcheck` | Python and shell-helper lint |
 | `zip` | `.plasmoid` archive |
 
 ## Try your changes
@@ -28,7 +29,13 @@ make view          # preview the Plasma widget
 qs -p .            # Quickshell panel
 nix run .#         # standalone app
 make test          # QML and helper tests
+make lint          # ruff, shellcheck, qmllint, qmlformat, unused QML code
+make fmt           # format QML and Python in place
 ```
+
+`make lint` and `make test` are what CI runs, so a green local run means a green pull
+request. The dev shell provides the Qt and KDE QML modules they need. `make lint` also
+fails on QML properties, functions, signals, ids and local variables that nothing uses.
 
 `make test` runs in isolated temporary directories. It never switches generations,
 updates a flake, or collects garbage.
@@ -41,7 +48,7 @@ updates a flake, or collects garbage.
   `run cached`, system changes through `run mutate`. See
   [docs/architecture.md](docs/architecture.md).
 - Do not add background work that runs while the popup is closed.
-- Run `pre-commit run --all-files` before committing. Use
+- Run `make lint` and `make test` before committing. Use
   [conventional commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `chore:`).
 - New settings need an entry in [docs/configuration.md](docs/configuration.md).
 

@@ -1,0 +1,12 @@
+# Python here is the helper-script test suite and the repo's own lint scripts.
+target-version = "py311"
+line-length = 120
+
+[lint]
+# F: unused imports and variables, E/W: pycodestyle, B: likely bugs, UP: outdated syntax,
+# SIM/C4/PIE/PERF/RET: needless code, PLW: subprocess and loop-variable mistakes, RUF: misc.
+select = ["E", "W", "F", "B", "UP", "SIM", "C4", "PIE", "PERF", "RET", "PLW", "RUF"]
+
+[lint.per-file-ignores]
+# Shell fixtures embedded in strings keep their one-line form.
+"tests/test_helpers.py" = ["E501"]
