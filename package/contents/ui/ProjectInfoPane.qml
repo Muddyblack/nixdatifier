@@ -13,7 +13,7 @@ Column {
     property bool canRefresh: false
     property bool showBranding: true
     property string networkMessage: ""
-    readonly property string currentVersion: Project.currentVersion
+    property string currentVersion: ""
     property string latestVersion: ""
     property string releaseCheckState: "Not checked"
     readonly property string versionStatus: latestVersion ? Project.releaseStatus(currentVersion, latestVersion) : releaseCheckState
@@ -190,7 +190,7 @@ Column {
             spacing: 6
 
             Text {
-                text: "Installed version · " + info.currentVersion
+                text: "Installed version · " + (info.currentVersion || "—")
                 color: "#f8fafc"
                 font.pixelSize: 11
                 font.weight: Font.DemiBold

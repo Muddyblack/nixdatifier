@@ -1,4 +1,5 @@
 import QtQuick
+import org.kde.plasma.plasmoid
 import org.kde.kirigami as Kirigami
 
 Kirigami.Page {
@@ -95,5 +96,6 @@ Kirigami.Page {
     SettingsEditor {
         anchors.fill: parent
         settings: state
+        currentVersion: Plasmoid.metaData.version
     }
 }

@@ -38,6 +38,12 @@ ShellRoot {
         settingsFile.writeAdapter();
     }
     FileView {
+        id: packageMetadata
+        path: decodeURIComponent(Qt.resolvedUrl("../package/metadata.json").toString().replace(/^file:\/\//, ""))
+        property string version: ""
+        onLoaded: version = JSON.parse(text()).KPlugin.Version
+    }
+    FileView {
         id: settingsFile
         path: root.configPath
         watchChanges: true
@@ -392,6 +398,7 @@ ShellRoot {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         settings: draft
+                        currentVersion: packageMetadata.version
                         hyprland: true
                     }
                     RowLayout {
