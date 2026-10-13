@@ -577,6 +577,14 @@ esac
         for project in (big, small):
             (project / ".direnv" / "flake-profile-abc").symlink_to("/nix/store/x-profile")
         (plain / ".direnv" / "cache.bin").write_bytes(b"x" * 4096)
+        # Allocated disk usage includes directory blocks and varies by filesystem.
+        self.script(
+            self.bin / "du",
+            f"""
+[[ "$#" == 2 && "$1" == -sk && "$2" == '{plain}/.direnv' ]]
+printf '4\\t%s\\n' "$2"
+""",
+        )
         self.script(
             self.bin / "nix",
             f"""

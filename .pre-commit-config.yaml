@@ -1,6 +1,18 @@
 repos:
   - repo: local
     hooks:
+      - id: ruff-check
+        name: ruff lint
+        entry: nix develop --command ruff check
+        language: system
+        types: [python]
+
+      - id: ruff-format
+        name: ruff format
+        entry: nix develop --command ruff format --check
+        language: system
+        types: [python]
+
       - id: qmlformat
         name: qmlformat
         entry: nix develop --command qmlformat
