@@ -28,7 +28,7 @@
         {
           QML_IMPORT_PATH = qml;
           QML2_IMPORT_PATH = qml;
-          QT_PLUGIN_PATH = pkgs.lib.makeSearchPath "lib/qt-6/plugins" [ pkgs.qt6.qtbase pkgs.qt6.qtsvg ];
+          QT_PLUGIN_PATH = pkgs.lib.makeSearchPath "lib/qt-6/plugins" [ pkgs.qt6.qtbase pkgs.qt6.qtsvg pkgs.kdePackages.plasma5support ];
         };
       # What the shell helpers call, so their tests do not borrow the host's tools.
       helperTools = pkgs: with pkgs; [ python3 bash coreutils gnugrep gnused gawk findutils util-linux jq git curl inotify-tools ];
