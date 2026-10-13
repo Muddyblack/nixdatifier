@@ -7,20 +7,7 @@
 , wrapQtAppsHook
 , installShellFiles
 , bash
-, jq
-, git
-, curl
-, coreutils
-, util-linux
-, findutils
-, gnugrep
-, gnused
-, gawk
-, inotify-tools
-, libnotify
-, direnv
-, fzf
-, chafa
+, tools
 , version
 , src
 }:
@@ -36,7 +23,7 @@ stdenv.mkDerivation {
   # The shell helpers need these. They are appended, so a tool already on the
   # user's PATH (notably `nix` itself and the setuid `pkexec`) always wins.
   qtWrapperArgs = [
-    "--suffix PATH : ${lib.makeBinPath [ bash jq git curl coreutils util-linux findutils gnugrep gnused gawk inotify-tools libnotify direnv fzf chafa ]}"
+    "--suffix PATH : ${lib.makeBinPath tools}"
   ];
 
   postInstall = ''

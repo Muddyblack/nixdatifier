@@ -757,7 +757,7 @@ cmd_config() {
         list)
             for k in $CONFIG_KEYS; do
                 e=$(config_var "$k"); v=$(config_file_get "$k")
-                if [[ -n ${!e:-} && ${!e} != "$v" ]]; then src=environment; v=${!e}; elif [[ -n $v ]]; then src=file; else src=unset; fi
+                if [[ -n ${!e:-} && ${!e} != "$v" ]]; then src='environment'; v=${!e}; elif [[ -n $v ]]; then src='file'; else src='unset'; fi
                 printf '%s\t%s\t%s\n' "$k" "$v" "$src"
             done | jq -Rn '[inputs | split("\t") | {key: .[0], value: .[1], source: .[2]}]' | render key,value,source ;;
         get)

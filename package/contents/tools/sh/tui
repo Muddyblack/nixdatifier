@@ -67,7 +67,7 @@ theme_load() { # theme_load NAME: defaults, then the built-in, then the user's f
         while IFS='=' read -r k v; do
             k=${k//[[:space:]]/}; v=${v#"${v%%[![:space:]]*}"}; v=${v%%[[:space:]]*}
             [[ $k =~ ^[a-z]+$ && ( -z $v || $v =~ ^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$ ) ]] && T[$k]=$v
-        done < <(grep -v '^[[:space:]]*#' "$d/$1.theme" | grep =)
+        done < <(grep -v '^[[:space:]]*#' "$d/$1.theme" | grep '=')
         break
     done
 }

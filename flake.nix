@@ -30,6 +30,10 @@
           QML2_IMPORT_PATH = qml;
           QT_PLUGIN_PATH = pkgs.lib.makeSearchPath "lib/qt-6/plugins" [ pkgs.qt6.qtbase pkgs.qt6.qtsvg pkgs.kdePackages.plasma5support ];
         };
+      # What the shell helpers call at run time, shared by the command line, the
+      # tray app and the plasmoid so the lists cannot drift apart. `nix` and the
+      # privilege tools are not here: the system's own are always used.
+      helperRuntime = pkgs: with pkgs; [ bash jq git curl coreutils util-linux findutils gnugrep gnused gawk inotify-tools libnotify direnv fzf chafa ];
       # What the shell helpers call, so their tests do not borrow the host's tools.
       helperTools = pkgs: with pkgs; [ python3 bash coreutils gnugrep gnused gawk findutils util-linux jq git curl inotify-tools ];
     in
@@ -38,13 +42,14 @@
       packages = forAllSystems (system:
         let
           pkgs = pkgsFor system;
-          runtime = with pkgs; [ bash nix jq git curl coreutils util-linux findutils gnugrep gnused gawk inotify-tools libnotify polkit ];
+          runtime = helperRuntime pkgs ++ [ pkgs.nix pkgs.polkit ];
           runtimePath = pkgs.lib.makeBinPath runtime;
           tray = pkgs.qt6.callPackage ./tray/package.nix { inherit version; };
           # The desktop-independent app: a window and a tray icon, no Plasma or
           # Quickshell needed. Works on any distribution that has Nix.
           nixdatifier = pkgs.qt6.callPackage ./standalone/package.nix {
             inherit version;
+            tools = helperRuntime pkgs;
             src = pkgs.lib.fileset.toSource {
               root = ./.;
               fileset = pkgs.lib.fileset.unions [ ./standalone ./tray ./package ];
@@ -55,7 +60,18 @@
           cli = pkgs.stdenvNoCC.mkDerivation {
             pname = "nixdatifier-cli";
             inherit version;
-            src = ./package;
+            # Only what is installed, so editing the QML does not rebuild this.
+            src = pkgs.lib.fileset.toSource {
+              root = ./package;
+              fileset = pkgs.lib.fileset.unions [
+                ./package/metadata.json
+                ./package/icon-emblem.png
+                ./package/icon-emblem.svg
+                ./package/contents/tools
+                ./package/contents/code
+                ./package/contents/icons
+              ];
+            };
             nativeBuildInputs = [ pkgs.makeWrapper pkgs.installShellFiles ];
             dontConfigure = true;
             dontBuild = true;
@@ -72,7 +88,7 @@
               installShellCompletion --cmd nixdatifier --bash nixdatifier.bash --zsh nixdatifier.zsh --fish nixdatifier.fish
               # Appended, so the nix and sudo already on the system always win.
               for helper in "$dest"/contents/tools/sh/*; do
-                [ -f "$helper" ] && [ -x "$helper" ] && wrapProgram "$helper" --suffix PATH : ${pkgs.lib.makeBinPath (with pkgs; [ bash jq git curl coreutils util-linux findutils gnugrep gnused gawk inotify-tools direnv fzf chafa ])}
+                [ -f "$helper" ] && [ -x "$helper" ] && wrapProgram "$helper" --suffix PATH : ${pkgs.lib.makeBinPath (helperRuntime pkgs)}
               done
               ln -s "$dest/contents/tools/sh/nixdatifier" "$out/bin/nixdatifier"
               runHook postInstall
