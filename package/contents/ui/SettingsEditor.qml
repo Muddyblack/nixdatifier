@@ -4,6 +4,7 @@ import QtQuick.Window
 import QtQuick.Controls.Basic as QQC
 import QtQuick.Layouts
 import "SettingsSchema.js" as Schema
+import "shared" as UI
 
 QQC.Pane {
     id: editor
@@ -201,7 +202,7 @@ QQC.Pane {
             Accessible.name: qsTr("Search settings")
             onTextChanged: editor.query = text
         }
-        QQC.ScrollView {
+        UI.ScrollView {
             id: scroll
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -261,7 +262,6 @@ QQC.Pane {
                     font.pixelSize: 12
                 }
                 Loader {
-                    id: infoLoader
                     objectName: "projectInfoLoader"
                     width: parent.width
                     active: editor.onScreen && editor.currentTab === 4

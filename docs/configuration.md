@@ -16,7 +16,7 @@ stop when settings close; the Info pane is released when hidden or another tab o
 | **Check updates every (seconds)** | `3600` | Flake input check interval (60–86400). |
 | **Maximum generations shown** | `10` | Generations listed in the timeline (3–200). |
 | **Detect hostname and flake configuration** | `true` | When off, previews need a flake with exactly one NixOS configuration. |
-| **Open on** | `timeline` | Starting view: `timeline`, `updates`, `diff`, `tools`, `devenv`, `secrets`, `hash`, `history`, or `storeusage`. |
+| **Open on** | `timeline` | Starting view: `timeline`, `updates`, `diff`, `tools`, `devenv`, `secrets`, `hash`, `history`, `storeusage`, or `impermanence`. |
 
 ## Commands
 
@@ -41,6 +41,8 @@ stop when settings close; the Info pane is released when hidden or another tab o
 | **Check flake inputs in the background** | `true` | Turns the update checks on or off. |
 | **Deployed secrets directory** | `""` | Empty detects `/run/secrets` or `/run/agenix.d`. |
 | **Encrypted source secrets path** | `""` | Empty detects a SOPS file in the flake directory. |
+| **Extra persistent folders** | `""` | Colon-separated roots (for example `/persist:/mnt/data`) added to the ones detected from the mounts for the Persistent folders tool. |
+| **Offer cleanup for folders untouched for (days)** | `180` | How long nothing inside a home folder may change before the Persistent folders cleanup suggests it. |
 | **Show package search/filter** | `true` | Filter box above package lists. |
 | **Package detail mode** | `compact` | `compact` rows expand on click; `detailed` shows every row expanded. |
 | **Show application icons** | `true` | App icons next to package names. |

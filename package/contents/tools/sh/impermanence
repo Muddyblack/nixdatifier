@@ -1,0 +1,805 @@
+#!/usr/bin/env bash
+# Usage: impermanence <mode> <extra-roots> [args…]
+#
+# Inspects the places that survive a reboot on a system whose root is wiped on
+# every boot (the nix-community "impermanence" layout: tmpfs or rolled-back
+# root, with /persist bind-mounted back in). Everything else is gone after a
+# restart, so these folders are where malware, stale data and junk can live on.
+#
+# <extra-roots> is a colon-separated list of additional persistent roots from
+# the settings (may be empty). Modes:
+#   detect  <extra>                  persistent areas and the entries persisted into them
+#   sizes   <extra>                  size and newest change of every persisted entry
+#   cancel-list <extra>              stop a listing that is still walking
+#   list    <extra> <dir>            two folder levels: size, count, newest change, flags
+#   scan    <extra> <recent-days>    autostart hooks and other suspicious things
+#   cleanup <extra> <stale-days>     temporary, regenerable and long-untouched data
+#   remove  <extra> <path>           delete one path inside a persistent area (guarded)
+#
+# scan and cleanup skip separately mounted data disks other than /home unless
+# NIXDATIFIER_IMP_ALL=1 is set.
+#
+# Paths in the output have control characters and backslashes written as
+# \xHH / \\ so every record stays on one line; `remove` accepts that form.
+# Nothing here reads secret values or file contents beyond the first bytes of
+# executables and the text of login/autostart hooks.
+set -u
+export PATH="$PATH:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin"
+export LC_ALL=C
+
+mode="${1:-}"
+extra="${2:-}"
+if [ $# -ge 2 ]; then shift 2; else shift $#; fi
+
+# Tests point these at fixtures.
+mountinfo="${NIXDATIFIER_MOUNTINFO:-/proc/self/mountinfo}"
+
+lowprio() {
+    if command -v ionice >/dev/null 2>&1; then
+        nice -n 19 ionice -c 3 "$@"
+    else
+        nice -n 19 "$@"
+    fi
+}
+
+# Folders that hold other people's data (images, game prefixes, VCS objects):
+# huge, full of legitimately odd files, and not interesting for a scan.
+PRUNE=(-path '*/var/lib/docker' -o -path '*/var/lib/containers' -o -path '*/var/lib/libvirt/images'
+    -o -path '*/var/lib/flatpak' -o -path '*/.local/share/containers' -o -path '*/.local/share/flatpak'
+    -o -path '*/.local/share/Steam' -o -path '*/.steam' -o -path '*/.wine' -o -path '*/.var/app'
+    -o -path '*/.cargo/registry' -o -path '*/.rustup' -o -path '*/node_modules' -o -path '*/.git'
+    -o -path '*/lost+found')
+
+# Shared awk helpers: escaping of unprintable characters (see header) and the
+# permission-bit tests on `find -printf %m` values.
+AWK_LIB='
+BEGIN { for (i = 1; i < 256; i++) ord[sprintf("%c", i)] = i }
+function esc(s,   out, i, c, n) {
+    if (s !~ /[^ -~]/ && index(s, "\\") == 0) return s
+    out = ""; n = length(s)
+    for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (c == "\\") out = out "\\\\"
+        else if (c == "\001") out = out "\\x0a"
+        else if (c < " " || c == "\177") out = out sprintf("\\x%02x", ord[c])
+        else out = out c
+    }
+    return out
+}
+function pad(m) { m = "0000" m; return substr(m, length(m) - 3) }
+function isx(m)  { m = pad(m); return substr(m, 2) ~ /[1357]/ }
+function issuid(m) { return substr(pad(m), 1, 1) ~ /[2467]/ }
+function isww(m) { m = pad(m); return substr(m, 4, 1) ~ /[2367]/ && substr(m, 1, 1) !~ /[1357]/ }
+'
+
+# ── Areas ────────────────────────────────────────────────────────────────────
+# mount table: mountpoint, root-in-filesystem, device, fstype (octal escapes decoded)
+mount_table() {
+    awk '
+    function dec(s,   o) {
+        while (match(s, /\\[0-7][0-7][0-7]/)) {
+            o = substr(s, RSTART + 1, 3)
+            s = substr(s, 1, RSTART - 1) sprintf("%c", substr(o, 1, 1) * 64 + substr(o, 2, 1) * 8 + substr(o, 3, 1)) substr(s, RSTART + 4)
+        }
+        return s
+    }
+    {
+        for (i = 7; i <= NF && $i != "-"; i++) ;
+        printf "%s\t%s\t%s\t%s\n", dec($5), dec($4), $3, $(i + 1)
+    }' "$mountinfo" 2>/dev/null
+}
+
+PERSIST=()   # persistence roots (impermanence "persistentStoragePath"s)
+PVIA=()      # how each was found: bind | name | manual
+PBINDS=()    # how many entries are bound out of each
+MOUNTAREAS=() # other separately mounted data filesystems (survive reboots too)
+BIND_T=()    # live location of each persisted entry
+BIND_S=()    # where it really lives
+VOLATILE=no
+VOLATILE_WHY=
+ROOTFS=
+
+within() { [[ "$1" == "$2" || "$1" == "$2"/* ]]; }
+
+compute() {
+    local table out kind a b c
+    table=$(mount_table)
+    ROOTFS=$(awk -F'\t' '$1 == "/" { f = $4 } END { print f }' <<<"$table")
+
+    # An entry persisted by impermanence is a bind mount of <root><target>
+    # onto <target>. A bind mount shares its device with the mount it was
+    # taken from, and its root-in-filesystem extends that mount's root.
+    out=$(awk -F'\t' '
+    { n++; mp[n] = $1; rt[n] = $2; dv[n] = $3; ft[n] = $4 }
+    END {
+        for (b = 1; b <= n; b++) {
+            t = mp[b]
+            if (t == "/" || t ~ /^\/(proc|sys|dev|run|nix|tmp)(\/|$)/) continue
+            best = 0
+            for (a = 1; a <= n; a++) {
+                if (a == b || dv[a] != dv[b] || length(rt[a]) >= length(rt[b])) continue
+                if (rt[a] != "/" && index(rt[b], rt[a] "/") != 1) continue
+                if (!best || length(rt[a]) > length(rt[best])) best = a
+            }
+            if (!best) continue
+            rel = (rt[best] == "/") ? rt[b] : substr(rt[b], length(rt[best]) + 1)
+            src = ((mp[best] == "/") ? "" : mp[best]) rel
+            len = length(src) - length(t)
+            if (len <= 0 || substr(src, len + 1) != t) continue
+            root = substr(src, 1, len)
+            printf "B\t%s\t%s\t%s\n", t, src, root
+            cnt[root]++
+        }
+        for (r in cnt) {
+            ism = 0
+            for (a = 1; a <= n; a++) if (mp[a] == r) ism = 1
+            printf "R\t%s\t%d\t%d\n", r, cnt[r], ism
+        }
+    }' <<<"$table")
+
+    PERSIST=(); PVIA=(); PBINDS=(); MOUNTAREAS=(); BIND_T=(); BIND_S=()
+    local -A roots_n=() roots_m=()
+    while IFS=$'\t' read -r kind a b c; do
+        case "$kind" in
+        B) BIND_T+=("$a"); BIND_S+=("$b") ;;
+        R) roots_n["$a"]=$b; roots_m["$a"]=$c ;;
+        esac
+    done <<<"$out"
+
+    # Is the root itself wiped on boot?
+    VOLATILE=no; VOLATILE_WHY=
+    case "$ROOTFS" in
+    tmpfs | ramfs) VOLATILE=yes; VOLATILE_WHY=tmpfs ;;
+    *)
+        local birth btime
+        birth="${NIXDATIFIER_ROOT_BIRTH:-$(stat -c %W / 2>/dev/null)}"
+        btime="${NIXDATIFIER_BTIME:-$(awk '/^btime/ { print $2 }' /proc/stat 2>/dev/null)}"
+        # A root subvolume or dataset recreated by the initrd is younger than the boot.
+        if [[ "$birth" =~ ^[0-9]+$ && "$btime" =~ ^[0-9]+$ && "$birth" -gt 0 && $((birth + 600)) -ge "$btime" ]]; then
+            VOLATILE=yes; VOLATILE_WHY=fresh
+        fi
+        ;;
+    esac
+
+    local r
+    for r in "${!roots_n[@]}"; do
+        # Several entries sharing one root, or a root that is a mount of its own
+        # (/persist), is impermanence. One coincidental bind mount is not.
+        if [ "${roots_n[$r]}" -ge 2 ] || [ "${roots_m[$r]}" = 1 ] || is_known_root "$r"; then
+            add_root "$r" bind "${roots_n[$r]}"
+        fi
+    done
+    if [ "$VOLATILE" = yes ] && [ -z "${NIXDATIFIER_MOUNTINFO:-}" ]; then
+        for r in /persist /persistent /nix/persist /nix/persistent /state /mnt/persist /mnt/persistent /mnt/state; do
+            [ -d "$r" ] && add_root "$r" name 0
+        done
+    fi
+    local IFS=:
+    for r in $extra; do
+        [[ "$r" == /* && -d "$r" ]] && add_root "$r" manual 0
+    done
+    IFS=$' \t\n'
+
+    # Separately mounted data filesystems keep their content across reboots too.
+    local mp ft covered p i
+    while IFS=$'\t' read -r mp _ _ ft; do
+        case "$ft" in ext2 | ext3 | ext4 | btrfs | xfs | f2fs | zfs | jfs | bcachefs | ntfs | ntfs3 | fuseblk | vfat | exfat | reiserfs) ;; *) continue ;; esac
+        [[ "$mp" == / || "$mp" =~ ^/(nix|boot|efi|run|proc|sys|dev|tmp)(/|$) ]] && continue
+        covered=0
+        for p in "${PERSIST[@]+"${PERSIST[@]}"}" "${BIND_T[@]+"${BIND_T[@]}"}"; do
+            [ -n "$p" ] && within "$mp" "$p" && covered=1
+        done
+        # Skip mounts whose own mountpoint lies inside a persist root's bound entry.
+        [ "$covered" = 1 ] && continue
+        for p in "${MOUNTAREAS[@]+"${MOUNTAREAS[@]}"}"; do [ "$p" = "$mp" ] && covered=1; done
+        [ "$covered" = 0 ] && MOUNTAREAS+=("$mp")
+    done <<<"$table"
+}
+
+is_known_root() {
+    case "$1" in /persist | /persistent | /nix/persist | /nix/persistent | /state | /mnt/persist | /mnt/persistent | /mnt/state) return 0 ;; esac
+    return 1
+}
+
+add_root() { # path via binds
+    local r i
+    r=$(realpath -m -- "$1" 2>/dev/null) || return
+    for i in "${!PERSIST[@]}"; do
+        if [ "${PERSIST[$i]}" = "$r" ]; then
+            [ "$3" -gt "${PBINDS[$i]}" ] && PBINDS[$i]=$3
+            return
+        fi
+    done
+    PERSIST+=("$r"); PVIA+=("$2"); PBINDS+=("$3")
+}
+
+# Prints the area a path belongs to (empty if none).
+area_of() {
+    local p best='' a
+    p=$1
+    for a in "${PERSIST[@]+"${PERSIST[@]}"}" "${MOUNTAREAS[@]+"${MOUNTAREAS[@]}"}"; do
+        [ -n "$a" ] && within "$p" "$a" && [ ${#a} -gt ${#best} ] && best=$a
+    done
+    printf '%s' "$best"
+}
+
+all_areas() {
+    local a
+    for a in "${PERSIST[@]+"${PERSIST[@]}"}" "${MOUNTAREAS[@]+"${MOUNTAREAS[@]}"}"; do
+        [ -n "$a" ] && printf '%s\n' "$a"
+    done
+}
+
+# What scan and cleanup walk: the persist roots, plus a separately mounted
+# /home or /root, where most leftovers live. Other data disks (/mnt/…) keep
+# their files whatever impermanence does and are large, so they are only
+# walked when asked for with NIXDATIFIER_IMP_ALL=1.
+scan_areas() {
+    local a
+    for a in "${PERSIST[@]+"${PERSIST[@]}"}"; do
+        [ -n "$a" ] && printf '%s\n' "$a"
+    done
+    for a in "${MOUNTAREAS[@]+"${MOUNTAREAS[@]}"}"; do
+        [ "$a" = /home ] || [ "$a" = /root ] || [ "${NIXDATIFIER_IMP_ALL:-0}" = 1 ] || continue
+        printf '%s\n' "$a"
+    done
+}
+
+# Home directories inside the scanned areas: <area>/home/*, <area>/root, or
+# the children of an area that is itself /home.
+homes() {
+    local a h
+    while IFS= read -r a; do
+        [ -d "$a/root" ] && printf '%s\n' "$a/root"
+        if [ "${a##*/}" = home ]; then
+            for h in "$a"/*/; do [ -d "$h" ] && printf '%s\n' "${h%/}"; done
+        elif [ -d "$a/home" ]; then
+            for h in "$a"/home/*/; do [ -d "$h" ] && printf '%s\n' "${h%/}"; done
+        fi
+    done < <(scan_areas) | sort -u
+}
+
+# A persisted entry is reachable twice: at its source inside the persist root
+# and at its live location (often under a separately mounted /home). Scans
+# walk the source and skip the live copy, so nothing is counted twice.
+bound_view() {
+    local t
+    for t in "${BIND_T[@]+"${BIND_T[@]}"}"; do
+        within "$1" "$t" && return 0
+    done
+    return 1
+}
+bound_prunes() { # dir -> BP: extra `find` prune terms for live copies below dir
+    BP=()
+    local t
+    for t in "${BIND_T[@]+"${BIND_T[@]}"}"; do
+        [[ "$t" == "$1"/* ]] && BP+=(-o -path "$(printf '%s' "$t" | sed 's/[][*?\\]/\\&/g')")
+    done
+}
+
+fsnums() { df -B1 --output=size,used,avail -- "$1" 2>/dev/null | awk 'NR == 2 { printf "%s\t%s\t%s", $1, $2, $3 }'; }
+
+# ── detect ───────────────────────────────────────────────────────────────────
+do_detect() {
+    compute
+    printf 'volatile\t%s\t%s\n' "$VOLATILE" "$VOLATILE_WHY"
+    printf 'rootfs\t%s\n' "$ROOTFS"
+    local i a
+    for i in "${!PERSIST[@]}"; do
+        printf 'persist\t%s\t%s\t%s\t%s\t%s\n' "${PERSIST[$i]}" "${PVIA[$i]}" "${PBINDS[$i]}" "$(df --output=fstype -- "${PERSIST[$i]}" 2>/dev/null | tail -n1)" "$(fsnums "${PERSIST[$i]}")"
+    done
+    for a in "${MOUNTAREAS[@]+"${MOUNTAREAS[@]}"}"; do
+        printf 'mount\t%s\t%s\t%s\n' "$a" "$(df --output=fstype -- "$a" 2>/dev/null | tail -n1)" "$(fsnums "$a")"
+    done
+    for i in "${!BIND_T[@]}"; do
+        local kind=d
+        [ -f "${BIND_S[$i]}" ] && kind=f
+        printf 'entry\t%s\t%s\t%s\n' "$kind" "${BIND_T[$i]}" "${BIND_S[$i]}"
+    done | sort -t$'\t' -k3,3
+    # Single files that impermanence links instead of binding.
+    local r
+    for r in "${PERSIST[@]+"${PERSIST[@]}"}"; do
+        [ -d /etc ] || continue
+        find /etc -maxdepth 3 -type l -lname "$r/*" -printf 'entry\tl\t%p\t%l\n' 2>/dev/null
+    done
+}
+
+# ── measuring ────────────────────────────────────────────────────────────────
+# Bytes on disk and newest change below a path, in one `du` pass. These run
+# in parallel through xargs, so they take their arguments and print one
+# record each; a single short write keeps parallel records from mixing.
+# Each record ends in a status, so a failure never reads as an empty folder:
+# ok, partial (something below could not be read, the size is a lower bound)
+# or failed (nothing could be measured).
+measure_du() { # path -> "size newest status"
+    local out code size newest
+    out=$(du -sx -B1 --time --time-style=+%s -- "$1" 2>/dev/null)
+    code=$?
+    read -r size newest _ <<<"${out##*$'\n'}"
+    if [[ ! "$size" =~ ^[0-9]+$ ]]; then
+        echo "0 0 failed"
+    elif ((code)); then
+        echo "$size ${newest:-0} partial"
+    else
+        echo "$size ${newest:-0} ok"
+    fi
+}
+measure_entry() { # kind source target
+    local size newest status
+    read -r size newest status < <(measure_du "$2")
+    printf '%s\002%s\002%s\002%s\002%s\002%s\n' "$1" "$size" "$newest" "${3//$'\n'/$'\001'}" "${2//$'\n'/$'\001'}" "$status"
+}
+measure_path() { # label path
+    local size newest status
+    read -r size newest status < <(measure_du "$2")
+    # Gone or unreadable as a whole: nothing to offer for cleanup.
+    [ "$status" = failed ] && return 0
+    printf 'T\002%s\002%s\002%s\002%s\002%s\n' "$1" "$size" "$newest" "${2//$'\n'/$'\001'}" "$status"
+}
+# xargs starts these in child shells, which is why nothing here calls them directly.
+# shellcheck disable=SC2329
+export -f measure_du measure_entry measure_path
+
+# ── sizes ────────────────────────────────────────────────────────────────────
+# One record per persisted entry: kind, bytes on disk, newest change, target
+# and source. Measured four at a time at low priority; the order is not fixed.
+do_sizes() {
+    compute
+    local i kind
+    for i in "${!BIND_T[@]}"; do
+        kind=d
+        [ -f "${BIND_S[$i]}" ] && kind=f
+        printf '%s\0%s\0%s\0' "$kind" "${BIND_S[$i]}" "${BIND_T[$i]}"
+    done | lowprio xargs -0 -r -n3 -P4 bash -c 'measure_entry "$1" "$2" "$3"' _ |
+        awk -F'\002' "$AWK_LIB"'
+        { printf "E\t%s\t%s\t%d\t%s\t%s\t%s\n", $1, $2, $3, esc($4), esc($5), $6 }'
+}
+
+# ── list ─────────────────────────────────────────────────────────────────────
+# The widget only ever wants the newest listing. Each listing runs as its own
+# process group and stops the one before, so walking in and out of large
+# folders never piles up walks that keep the disk busy.
+list_pidfile() { printf '%s/impermanence-list.pid' "${XDG_CACHE_HOME:-$HOME/.cache}/nixdatifier"; }
+stop_listing() {
+    local old
+    old=$(cat -- "$(list_pidfile)" 2>/dev/null) || return 0
+    [[ "$old" =~ ^[0-9]+$ ]] && [ "$old" != "$$" ] || return 0
+    # Only a listing of ours: the number may since belong to something else.
+    tr '\0' ' ' 2>/dev/null <"/proc/$old/cmdline" | grep -q 'impermanence list' || return 0
+    kill -TERM -- "-$old" 2>/dev/null
+    return 0
+}
+
+# Prints the folder (D), its children (C) and, so the widget can step one
+# level down without another walk, its grandchildren (G, grouped by child;
+# X marks a child with too many to list). One walk of the tree in total.
+do_list() {
+    if [ -z "${NIXDATIFIER_LIST_GROUP:-}" ] && [ -z "${NIXDATIFIER_MOUNTINFO:-}" ] && command -v setsid >/dev/null 2>&1; then
+        NIXDATIFIER_LIST_GROUP=1 exec setsid --wait "$0" list "$extra" "$@"
+    fi
+    stop_listing
+    if [ -n "${NIXDATIFIER_LIST_GROUP:-}" ]; then
+        mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}/nixdatifier"
+        printf '%s\n' "$$" >"$(list_pidfile)"
+    fi
+    compute
+    local dir=${1:-} rp area
+    rp=$(realpath -m -- "$(printf '%b' "$dir")" 2>/dev/null)
+    area=$(area_of "$rp")
+    if [ -z "$area" ] || [ ! -d "$rp" ]; then
+        echo "ERROR: not a persistent folder" >&2
+        exit 2
+    fi
+    # Unreadable folders make every total below them a lower bound; say so (P)
+    # instead of passing the numbers off as complete.
+    # Global, not local: the traps run after this function has returned.
+    LIST_ERRS=$(mktemp)
+    LIST_SIZES=$(mktemp)
+    trap 'rm -f "$LIST_ERRS" "$LIST_SIZES"' EXIT
+    trap 'rm -f "$LIST_ERRS" "$LIST_SIZES"; exit 143' TERM
+    {
+        lowprio find "$rp" -mindepth 1 -maxdepth 2 -type l -printf 'L\002%P\002%l\0' 2>/dev/null
+        # %U, not %u: a name lookup for every file makes the walk 30 times slower.
+        lowprio find "$rp" -mindepth 1 -xdev -printf 'F\002%y\002%b\002%T@\002%m\002%U\002%d\002%P\0' 2>"$LIST_ERRS"
+    } | tr '\n\0' '\001\n' | awk -F'\002' -v dir="$rp" -v area="$area" -v sizes="$LIST_SIZES" "$AWK_LIB"'
+    function uname(u,   c, line, f) {
+        if (u == "") return ""
+        if (!(u in names)) {
+            names[u] = u
+            c = "getent passwd " (u + 0)
+            if ((c | getline line) > 0) { split(line, f, ":"); names[u] = f[1] }
+            close(c)
+        }
+        return names[u]
+    }
+    function flags(k, md, name, execs,   f) {
+        f = ""
+        if (k == "f" && isx(md)) f = f "x"
+        if (issuid(md)) f = f "s"
+        if (isww(md) && k != "l") f = f "w"
+        if (name ~ /^\./) f = f "h"
+        if (name ~ /[\001-\037\177]/ || name ~ /^ / || name ~ / $/) f = f "c"
+        if (k == "d" && execs > 0) f = f "e"
+        return f
+    }
+    $1 == "L" { link[$2] = $3; next }
+    $1 == "F" {
+        name = $8
+        p = index(name, "/")
+        top = p ? substr(name, 1, p - 1) : name
+        if (!(top in seen)) { seen[top] = 1; order[++n] = top }
+        sz[top] += $3 * 512
+        tot += $3 * 512
+        if ($2 != "d") { cnt[top]++; total++ }
+        if ($4 > newest[top]) newest[top] = $4
+        if ($4 > gnewest) gnewest = $4
+        if ($2 == "f" && isx($5)) execs[top]++
+        if ($7 == 1) { kind[top] = $2; own[top] = $4; md[top] = $5; ow[top] = $6 }
+        if (!p) next
+        rest = substr(name, p + 1)
+        q = index(rest, "/")
+        leaf = q ? substr(rest, 1, q - 1) : rest
+        k = top "/" leaf
+        if (!(k in seen2)) {
+            if (++kids[top] > 2000) { over[top] = 1; next }
+            seen2[k] = 1; order2[++n2] = k; par[k] = top; nm[k] = leaf
+        }
+        sz2[k] += $3 * 512
+        if ($2 != "d") cnt2[k]++
+        if ($4 > newest2[k]) newest2[k] = $4
+        if ($2 == "f" && isx($5)) execs2[k]++
+        if ($7 == 2) { kind2[k] = $2; own2[k] = $4; md2[k] = $5; ow2[k] = $6 }
+    }
+    END {
+        printf "D\t%s\t%s\t%d\t%d\t%s\n", esc(dir), esc(area), tot, total, int(gnewest)
+        fflush()
+        # A folder with 100 000 entries must not cost the widget 100 000 rows
+        # in memory: the largest 3000 children are listed, the rest is summed
+        # up in one R record. The size of the 3000th largest is the cut.
+        maxc = 3000
+        cut = -1
+        if (n > maxc) {
+            for (i = 1; i <= n; i++) print sz[order[i]] > sizes
+            close(sizes)
+            c = "sort -nr \"" sizes "\" | sed -n " maxc "p"
+            c | getline cut
+            close(c)
+            cut += 0
+        }
+        cmd = "sort -t \"\t\" -k3,3nr"
+        for (i = 1; i <= n; i++) {
+            t = order[i]
+            if (cut >= 0 && (sz[t] < cut || shown >= maxc)) { hide[t] = 1; leftn++; leftb += sz[t]; continue }
+            shown++
+            lk = (t in link) ? link[t] : ""
+            printf "C\t%s\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\n", kind[t], sz[t], cnt[t], newest[t], own[t], md[t], uname(ow[t]), flags(kind[t], md[t], t, execs[t]), esc(lk), esc(t) | cmd
+        }
+        close(cmd)
+        if (leftn) printf "R\t%d\t%d\n", leftn, leftb
+        # The level below costs at most 30 000 rows in total. A child is listed
+        # completely or not at all (X), so a short list never passes as whole.
+        budget = 30000
+        for (i = 1; i <= n; i++) {
+            t = order[i]
+            if ((t in hide) || (t in over) || !(t in kids)) continue
+            if (budget < kids[t]) { over[t] = 1; continue }
+            budget -= kids[t]
+        }
+        cmd = "sort -t \"\t\" -k4,4nr"
+        for (i = 1; i <= n2; i++) {
+            k = order2[i]
+            if ((par[k] in over) || (par[k] in hide)) continue
+            lk = (k in link) ? link[k] : ""
+            printf "G\t%s\t%s\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\n", esc(par[k]), kind2[k], sz2[k], cnt2[k], newest2[k], own2[k], md2[k], uname(ow2[k]), flags(kind2[k], md2[k], nm[k], execs2[k]), esc(lk), esc(nm[k]) | cmd
+        }
+        close(cmd)
+        for (t in over) if (!(t in hide)) printf "X\t%s\n", esc(t)
+    }'
+    if grep -q 'Permission denied' "$LIST_ERRS" 2>/dev/null; then
+        printf 'P\t%s\n' "$(grep -c 'Permission denied' "$LIST_ERRS")"
+    fi
+}
+
+# ── scan ─────────────────────────────────────────────────────────────────────
+# Records leave the checks as  severity \002 category \002 path \002 detail \0
+# and are escaped once at the end.
+emit() { printf '%s\002%s\002%s\002%s\0' "$1" "$2" "$3" "$4"; }
+
+declare -A EMITTED=()
+emit_capped() { # cap sev cat path detail
+    local n=${EMITTED[$3]:-0}
+    EMITTED[$3]=$((n + 1))
+    if [ "$n" -lt "$1" ]; then
+        emit "$2" "$3" "$4" "$5"
+    elif [ "$n" -eq "$1" ]; then
+        emit info "$3" "" "more results not listed"
+    fi
+}
+
+SUSPICIOUS='(curl|wget)[^|;&]*\|[[:space:]]*(sudo[[:space:]]+)?(ba|z|da)?sh|base64[[:space:]]+(-d|--decode)|/dev/(tcp|udp)/|(nc|ncat|netcat)[[:space:]]+-[a-z]*[ec][[:space:]]|bash[[:space:]]+-i[[:space:]]|LD_PRELOAD|eval[[:space:]]*"?\$\((curl|wget)|xmrig|minerd|cpuminer|stratum\+tcp|cryptonight|mkfifo[^;]*(nc|ncat)|chmod[[:space:]]+[-+0-9a-z]+[[:space:]]+/(tmp|dev/shm|var/tmp)/|/(tmp|dev/shm|var/tmp)/\.[A-Za-z0-9]'
+
+magic() { # file -> "ELF binary" | "script" | "other"
+    local h
+    h=$(head -c4 -- "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+    case "$h" in 7f454c46) echo "ELF binary" ;; 2321*) echo "script" ;; *) echo "executable file" ;; esac
+}
+
+# A hook is something that runs by itself at login, boot or on a timer.
+# Files that only link into /nix/store are declared in the configuration and
+# not interesting; real files were put there imperatively.
+check_hook() { # path label base-severity
+    local f=$1 label=$2 sev=$3 target match
+    if [ -L "$f" ]; then
+        target=$(readlink -f -- "$f" 2>/dev/null)
+        [[ "$target" == /nix/store/* ]] && return
+        [ -e "$f" ] || return
+    fi
+    [ -f "$f" ] || return
+    if [ -n "$(find "$f" -maxdepth 0 -mtime -"$recent" 2>/dev/null)" ]; then
+        sev=medium
+        label="$label, changed in the last $recent days"
+    fi
+    if [ -s "$f" ] && [ "$(stat -c %s -- "$f" 2>/dev/null || echo 0)" -lt 2097152 ]; then
+        match=$(head -c 2097152 -- "$f" 2>/dev/null | grep -aEim1 -- "$SUSPICIOUS" | tr -d '\000-\037\177' | cut -c1-140)
+        if [ -n "$match" ]; then
+            emit high "Suspicious command" "$f" "$match"
+            return
+        fi
+    fi
+    emit_capped 60 "$sev" "Runs automatically" "$f" "$label"
+}
+
+check_home() {
+    local h=$1 f d
+    for f in .bashrc .bash_profile .bash_login .profile .bash_logout .zshrc .zshenv .zprofile .zlogin .zlogout \
+        .xprofile .xinitrc .xsessionrc .config/fish/config.fish .ssh/rc; do
+        [ -e "$h/$f" ] || [ -L "$h/$f" ] && check_hook "$h/$f" "Shell or session startup script" info
+    done
+    for d in .config/autostart .config/autostart-scripts .config/plasma-workspace/env .config/plasma-workspace/shutdown \
+        .config/systemd/user .local/share/systemd/user .config/environment.d .config/fish/conf.d \
+        .mozilla/native-messaging-hosts .config/google-chrome/NativeMessagingHosts .config/chromium/NativeMessagingHosts; do
+        [ -d "$h/$d" ] || continue
+        for f in "$h/$d"/*; do
+            [ -e "$f" ] || [ -L "$f" ] || continue
+            check_hook "$f" "Starts with your session ($d)" low
+        done
+    done
+    for d in .local/bin bin; do
+        [ -d "$h/$d" ] || continue
+        for f in "$h/$d"/*; do
+            [ -L "$f" ] || [ -f "$f" ] || continue
+            check_hook "$f" "Program on your PATH ($d)" low
+        done
+    done
+    if [ -f "$h/.ssh/authorized_keys" ]; then
+        local n names sev=low
+        n=$(grep -cEv '^[[:space:]]*(#|$)' "$h/.ssh/authorized_keys" 2>/dev/null)
+        # Only key type and comment; never the key material.
+        names=$(grep -Ev '^[[:space:]]*(#|$)' "$h/.ssh/authorized_keys" 2>/dev/null | awk '{ print $NF }' | head -5 | tr '\n' ' ' | tr -d '\000-\037\177' | cut -c1-120)
+        [ -n "$(find "$h/.ssh/authorized_keys" -maxdepth 0 -mtime -"$recent" 2>/dev/null)" ] && sev=medium
+        emit "$sev" "SSH access" "$h/.ssh/authorized_keys" "$n key(s) can log in: $names"
+    fi
+    if [ -f "$h/.ssh/config" ] && grep -aEiq '^[[:space:]]*(ProxyCommand|LocalCommand|PermitLocalCommand)' "$h/.ssh/config" 2>/dev/null; then
+        emit medium "SSH access" "$h/.ssh/config" "Runs a command on connect (ProxyCommand or LocalCommand)"
+    fi
+    # Hidden programs dropped straight into the home folder.
+    while IFS= read -r -d '' f; do
+        emit_capped 40 medium "Hidden program" "$f" "$(magic "$f") in a hidden file in your home folder"
+    done < <(find "$h" -maxdepth 1 -type f -name '.*' -perm /111 -print0 2>/dev/null)
+}
+
+check_system() { # persist root
+    local r=$1 f
+    [ -e "$r/etc/ld.so.preload" ] && emit high "Library preload" "$r/etc/ld.so.preload" "Forces a library into every program"
+    for f in "$r"/etc/rc.local "$r"/etc/profile "$r"/etc/bashrc "$r"/etc/profile.d/* "$r"/etc/crontab "$r"/etc/cron.d/* \
+        "$r"/etc/cron.*/* "$r"/var/spool/cron/* "$r"/var/spool/cron/crontabs/* "$r"/etc/systemd/system/* \
+        "$r"/etc/udev/rules.d/* "$r"/etc/NetworkManager/dispatcher.d/* "$r"/etc/ssh/authorized_keys.d/*; do
+        [ -e "$f" ] || [ -L "$f" ] || continue
+        check_hook "$f" "System startup or schedule" low
+    done
+    for f in "$r"/etc/sudoers "$r"/etc/sudoers.d/* "$r"/etc/pam.d/*; do
+        [ -f "$f" ] && [ ! -L "$f" ] && emit_capped 30 low "Privilege rules" "$f" "Imperative sudo or PAM configuration"
+    done
+}
+
+# `find -nouser -o -nogroup` asks the user database about every file, which
+# takes minutes on a large home. Comparing numbers against the known users and
+# groups, fetched once, finds the same files in a fraction of a second.
+orphan_test() { # -> ORPH: find expression for files with an unknown owner or group
+    local id
+    local -a us=() gs=()
+    while IFS=: read -r _ _ id _; do [[ "$id" =~ ^[0-9]+$ ]] && us+=(! -uid "$id"); done < <(getent passwd 2>/dev/null)
+    while IFS=: read -r _ _ id _; do [[ "$id" =~ ^[0-9]+$ ]] && gs+=(! -gid "$id"); done < <(getent group 2>/dev/null)
+    if [ ${#us[@]} -eq 0 ] || [ ${#gs[@]} -eq 0 ]; then
+        ORPH=(-false)
+        return
+    fi
+    ORPH=(\( "${us[@]}" \) -o \( "${gs[@]}" \))
+}
+
+do_scan() {
+    compute
+    orphan_test
+    recent=${1:-14}
+    [[ "$recent" =~ ^[0-9]+$ ]] || recent=14
+    local a h r tag sev path
+    {
+        emit meta scope "" "$(scan_areas | paste -sd, -)"
+        if command -v clamscan >/dev/null 2>&1; then
+            emit meta clamav "$(command -v clamscan)" available
+        else
+            emit meta clamav "" missing
+        fi
+        while IFS= read -r h; do [ -n "$h" ] && check_home "$h"; done < <(homes)
+        for r in "${PERSIST[@]+"${PERSIST[@]}"}"; do check_system "$r"; done
+        while IFS= read -r a; do
+            [ -n "$a" ] || continue
+            bound_prunes "$a"
+            while IFS=$'\002' read -r -d '' tag path; do
+                case "$tag" in
+                S) emit_capped 80 high "Setuid or setgid file" "$path" "Runs with another user's rights" ;;
+                W) emit_capped 80 medium "World-writable" "$path" "Anyone on this machine can change it" ;;
+                N) emit_capped 80 medium "Unusual file name" "$path" "Control characters, edge spaces or leading dots hide files from listings" ;;
+                O) emit_capped 40 low "Orphaned owner" "$path" "Owner or group no longer exists" ;;
+                X) emit_capped 80 medium "Program in a data folder" "$path" "$(magic "$path") in a place for documents, downloads or temp files" ;;
+                esac
+            done < <(lowprio find "$a" -xdev \( "${PRUNE[@]}" "${BP[@]+"${BP[@]}"}" \) -prune -o \( \
+                \( -type f -perm /6000 -printf 'S\002%p\0' \) , \
+                \( \( -type f -o -type d \) -perm -0002 ! -perm -1000 ! -path '*/.cache/*' -printf 'W\002%p\0' \) , \
+                \( \( -name '*[[:cntrl:]]*' -o -name ' *' -o -name '* ' -o -regex '.*/\.\.[^/]+' \) -printf 'N\002%p\0' \) , \
+                \( \( "${ORPH[@]}" \) -printf 'O\002%p\0' \) , \
+                \( -type f -perm /111 \( -path '*/Downloads/*' -o -path '*/Desktop/*' -o -path '*/Documents/*' -o -path '*/Pictures/*' -o -path '*/Videos/*' -o -path '*/Music/*' -o -path '*/Public/*' -o -path '*/tmp/*' \) -printf 'X\002%p\0' \) \
+                \) 2>/dev/null)
+        done < <(scan_areas)
+    } | tr '\n\0' '\001\n' | awk -F'\002' "$AWK_LIB"'
+        { printf "%s\t%s\t%s\t%s\n", $1, esc($2), esc($3), esc($4) }'
+}
+
+# ── cleanup ──────────────────────────────────────────────────────────────────
+do_cleanup() {
+    compute
+    local days=${1:-180} a h now cutoff label path n=0
+    [[ "$days" =~ ^[0-9]+$ ]] || days=180
+    now=$(date +%s)
+    cutoff=$((now - days * 86400))
+    # Records are lines of \002-separated fields; a newline inside a name is
+    # carried as \001 and written out escaped by the final awk. Candidates are
+    # collected first and measured four at a time.
+    {
+        printf 'M\002%s\002%s\n' "$cutoff" "$days"
+        {
+            # Every application's cache and the trash, one entry each. These come
+            # first and have their own budget: they are usually the biggest wins,
+            # and a tree full of node_modules must not crowd them out.
+            while IFS= read -r h; do
+                [ -n "$h" ] || continue
+                for path in "$h"/.cache/* "$h"/.local/share/Trash; do
+                    [ -d "$path" ] || continue
+                    bound_view "$path" && continue
+                    [ $n -ge 300 ] && break
+                    n=$((n + 1))
+                    label="Application cache"
+                    [[ "$path" == */Trash ]] && label="Trash"
+                    printf '%s\0%s\0' "$label" "$path"
+                done
+            done < <(homes)
+            # Regenerable folders and leftovers, wherever they are. The caches and
+            # the trash above are skipped so nothing is counted twice.
+            n=0
+            while IFS= read -r a; do
+                [ -n "$a" ] || continue
+                bound_prunes "$a"
+                while IFS=$'\002' read -r -d '' label path; do
+                    [ $n -ge 400 ] && break
+                    n=$((n + 1))
+                    printf '%s\0%s\0' "$label" "$path"
+                done < <(lowprio find "$a" -xdev \( -path '*/var/lib/docker' -o -path '*/var/lib/containers' -o -path '*/.local/share/containers' -o -path '*/.local/share/Steam' -o -path '*/.steam' -o -path '*/.wine' -o -path '*/.var/app' -o -path '*/.git' -o -path '*/var/lib/flatpak' -o -path '*/lost+found' -o -path '*/home/*/.cache' -o -path '*/root/.cache' -o -path '*/.local/share/Trash' "${BP[@]+"${BP[@]}"}" \) -prune -o \
+                \( -type d \( -name node_modules -o -name __pycache__ -o -name .pytest_cache -o -name .mypy_cache -o -name .ruff_cache -o -name .tox -o -name .next -o -name .nuxt -o -name .parcel-cache -o -name .turbo \) -prune -printf 'Build or dependency cache\002%p\0' \) -o \
+                \( -type d \( -name GPUCache -o -name 'Code Cache' -o -name ShaderCache -o -name GrShaderCache -o -name DawnCache -o -name CachedData \) -prune -printf 'Application cache\002%p\0' \) -o \
+                \( -type f \( -name '*.tmp' -o -name '*.temp' -o -name '*~' -o -name '*.swp' -o -name '*.crdownload' -o -name '*.part' \) -printf 'Temporary file\002%p\0' \) -o \
+                \( -type f -path '*/var/lib/systemd/coredump/*' -printf 'Core dump\002%p\0' \) -o \
+                \( -type f -path '*/var/log/*' \( -name '*.gz' -o -name '*.xz' -o -name '*.zst' -o -name '*.old' -o -name '*.journal~' -o -regex '.*\.[0-9]+' \) -printf 'Rotated log\002%p\0' \) \
+                2>/dev/null)
+            done < <(scan_areas)
+        } | lowprio xargs -0 -r -n2 -P4 bash -c 'measure_path "$1" "$2"' _
+        # Folders in the home directories that nothing has touched for a long time.
+        while IFS= read -r h; do
+            [ -n "$h" ] || continue
+            bound_prunes "$h"
+            lowprio find "$h" -mindepth 1 -xdev \( "${PRUNE[@]}" -o -path '*/.cache' -o -path '*/.ssh' -o -path '*/.gnupg' -o -path '*/.pki' -o -path '*/keyrings' -o -path '*/.local/share/Trash' "${BP[@]+"${BP[@]}"}" \) -prune -o \
+                -printf 'F\002%y\002%b\002%T@\002%P\0' 2>/dev/null |
+                tr '\n\0' '\001\n' | awk -F'\002' -v home="${h//$'\n'/$'\001'}" -v cutoff="$cutoff" '
+                $1 == "F" {
+                    np = split($5, part, "/")
+                    key = ""
+                    for (d = 1; d <= np && d <= 3; d++) {
+                        key = (d == 1) ? part[1] : key "/" part[d]
+                        sz[key] += $3 * 512
+                        if ($4 > newest[key]) newest[key] = $4
+                        if ($2 != "d") cnt[key]++
+                        type[key] = (d == np) ? $2 : "d"
+                    }
+                }
+                END {
+                    for (key in sz) {
+                        if (newest[key] >= cutoff || sz[key] < 1048576) continue
+                        p = key; sub(/\/[^\/]*$/, "", p)
+                        if (p != key && (p in sz) && newest[p] < cutoff) continue
+                        printf "S\002%s\002%d\002%d\002%d\002%s/%s\n", type[key], sz[key], cnt[key], newest[key], home, key
+                    }
+                }'
+        # The 500 largest are plenty to choose from, and keep the list bounded.
+        done < <(homes) | sort -t $'\002' -k3,3nr | head -n 500
+    } | awk -F'\002' "$AWK_LIB"'
+        $1 == "M" { printf "M\t%s\t%s\n", $2, $3; next }
+        $1 == "T" { printf "T\t%s\t%s\t%d\t%s\t%s\n", esc($2), $3, $4, esc($5), $6; next }
+        $1 == "S" { printf "S\t%s\t%s\t%s\t%d\t%s\n", $2, $3, $4, $5, esc($6) }'
+}
+
+# ── remove ───────────────────────────────────────────────────────────────────
+do_remove() {
+    compute
+    local raw=${1:-} p par rp area rel depth s
+    p=$(printf '%b' "$raw")
+    [[ "$p" == /* ]] || { echo "ERROR: path must be absolute" >&2; exit 2; }
+    # Resolve the folder, not the last component: removing a link must not follow it.
+    par=$(realpath -m -- "$(dirname -- "$p")" 2>/dev/null) || exit 2
+    rp="$par/$(basename -- "$p")"
+    [ "$par" = / ] && rp="/$(basename -- "$p")"
+    area=$(area_of "$rp")
+    if [ -z "$area" ] || [ "$rp" = "$area" ]; then
+        echo "ERROR: not inside a persistent folder" >&2
+        exit 2
+    fi
+    rel=${rp#"$area"/}
+    s=${rel//[^\/]/}
+    depth=$((${#s} + 1))
+    local min=3
+    for s in "${MOUNTAREAS[@]+"${MOUNTAREAS[@]}"}"; do [ "$s" = "$area" ] && min=2; done
+    if [ "$depth" -lt "$min" ]; then
+        echo "ERROR: too high up to delete safely; open the folder and delete inside it" >&2
+        exit 2
+    fi
+    case "/$rel/" in
+    */.ssh/* | */.gnupg/* | */.pki/* | */keyrings/* | */sops*/* | */age/* | */ssh_host_* | */machine-id/* | */credential.secret/*)
+        echo "ERROR: protected: keys and machine identity are never deleted from here" >&2
+        exit 2
+        ;;
+    esac
+    # Entries that impermanence binds back into the system must stay in place,
+    # and so must the folders that contain them.
+    for s in "${BIND_S[@]+"${BIND_S[@]}"}"; do
+        if within "$s" "$rp"; then
+            echo "ERROR: the system keeps this persisted; remove its contents instead" >&2
+            exit 2
+        fi
+    done
+    if mountpoint -q -- "$rp" 2>/dev/null; then
+        echo "ERROR: this is a mount point" >&2
+        exit 2
+    fi
+    [ -e "$rp" ] || [ -L "$rp" ] || { echo "ERROR: already gone" >&2; exit 2; }
+    if rm -rf --one-file-system -- "$rp" 2>/dev/null && [ ! -e "$rp" ] && [ ! -L "$rp" ]; then
+        echo "removed"
+        exit 0
+    fi
+    # Left behind: something inside belongs to another user.
+    [ "$(id -u)" -ne 0 ] && exit 77
+    echo "ERROR: could not remove everything" >&2
+    exit 1
+}
+
+case "$mode" in
+detect) do_detect ;;
+sizes) do_sizes ;;
+cancel-list) stop_listing ;;
+list) do_list "$@" ;;
+scan) do_scan "$@" ;;
+cleanup) do_cleanup "$@" ;;
+remove) do_remove "$@" ;;
+*)
+    echo "ERROR: unknown mode" >&2
+    exit 2
+    ;;
+esac
+exit 0

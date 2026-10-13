@@ -108,7 +108,7 @@ ColumnLayout {
         model: root.filtered
         clip: true
         spacing: 1
-        ScrollBar.vertical: ScrollBar {}
+        ScrollBar.vertical: UI.ScrollBar {}
         delegate: PackageRow {
             storePathCache: root.storePathCache
             onStorePathRequested: pkg => root.storePathRequested(pkg)

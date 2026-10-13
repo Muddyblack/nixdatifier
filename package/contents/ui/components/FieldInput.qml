@@ -16,7 +16,9 @@ TextField {
     placeholderTextColor: UI.Theme.muted
     selectByMouse: true
     font.pixelSize: UI.Theme.fontPx(10, fs)
+    // qmllint disable missing-property
     font.family: mono ? UI.Theme.fixedWidthFont.family : Qt.application.font.family
+    // qmllint enable missing-property
     background: Rectangle {
         radius: 6
         color: "#04ffffff"

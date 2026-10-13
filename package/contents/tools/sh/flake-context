@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -eu
 flake_dir="${1:-}"
+# shellcheck disable=SC2088  # a literal "~", not an expansion
 [[ "$flake_dir" != "~" && "$flake_dir" != "~/"* ]] || flake_dir="$HOME${flake_dir:1}"
 if [[ -z "$flake_dir" ]]; then
     for candidate in /etc/nixos "$HOME/nixos-config" "${XDG_CONFIG_HOME:-$HOME/.config}/nixos"; do

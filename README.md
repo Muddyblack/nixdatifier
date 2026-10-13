@@ -65,6 +65,7 @@
 - **Tools** — secrets inspector, hash calculator, rebuild history, store usage, and cleanup.
 - **Dev environments** — direnv state, `devShells`, and stale inputs for any project folder.
 - **System health** — pending reboot, full `/boot`, end-of-life release, slow caches, failed units.
+- **Persistent folders tab** — On impermanence setups, see what survives a reboot and clean up leftovers.
 - **Any desktop** — standalone app with tray icon, Plasma 6 widget, or Quickshell panel.
 
 Full list in [docs/features.md](docs/features.md).

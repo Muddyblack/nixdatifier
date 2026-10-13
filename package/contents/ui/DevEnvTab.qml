@@ -23,14 +23,14 @@ Item {
 
     readonly property var result: devEnvResult
     readonly property bool found: !!result && !result.isError
-    readonly property bool hasFlake: found && result.files.indexOf("flake.nix") >= 0
+    readonly property bool hasFlake: found && !!result.files && result.files.indexOf("flake.nix") >= 0
     // The devShell whose packages are shown, and the cache awaiting a second click.
     property string openShell: ""
     property string confirmClear: ""
     property string shownDir: ""
-    readonly property var openPackages: found && openShell !== "" ? (shellPackages[result.dir + "#" + openShell] || null) : null
+    readonly property var openPackages: found && openShell !== "" && !!result ? (shellPackages[result.dir + "#" + openShell] || null) : null
     onResultChanged: {
-        const dir = found ? result.dir : "";
+        const dir = (result && !result.isError) ? result.dir : "";
         if (dir !== shownDir) {
             shownDir = dir;
             openShell = "";
@@ -92,7 +92,7 @@ Item {
         return state === "allowed" ? UI.Theme.positive : state === "blocked" || state === "unknown" ? UI.Theme.changed : state === "denied" ? UI.Theme.negative : UI.Theme.muted;
     }
 
-    ScrollView {
+    UI.ScrollView {
         id: scroll
         anchors.fill: parent
         clip: true

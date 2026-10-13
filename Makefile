@@ -1,4 +1,4 @@
-.PHONY: help view view-h hyprland app test install pack tag
+.PHONY: help view view-h hyprland app test lint fmt install pack tag
 .DEFAULT_GOAL := help
 
 help: ## list targets
@@ -44,3 +44,10 @@ hyprland: ## run the Quickshell popup, pill and tray
 
 test: ## isolated QML interactions and shell-helper checks
 	./tests/run.sh
+
+lint: ## static checks: ruff, shellcheck, qmllint, qmlformat, unused code
+	./scripts/lint.sh
+
+fmt: ## format QML and Python in place
+	find package hyprland shell.qml standalone tests -name '*.qml' | xargs qmlformat -i
+	ruff format .

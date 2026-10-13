@@ -12,6 +12,26 @@
       metadata = builtins.fromJSON (builtins.readFile ./package/metadata.json);
       pluginId = metadata.KPlugin.Id;   # org.muddyblack.nixosGenerationExplorer
       version  = metadata.KPlugin.Version;
+
+      # The Qt and KDE QML modules the widget imports. Tests and qmllint resolve
+      # against exactly these, so they behave the same on a laptop and in CI
+      # instead of depending on whatever the desktop has installed.
+      qmlModules = pkgs: with pkgs; [
+        qt6.qtdeclarative
+        qt6.qtsvg
+        kdePackages.kirigami.unwrapped
+        kdePackages.plasma5support
+        kdePackages.libplasma
+      ];
+      qmlEnv = pkgs: extra:
+        let qml = pkgs.lib.makeSearchPath "lib/qt-6/qml" (qmlModules pkgs ++ extra); in
+        {
+          QML_IMPORT_PATH = qml;
+          QML2_IMPORT_PATH = qml;
+          QT_PLUGIN_PATH = pkgs.lib.makeSearchPath "lib/qt-6/plugins" [ pkgs.qt6.qtbase pkgs.qt6.qtsvg pkgs.kdePackages.plasma5support ];
+        };
+      # What the shell helpers call, so their tests do not borrow the host's tools.
+      helperTools = pkgs: with pkgs; [ python3 bash coreutils gnugrep gnused gawk findutils util-linux jq git curl inotify-tools ];
     in
     {
       # ── installable package ────────────────────────────────────────────────
@@ -50,6 +70,7 @@
               set -euo pipefail
               export PATH=${runtimePath}:\$PATH
               export QT_QUICK_CONTROLS_STYLE=Fusion
+              export QT_LOGGING_RULES="default.warning=false;\''${QT_LOGGING_RULES:-}"
               runtime_dir="\''${XDG_RUNTIME_DIR:-/tmp}/nixdatifier-\$USER"
               mkdir -p "\$runtime_dir"
               chmod 700 "\$runtime_dir"
@@ -156,14 +177,57 @@
           };
         });
 
+      # ── checks: `nix flake check`, and what CI runs ────────────────────────
+      # `lint` is scripts/lint.sh (the same file `make lint` and CI run);
+      # `tests` is tests/run.sh. Both run in the sandbox against the pinned Qt and
+      # KDE modules, so a green check here means the same thing everywhere.
+      checks = forAllSystems (system:
+        let
+          pkgs = pkgsFor system;
+          source = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./package
+              ./hyprland
+              ./standalone
+              ./tray
+              ./shell.qml
+              ./tests
+              ./scripts
+              ./ruff.toml
+              ./.qmllint.ini
+            ];
+          };
+          check = name: tools: extraQml: script: pkgs.runCommand "nixdatifier-${name}"
+            ({ nativeBuildInputs = tools; } // qmlEnv pkgs extraQml)
+            ''
+              export HOME="$TMPDIR"
+              cp -r ${source} source
+              chmod -R u+w source
+              cd source
+              ${script}
+              touch "$out"
+            '';
+        in
+        {
+          lint = check "lint"
+            (with pkgs; [ qt6.qtdeclarative ruff shellcheck python3 findutils coreutils diffutils bash ])
+            [ pkgs.quickshell ]
+            "bash scripts/lint.sh";
+          tests = check "tests"
+            ([ pkgs.qt6.qtdeclarative ] ++ helperTools pkgs)
+            [ ]
+            "bash tests/run.sh";
+        });
+
       # ── development shell ──────────────────────────────────────────────────
       devShells = forAllSystems (system:
         let pkgs = pkgsFor system; in
         {
-          default = pkgs.mkShell {
+          default = pkgs.mkShell ({
             name = "nixos-generation-explorer-dev";
             packages = with pkgs; [
-              qt6.qtdeclarative      # qmllint + qmlformat
+              qt6.qtdeclarative      # qmllint, qmlformat, qmltestrunner
               kdePackages.kpackage   # kpackagetool6
               kdePackages.plasma-sdk # plasmoidviewer
               quickshell
@@ -172,13 +236,15 @@
               cmake
               pre-commit
               zip                    # needed by pack.sh
-            ];
+              ruff                   # Python lint and format
+              shellcheck             # shell helper lint
+            ] ++ helperTools pkgs;
             shellHook = ''
               pre-commit install -f --install-hooks
               echo "nixos-generation-explorer dev shell ready"
-              echo "  make help        — list targets (view, install, pack, tag)"
+              echo "  make help        — list targets (view, install, pack, test, lint, tag)"
             '';
-          };
+          } // qmlEnv pkgs [ pkgs.quickshell ]);
         });
 
       # ── integration for NixOS and Home Manager users ──────────────────────

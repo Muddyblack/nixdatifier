@@ -44,7 +44,7 @@ Item {
         if (next[input.input] && !dryRunCache[input.input])
             dryRunRequested(input.input, input.overrideRef);
     }
-    ScrollView {
+    UI.ScrollView {
         id: scroll
         objectName: "updatesScroll"
         anchors.fill: parent

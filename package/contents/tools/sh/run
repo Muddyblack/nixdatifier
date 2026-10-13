@@ -4,38 +4,79 @@ set -euo pipefail
 umask 077
 cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/nixdatifier"
 mkdir -p "$cache_root"
+# An epoch prevents an in-flight probe from repopulating a cache after a
+# mutation invalidated it. Old snapshots retain the old key and cannot win.
+invalidate() {
+    local epoch_tmp
+    epoch_tmp=$(mktemp "$cache_root/.epoch.XXXXXXXX")
+    printf '%s\n' "$epoch_tmp" >"$epoch_tmp"
+    mv -- "$epoch_tmp" "$cache_root/$1.epoch"
+}
 mode="${1:?missing mode}"; shift
 case "$mode" in
+    invalidate)
+        case "${1:-}" in store | impermanence) invalidate "$1" ;; *) exit 2 ;; esac
+        ;;
     mutate)
         [[ "${1:-}" == -- ]] && shift
         exec 9>"$cache_root/system-operation.lock"
         flock -n 9 || { echo 'Another Nixdatifier system operation is already running.' >&2; exit 75; }
+        invalidate store
+        trap 'invalidate store; rm -f "$cache_root"/disk-*.result "$cache_root"/disk-*.result.state' EXIT
         set +e
         "$@"
         result=$?
-        # Cached measurements no longer describe the post-operation store.
-        rm -f "$cache_root"/disk-*.result
         exit "$result"
         ;;
     cached)
         scope="${1:?}"; ttl="${2:?}"; shift 2
         [[ "${1:-}" == -- ]] && shift
         [[ "$ttl" =~ ^[0-9]+$ ]] || exit 2
-        requested=$(date +%s)
         fingerprint=''
         if [[ "$scope" == flake:* && -f "${2:-}/flake.lock" ]]; then
             fingerprint=$(sha256sum "${2}/flake.lock")
         fi
+        case "$scope" in
+            disk | disk:* | storeusage:*) fingerprint+="$(cat "$cache_root/store.epoch" 2>/dev/null || true)" ;;
+            impermanence) fingerprint+="$(cat "$cache_root/impermanence.epoch" 2>/dev/null || true)" ;;
+        esac
         key=$(printf '%s\0' v1 "$scope" "$fingerprint" "${1##*/}" "${@:2}" | sha256sum | cut -d' ' -f1)
         prefix=probe
-        [[ "$scope" == disk ]] && prefix=disk
+        [[ "$scope" == disk || "$scope" == disk:* ]] && prefix=disk
         result_file="$cache_root/$prefix-$key.result"
+        # Store measurements follow the store itself, whoever changed it: a
+        # rebuild in a terminal, `nix build`, garbage collection or deleted
+        # generations all touch one of these. Unchanged, a result is good for
+        # the whole ttl; changed, it is measured again, though not more than
+        # every five minutes, since evaluations alone add small .drv files.
+        state=''
+        if [[ "$prefix" == disk ]]; then
+            # Tests point this at folders they can touch.
+            read -r -a watched <<<"${NIXDATIFIER_STORE_WATCH:-/nix/store /nix/var/nix/profiles /nix/var/nix/gcroots/auto}"
+            state=$(stat -c %y "${watched[@]}" 2>/dev/null | paste -sd. - || true)
+        fi
+        # Capture file identity before waiting: only a result replaced while we
+        # waited can satisfy another forced caller. Same-second timestamps cannot.
+        observed=$(stat -c '%i:%y' "$result_file" 2>/dev/null || true)
         exec 9>"$result_file.lock"
-        flock 9
+        if [[ "$prefix" == disk || "$scope" == storeusage:* ]]; then
+            flock -w 150 9 || { echo 'Timed out waiting for another store measurement.' >&2; exit 124; }
+        else
+            flock 9
+        fi
         if [[ -f "$result_file" ]]; then
             stamp=$(stat -c %Y "$result_file")
             now=$(date +%s)
-            if (( now-stamp < ttl || stamp >= requested )); then
+            fresh=0
+            if [[ "$prefix" == disk && "$ttl" != 0 ]]; then
+                saved=$(cat "$result_file.state" 2>/dev/null || true)
+                (( now-stamp < 300 && now-stamp < ttl )) && fresh=1
+                [[ -n "$state" && "$saved" == "$state" ]] && (( now-stamp < ttl )) && fresh=1
+            elif (( now-stamp < ttl )); then
+                fresh=1
+            fi
+            current=$(stat -c '%i:%y' "$result_file")
+            if (( fresh )) || [[ "$current" != "$observed" ]]; then
                 # A partial flake check must retry the network, including when
                 # reading failed snapshots written by older widget versions.
                 if [[ "$scope" != flake:* ]] || ! grep -q $'\tunreachable\t' "$result_file"; then
@@ -51,6 +92,7 @@ case "$mode" in
             exit 0
         fi
         mv "$temp" "$result_file"
+        [[ "$prefix" == disk ]] && printf '%s\n' "$state" >"$result_file.state"
         cat "$result_file"
         # Keys include lock fingerprints, closures, and diff contents, so old
         # entries are never read again. On a miss, drop anything untouched for

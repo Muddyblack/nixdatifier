@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls
 import QtQuick.Layouts
 import "shared" as UI
 import "components"
@@ -34,7 +33,7 @@ Item {
         return s.encKind || "—";
     }
 
-    ScrollView {
+    UI.ScrollView {
         id: scroll
         anchors.fill: parent
         clip: true

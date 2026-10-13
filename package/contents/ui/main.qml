@@ -7,11 +7,11 @@ import "shared" as UI
 
 PlasmoidItem {
     id: plasmoidRoot
-    Layout.minimumWidth: 380
-    Layout.minimumHeight: 420
-    Layout.preferredWidth: plasmoid.configuration.popupWidth
-    Layout.preferredHeight: plasmoid.configuration.popupHeight
-    Plasmoid.backgroundHints: plasmoid.configuration.showBg ? PlasmaCore.Types.NoBackground : PlasmaCore.Types.DefaultBackground
+    // Popup geometry belongs to fullRepresentation; root hints also size the panel item.
+    readonly property bool inPanel: Plasmoid.formFactor === PlasmaCore.Types.Horizontal || Plasmoid.formFactor === PlasmaCore.Types.Vertical
+    // qmllint disable unresolved-type
+    Plasmoid.backgroundHints: Plasmoid.configuration.showBg ? PlasmaCore.Types.NoBackground : PlasmaCore.Types.DefaultBackground
+    // qmllint enable unresolved-type
     hideOnWindowDeactivate: !core.pinned
     toolTipMainText: core.toolTipMainText
     toolTipSubText: core.toolTipSubText
@@ -37,6 +37,12 @@ PlasmoidItem {
         onConfigureRequested: plasmoid.internalAction("configure").trigger()
     }
     compactRepresentation: CompactView {
+        readonly property bool verticalPanel: Plasmoid.formFactor === PlasmaCore.Types.Vertical
+        Layout.minimumWidth: verticalPanel ? 0 : implicitWidth
+        Layout.maximumWidth: verticalPanel ? Infinity : implicitWidth
+        Layout.minimumHeight: verticalPanel ? implicitHeight : 0
+        Layout.preferredHeight: implicitHeight
+        Layout.maximumHeight: verticalPanel ? implicitHeight : Infinity
         accentColor: core.accentColor
         textColor: core.textColor
         activeGenNum: core.activeGenNum
@@ -53,6 +59,9 @@ PlasmoidItem {
     fullRepresentation: ApplicationView {
         id: popupView
         engine: core
+        // Plasma supplies the popup surface and frame, even with NoBackground hints.
+        showBg: !plasmoidRoot.inPanel && core.settings.showBg
+        textColor: plasmoidRoot.inPanel && core.settings.useSystemTextColor ? Kirigami.Theme.textColor : core.textColor
         Layout.minimumWidth: 380
         Layout.minimumHeight: 480
         Layout.preferredWidth: implicitWidth

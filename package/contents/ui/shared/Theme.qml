@@ -12,14 +12,6 @@ QtObject {
     readonly property color negative: "#fb858f"
     readonly property color changed: "#f2cc70"
     readonly property color line: "#12ffffff"
-    property font smallFont: Qt.font({
-        family: Qt.application.font.family,
-        pixelSize: 11
-    })
-    property font defaultFont: Qt.font({
-        family: Qt.application.font.family,
-        pixelSize: 13
-    })
     property font fixedWidthFont: Qt.font({
         family: "monospace",
         pixelSize: 11
@@ -60,5 +52,10 @@ QtObject {
             i++;
         }
         return (i >= 3 ? v.toFixed(1) : Math.round(v)) + " " + units[i];
+    }
+    // Paths from the impermanence helper escape backslashes and control
+    // characters as \\ and \xHH so each stays on one line; this reverses it.
+    function unescapePath(text) {
+        return String(text || "").replace(/\\(\\|x[0-9a-fA-F]{2})/g, (m, g) => g === "\\" ? "\\" : String.fromCharCode(parseInt(g.slice(1), 16)));
     }
 }

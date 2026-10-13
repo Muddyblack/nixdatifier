@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls
 import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
@@ -75,6 +74,9 @@ ShellRoot {
             property bool showFlakeSection: true
             property string secretsPath: ""
             property string secretsSourcePath: ""
+            property string impermanencePaths: ""
+            property int impermanenceStaleDays: 180
+            property bool impermanenceAllDisks: false
             property bool diffFilterEnabled: true
             property color timelineColor: "#71849b"
             property color accentColor: "#91bcff"
@@ -303,7 +305,6 @@ ShellRoot {
     }
     // Separate popup so the tooltip isn't clipped to the pill's tiny layer surface.
     PopupWindow {
-        id: pillTip
         visible: !pillDrag.pressed && pillWindow.visible && hover.hovered && !tipDelay.running && pillWindow.shown && !root.popupOpen && !root.smokeTest
         color: "transparent"
         anchor.window: pillWindow

@@ -63,7 +63,9 @@ Rectangle {
                     text: row.detail
                     textFormat: Text.PlainText
                     color: "#8293ab"
+                    // qmllint disable missing-property
                     font.family: row.monoDetail ? UI.Theme.fixedWidthFont.family : Qt.application.font.family
+                    // qmllint enable missing-property
                     font.pixelSize: UI.Theme.fontPx(9, row.fs)
                     elide: Text.ElideMiddle
                 }

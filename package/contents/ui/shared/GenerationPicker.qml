@@ -1,4 +1,5 @@
 import QtQuick
+import "." as UI
 import QtQuick.Controls.Basic
 
 ComboBox {
@@ -86,7 +87,7 @@ ComboBox {
             model: control.popup.visible ? control.delegateModel : null
             currentIndex: control.highlightedIndex
             highlightMoveDuration: 0
-            ScrollBar.vertical: ScrollBar {}
+            ScrollBar.vertical: UI.ScrollBar {}
         }
         background: Rectangle {
             color: "#1b2330"

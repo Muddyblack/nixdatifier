@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls
 import QtQuick.Layouts
 import "shared" as UI
 import "components"
@@ -94,7 +93,7 @@ Item {
         }
     }
 
-    ScrollView {
+    UI.ScrollView {
         id: scroll
         anchors.fill: parent
         clip: true
@@ -163,7 +162,7 @@ Item {
                 tone: UI.Theme.changed
                 emphasis: true
                 fs: storeUsageTab.fs
-                text: qsTr("This path is no longer on disk; it has already been collected.")
+                text: qsTr("This store path is not present on disk.")
             }
             InfoRows {
                 Layout.fillWidth: true
@@ -174,11 +173,11 @@ Item {
                 rows: storeUsageTab.found ? [
                     {
                         label: qsTr("Status"),
-                        value: storeUsageTab.result.roots.length ? qsTr("Kept alive") : qsTr("Collectable"),
+                        value: storeUsageTab.result.roots.length ? qsTr("Kept alive") : qsTr("No roots reported"),
                         tone: storeUsageTab.result.roots.length ? UI.Theme.changed : UI.Theme.positive
                     },
                     {
-                        label: qsTr("Closure size"),
+                        label: qsTr("Closure size (NAR)"),
                         value: UI.Theme.formatBytes(storeUsageTab.result.closureBytes) || "—"
                     }
                 ] : []
@@ -191,7 +190,7 @@ Item {
                 tone: UI.Theme.positive
                 emphasis: true
                 fs: storeUsageTab.fs
-                text: qsTr("No GC root reaches this path. The next garbage collection will remove it.")
+                text: qsTr("No GC roots were reported. Temporary roots and Nix retention settings can still prevent collection.")
             }
             PathSection {
                 Layout.fillWidth: true

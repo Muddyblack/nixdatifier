@@ -1,50 +1,46 @@
 #!/usr/bin/env bash
-# Usage: store-usage <store-path>
-# Explains what keeps a /nix/store/... path from being garbage collected.
-# Emits four \x1e-separated fields:
-#   [0] GC roots that (transitively) point at the path, one per line
-#   [1] direct referrers within the store, one per line
-#   [2] closure size in bytes ("" if the path no longer exists)
-#   [3] "1" if the path still exists on disk, "0" otherwise
-set -u
+# Usage: store-usage <store-path-or-subpath>
+# Fields: GC roots, direct referrers, closure NAR bytes, exists (0/1), store root.
+# Failed queries are errors, never evidence that a path is collectable.
+set -euo pipefail
+export LC_ALL=C
 export PATH="$PATH:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/root/.nix-profile/bin"
-
-# --roots/--referrers walk the Nix DB and can be slow on a large store — keep
-# them from competing with the desktop for CPU/disk, same as diskusage.
 lowprio() {
     if command -v ionice >/dev/null 2>&1; then
-        nice -n 19 ionice -c 3 "$@"
+        nice -n 19 ionice -c 3 timeout --kill-after=5s 120s "$@"
     else
-        nice -n 19 "$@"
+        nice -n 19 timeout --kill-after=5s 120s "$@"
     fi
 }
-
 raw="${1:-}"
-[ -n "$raw" ] || { echo "ERROR: missing store path" >&2; exit 2; }
-
-path=$(realpath -m "$raw" 2>/dev/null) || path="$raw"
-[[ "$path" =~ ^/nix/store/[0-9a-z]{32}- ]] || { echo "ERROR: not a store path" >&2; exit 2; }
-
-if [ -e "$path" ]; then
-    exists=1
-else
-    exists=0
+[ -n "$raw" ] || { echo 'ERROR: missing store path' >&2; exit 2; }
+path=$(realpath -m -- "$raw")
+[[ "$path" =~ ^(/nix/store/[0-9a-z]{32}-[^/]+)(/.*)?$ ]] || { echo 'ERROR: not a store path' >&2; exit 2; }
+path=${BASH_REMATCH[1]}
+if [[ ! -e "$path" && ! -L "$path" ]]; then
+    printf '\x1e\x1e\x1e0\x1e%s' "$path"
+    exit 0
 fi
-
-if [ "$exists" = 1 ]; then
-    lowprio nix-store --query --roots "$path" 2>/dev/null
+work=$(mktemp -d -t nixdatifier-store-usage.XXXXXXXX)
+trap 'rm -rf -- "$work"' EXIT
+lowprio nix-store --query --roots "$path" >"$work/roots" 2>"$work/roots-error" &
+roots_pid=$!
+lowprio nix-store --query --referrers "$path" >"$work/referrers" 2>"$work/referrers-error" &
+referrers_pid=$!
+lowprio nix --extra-experimental-features nix-command path-info --closure-size "$path" >"$work/size" 2>"$work/size-error" &
+size_pid=$!
+status=0
+wait "$roots_pid" || status=1
+wait "$referrers_pid" || status=1
+wait "$size_pid" || status=1
+if (( status )); then
+    cat "$work/roots-error" "$work/referrers-error" "$work/size-error" >&2
+    echo 'Could not inspect the store path. It may have changed during inspection.' >&2
+    exit 1
 fi
+size=$(awk 'NF {print $NF}' "$work/size")
+[[ "$size" =~ ^[0-9]+$ ]] || { echo 'Invalid closure size from Nix.' >&2; exit 1; }
+cat "$work/roots"
 printf '\x1e'
-
-if [ "$exists" = 1 ]; then
-    lowprio nix-store --query --referrers "$path" 2>/dev/null
-fi
-printf '\x1e'
-
-if [ "$exists" = 1 ]; then
-    nix path-info -S "$path" 2>/dev/null | awk '{print $NF}'
-fi
-printf '\x1e'
-
-printf '%s' "$exists"
-exit 0
+cat "$work/referrers"
+printf '\x1e%s\x1e1\x1e%s' "$size" "$path"
