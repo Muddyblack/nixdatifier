@@ -1,0 +1,939 @@
+#!/usr/bin/env bash
+# nixdatifier tui: the interactive front end, in the spirit of lazygit. A bare
+# `nixdatifier` (or `nixdatifier menu`) on a terminal opens it.
+#
+# It owns no system logic. Every list, preview and action calls the nixdatifier
+# CLI, so locks, cache, history and confirmation prompts stay in one place; this
+# file only arranges them in fzf screens. fzf calls back into it through the
+# `_name` endpoints at the bottom for lists and previews. Without fzf 0.70 or
+# newer (or with NIXDATIFIER_NO_FZF=1) it falls back to a numbered menu.
+#
+# Keys everywhere: Enter opens, Esc or Backspace (on an empty search) goes back,
+# Ctrl-R refreshes, Ctrl-/ toggles the preview, F1 lists the keys.
+set -uo pipefail
+here=$(dirname "$(realpath "$0")")
+export NXD_CLI=${NXD_CLI:-$here/nixdatifier} NXD_TUI=${NXD_TUI:-$here/tui}
+# The screens are laid out as a whole; personal fzf defaults (height, border,
+# layout) would break them.
+unset FZF_DEFAULT_OPTS FZF_DEFAULT_OPTS_FILE FZF_DEFAULT_COMMAND
+FZF_MIN=0.70
+: "${NXD_STATE:=${TMPDIR:-/tmp}}" "${NXD_CACHE:=$NXD_STATE}"
+
+# ── Look ────────────────────────────────────────────────────────────────────
+# Two independent choices, kept in ~/.config/nixdatifier/tui.conf and switched on
+# the home screen with Alt-C (colour) and Alt-L (layout), or by clicking them in
+# the footer. The starting choice can come from the environment
+# (NIXDATIFIER_THEME, NIXDATIFIER_LAYOUT; the Nix modules' tui.theme/tui.layout);
+# a choice made in the view is remembered and wins.
+#   layout  roomy (default: boxed sections, the logo) or compact (no boxes)
+#   theme   a name. Built in: deep (default), midnight, marina, full, plain. Your
+#           own: a file NAME.theme in ~/.config/nixdatifier/themes (or
+#           /etc/nixdatifier/themes) with lines "key=#rrggbb"; see docs/cli.md.
+#           It overrides a built-in of the same name; keys left out keep the
+#           deep theme's value. NO_COLOR always means plain.
+CONF=${XDG_CONFIG_HOME:-$HOME/.config}/nixdatifier/tui.conf
+THEME_DIRS=("${XDG_CONFIG_HOME:-$HOME/.config}/nixdatifier/themes" /etc/nixdatifier/themes)
+conf_get() { sed -n "s/^$1=//p" "$CONF" 2>/dev/null | tail -1; }
+
+# Built-in themes: accent label text muted border select match pointer ok bad
+# warn bg (empty bg: the terminal's own). full also has orange pink violet cyan.
+declare -A T
+theme_defaults() {
+    T=([accent]='#0EADCF' [label]='#22D4FF' [text]='#CBE0F0' [muted]='#8295A0' [border]='#336380' [select]='#074F81'
+        [match]='#55FFCC' [pointer]='#47FF9C' [ok]='#44FFB1' [bad]='#E52E2E' [warn]='#FFE073' [bg]='#02162B')
+}
+theme_builtin() { # theme_builtin NAME
+    case $1 in
+        midnight) T[bg]='#03233A' ;; # Midnight Marina; deep is Midnight Marina Deep
+        marina) # the widget's Theme.qml
+            T=([accent]='#91bcff' [label]='#91bcff' [text]='#e6ecf5' [muted]='#939fb2' [border]='#2c384b' [select]='#243247'
+                [match]='#91bcff' [pointer]='#91bcff' [ok]='#6ee7b7' [bad]='#fb858f' [warn]='#f2cc70' [bg]='') ;;
+        full) # the logo's gradient on everything
+            T=([accent]='#ff4fd8' [label]='#ff8a3d' [text]='#f4f1ff' [muted]='#8f96b3' [border]='#4b3a78' [select]='#2b2140'
+                [match]='#ff4fd8' [pointer]='#ff4fd8' [ok]='#44FFB1' [bad]='#fb858f' [warn]='#f2cc70' [bg]=''
+                [orange]='#ff8a3d' [pink]='#ff4fd8' [violet]='#9d6bff' [cyan]='#3ad8ff') ;;
+    esac
+}
+theme_files() { # every NAME.theme found, one name per line
+    local d f
+    for d in "${THEME_DIRS[@]}"; do for f in "$d"/*.theme; do [[ -f $f ]] && basename "$f" .theme; done; done
+}
+theme_load() { # theme_load NAME: defaults, then the built-in, then the user's file
+    local d k v
+    theme_defaults
+    theme_builtin "$1"
+    for d in "${THEME_DIRS[@]}"; do
+        [[ -f $d/$1.theme ]] || continue
+        while IFS='=' read -r k v; do
+            k=${k//[[:space:]]/}; v=${v#"${v%%[![:space:]]*}"}; v=${v%%[[:space:]]*}
+            [[ $k =~ ^[a-z]+$ && ( -z $v || $v =~ ^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$ ) ]] && T[$k]=$v
+        done < <(grep -v '^[[:space:]]*#' "$d/$1.theme" | grep =)
+        break
+    done
+}
+theme_names() { printf '%s\n' deep marina midnight full plain; theme_files; }
+
+hex_rgb() { local h=${1#\#}; ((${#h} == 3)) && h=${h:0:1}${h:0:1}${h:1:1}${h:1:1}${h:2:1}${h:2:1}; R_=$((16#${h:0:2})) G_=$((16#${h:2:2})) B_=$((16#${h:4:2})); }
+hex_256() { # nearest xterm-256 colour of #rrggbb (the 6x6x6 cube or the grey ramp)
+    local r g b gr
+    hex_rgb "$1"; r=$(((R_ * 5 + 127) / 255)) g=$(((G_ * 5 + 127) / 255)) b=$(((B_ * 5 + 127) / 255))
+    gr=$(((R_ + G_ + B_) / 3))
+    if ((R_ - G_ < 10 && G_ - R_ < 10 && G_ - B_ < 10 && B_ - G_ < 10)) && ((gr > 8 && gr < 238)); then echo $((232 + (gr - 8) / 10)); else echo $((16 + 36 * r + 6 * g + b)); fi
+}
+TRUECOLOR=0
+[[ ${COLORTERM:-} == truecolor || ${COLORTERM:-} == 24bit ]] && TRUECOLOR=1
+fg_code() { # fg_code #rrggbb: escape sequence for a text colour
+    if ((TRUECOLOR)); then hex_rgb "$1"; printf '\033[38;2;%s;%s;%sm' "$R_" "$G_" "$B_"; else printf '\033[38;5;%sm' "$(hex_256 "$1")"; fi
+}
+fzf_col() { # fzf_col #rrggbb: the colour as fzf wants it
+    if ((TRUECOLOR)); then echo "$1"; else hex_256 "$1"; fi
+}
+
+THEME=$(conf_get theme); THEME=${THEME:-${NIXDATIFIER_THEME:-deep}}
+LAYOUT=$(conf_get layout); LAYOUT=${LAYOUT:-${NIXDATIFIER_LAYOUT:-}}
+# Not "theme_names | grep -q": with pipefail, grep leaving early fails the pipe.
+theme_known() { local n; while read -r n; do [[ $n == "$1" ]] && return 0; done < <(theme_names); return 1; }
+theme_known "$THEME" || THEME=deep
+[[ $LAYOUT == compact ]] || LAYOUT=roomy
+[[ -z ${NO_COLOR:-} ]] || THEME=plain
+cycle_conf() { # cycle_conf theme|layout: step to the next value and remember it
+    local next names n prev=''
+    if [[ $1 == theme ]]; then
+        mapfile -t names < <(theme_names | awk '!s[$0]++')
+        next=${names[0]}
+        for n in "${names[@]}"; do [[ $prev == "$THEME" ]] && { next=$n; break; }; prev=$n; done
+    else
+        case $LAYOUT in roomy) next=compact ;; *) next=roomy ;; esac
+    fi
+    mkdir -p "$(dirname "$CONF")" || return 0
+    { grep -v "^$1=" "$CONF" 2>/dev/null; echo "$1=$next"; } >"$CONF.new" && mv "$CONF.new" "$CONF"
+}
+palette() {
+    local e=$'\033'
+    O='' P='' V='' C='' G='' R='' Y='' D="${e}[2m" B="${e}[1m" S="${e}[9m" X="${e}[0m" clr=(--color never)
+    if [[ $THEME == plain ]]; then P="${e}[1m"; return 0; fi
+    theme_load "$THEME"
+    clr=(--color always)
+    P=$(fg_code "${T[accent]}") G=$(fg_code "${T[ok]}") R=$(fg_code "${T[bad]}") Y=$(fg_code "${T[warn]}")
+    O=$P V=$P C=$P
+    [[ -z ${T[orange]:-} ]] || { O=$(fg_code "${T[orange]}") V=$(fg_code "${T[violet]:-${T[accent]}}") C=$(fg_code "${T[cyan]:-${T[accent]}}"); P=$(fg_code "${T[pink]:-${T[accent]}}"); }
+}
+fzf_theme() {
+    [[ $THEME != plain ]] || { echo --color=bw; return; }
+    theme_load "$THEME"
+    local c=() k bg=-1
+    for k in accent label text muted border select match pointer ok; do c+=("$(fzf_col "${T[$k]}")"); done
+    local accent=${c[0]} label=${c[1]} text=${c[2]} muted=${c[3]} border=${c[4]} select=${c[5]} match=${c[6]} pointer=${c[7]} ok=${c[8]}
+    # A background only with truecolor: the nearest 256 colour would look off.
+    [[ -n ${T[bg]} ]] && ((TRUECOLOR)) && bg=${T[bg]}
+    printf '%s\n' --color "bg:$bg,fg:$text,hl:$match,fg+:$text:bold,bg+:$select,hl+:$match:bold,info:$muted,prompt:$accent,pointer:$pointer,marker:$ok,spinner:$accent,header:$muted,border:$border,label:$label:bold,query:$text:regular,gutter:$bg,scrollbar:$border,separator:$border,preview-border:$border,preview-label:$label:bold,list-label:$label:bold,input-label:$muted,header-label:$muted,footer:$muted,ghost:$border"
+}
+palette
+
+# Everything every screen shares: full-screen, bordered sections, the theme,
+# bash for bindings (not the user's shell), and the keys that work everywhere.
+base_opts() {
+    local theme
+    mapfile -t theme < <(fzf_theme)
+    FZF_BASE=("${theme[@]}" --ansi --style "$([[ $LAYOUT == roomy && $(tput lines 2>/dev/null </dev/tty || echo 40) -ge 18 ]] && echo full || echo default)" --layout reverse --cycle --info inline-right --highlight-line
+        --pointer '▌' --marker '┃' --gutter ' ' --prompt '❯ ' --scrollbar '▐' --separator '─' --ellipsis '…'
+        --with-shell 'bash -c' --delimiter '\t' --preview-window 'right,55%,wrap'
+        --bind 'start,resize:transform:$NXD_TUI _fit "$FZF_COLUMNS" "$FZF_LINES"' \
+        --bind 'ctrl-/:toggle-preview,alt-p:toggle-preview,alt-up:preview-page-up,alt-down:preview-page-down'
+        --bind 'shift-up:preview-up,shift-down:preview-down,f1:preview($NXD_TUI _help)')
+}
+# One key hint for the footer: the key in pink, what it does dimmed.
+key() { printf '%s%s%s %s%s%s' "$P$B" "$1" "$X" "$D" "$2" "$X"; }
+# The hints, wrapped onto lines that fit the list pane (about 45% of the
+# terminal beside a preview, all of it when the preview is below).
+keys() {
+    local cols max out='' line='' len=0 k item w
+    cols=$(tput cols 2>/dev/null </dev/tty) || cols=${COLUMNS:-100}
+    if ((cols >= 70)); then max=$((cols * 45 / 100 - 6)); else max=$((cols - 6)); fi
+    ((max >= 24)) || max=24
+    for k in "$@"; do
+        item=$(key "${k%%=*}" "${k#*=}")
+        w=$((${#k} + 1))
+        if ((len > 0 && len + 3 + w > max)); then out+="$line"$'\n'; line=$item len=$w
+        else line+="${line:+   }$item"; len=$((len + (len ? 3 : 0) + w)); fi
+    done
+    printf '%s' "$out$line"
+}
+
+# The logo as coloured blocks (any terminal) or, with NIXDATIFIER_LOGO=image, as
+# a real picture through the terminal's graphics protocol (kitty, sixel, iTerm).
+# Nothing without chafa or with NIXDATIFIER_LOGO=off. Rendering scales a large
+# PNG, so each size is drawn once per session.
+logo() { # logo <columns> <rows>
+    local img='' f out mode=${NIXDATIFIER_LOGO:-blocks}
+    [[ $mode != off && $LAYOUT == roomy && $THEME != plain ]] && command -v chafa >/dev/null || return 0
+    out=${NXD_STATE:-/tmp}/logo-$mode-$1x$2
+    # Our own SVG first (sharp at any size); the PNG when chafa has no SVG loader.
+    for f in "$here/../../../icon-emblem.svg" "$here/../../../icon-emblem.png" "$here/../../../icon.png"; do
+        [[ -f $f ]] || continue
+        img=$f; rm -f "$out"
+        logo_render "$img" "$1" "$2" "$mode" "$out"
+        [[ -s $out ]] && break
+    done
+    [[ -s $out ]] && cat "$out"
+}
+logo_render() { # logo_render IMAGE COLUMNS ROWS MODE OUTFILE
+    local img=$1 cols=$2 rows=$3 mode=$4 out=$5
+    if [[ $mode == image ]]; then chafa --animate off --polite on -s "${cols}x$rows" "$img" >"$out" 2>/dev/null
+    else chafa --animate off --polite on -f symbols --symbols half+quad+block+space -c "$([[ ${COLORTERM:-} =~ ^(truecolor|24bit)$ ]] && echo full || echo 256)" -s "${cols}x$rows" "$img" >"$out" 2>/dev/null; fi
+}
+# The overview's top: the logo with the name and system facts beside it. A
+# picture (NIXDATIFIER_LOGO=image) or a narrow preview stacks them instead.
+overview_top() { # overview_top <preview columns>
+    local side ver w=18 h=8
+    ver=$("$NXD_CLI" --version 2>/dev/null)
+    side=$(printf '\n%s%s❄  nix%sdati%sfier%s  %s%s%s\n' "$B" "$C" "$V" "$P" "$X" "$D" "${ver#nixdatifier }" "$X"
+        printf '%sgenerations · updates · cleanup · dev shells%s\n\n' "$D" "$X"
+        cli info)
+    if [[ ${NIXDATIFIER_LOGO:-blocks} != blocks ]] || (($1 < 48)) || ! command -v chafa >/dev/null; then
+        logo 18 8 2>/dev/null
+        printf '%s\n' "$side"
+        return
+    fi
+    awk -v w="$w" 'NR == FNR { l[++n] = $0; next } { s[++m] = $0 }
+        END { for (i = 1; i <= (n > m ? n : m); i++) printf "%s   %s\n", (i <= n ? l[i] : sprintf("%" w "s", "")), s[i] }' \
+        <(logo "$w" "$h") <(printf '%s\n' "$side")
+}
+
+# Colours the CLI's plain text views (version changes, counts, titles).
+tint() {
+    [[ $THEME != plain ]] || { cat; return; }
+    local e=$'\033'
+    sed -E \
+        -e "s/([0-9][^ ,]*) → ([0-9][^ ,]*)/${e}[31m\1${e}[0m → ${e}[32m\2${e}[0m/g" \
+        -e "s/(\\+[0-9]+ added)/${e}[32m\1${e}[0m/; s/(-[0-9]+ removed)/${e}[31m\1${e}[0m/; s/(~[0-9]+ changed)/${e}[33m\1${e}[0m/" \
+        -e "s/^(Generation [0-9]+ -> [0-9]+)/${e}[1;36m\1${e}[0m/; s/^(Closure:)/${e}[2m\1${e}[0m/" \
+        -e "s/^(Usage:.*)/${e}[1m\1${e}[0m/"
+}
+cli() { "$NXD_CLI" "${clr[@]}" "$@" 2>&1 | tint; }
+hb() { local n=${1:-0}; numfmt --to=iec --suffix=B "${n#-}" 2>/dev/null || printf '%sB' "${n#-}"; }
+
+# ── Shared pieces ───────────────────────────────────────────────────────────
+status_line() { # status_line [--updates]; the header every screen starts with
+    local json ver
+    json=$("$NXD_CLI" --json status "$@" 2>/dev/null) || json='{}'
+    ver=$("$NXD_CLI" --version 2>/dev/null)
+    jq -r --arg ver "${ver#nixdatifier }" --arg O "$O" --arg P "$P" --arg V "$V" --arg C "$C" --arg G "$G" --arg R "$R" \
+        --arg Y "$Y" --arg D "$D" --arg B "$B" --arg X "$X" '
+        "  \($D)│\($X)  " as $sep
+        | ([ "\($B)\($C)❄ nix\($V)dati\($P)fier\($X) \($D)\($ver)\($X)",
+             (if .running then "\($O)◆\($X) next boot \($B)\(.running)\($X)" else "not NixOS" end),
+             (if .booted then "\($G)⏻\($X) booted \(.booted)" else empty end)
+           ] | join($sep)),
+          ([ (if .release then "NixOS \(.release)\(if .eol then " \($D)· EOL \(.eol)\($X)" else "" end)" else empty end),
+             (if .rebootRequired then "\($Y)⟳ reboot needed\($X)" else empty end),
+             (if (.failedUnits // 0) > 0 then "\($R)✗ \(.failedUnits) failed units\($X)" else "\($G)✓\($X) units ok" end),
+             (if .updates == null then empty elif .updates > 0 then "\($O)↑ \(.updates) updates\($X)" else "\($G)✓\($X) inputs current" end)
+           ] | join($sep))' <<<"$json"
+}
+
+# The header every screen shows at once: the last one fetched, or a placeholder
+# while the real one (slow: it asks nix) is loading in the background.
+header_cached() { cat "$NXD_STATE/header" 2>/dev/null || printf '%s❄ nixdatifier%s  %sreading the system…%s' "$B$P" "$X" "$D" "$X"; }
+
+# Output as a scrollable, searchable page in the same look; Esc or Backspace
+# goes back. Text comes on stdin.
+page() { # page <title>
+    local file
+    file=$NXD_STATE/page.$$
+    cat >"$file"
+    [[ -s $file ]] || echo "${D}(nothing to show)${X}" >"$file"
+    fzf "${FZF_BASE[@]}" --no-sort --exact --wrap --track --list-label " $1 " --input-label ' Search ' \
+        --ghost 'type to search this page' --footer "$(keys 'Esc/⌫=back' '↑↓ PgUp PgDn=scroll' 'type=search')" \
+        --bind 'enter:ignore,backward-eof:abort' <"$file" >/dev/null
+    rm -f "$file"
+}
+# Run a CLI action with the terminal (it asks before changing anything), then
+# wait for a key so the result can be read.
+act() {
+    local rc
+    clear
+    printf '%s%s❯ nixdatifier %s%s\n\n' "$B" "$C" "$*" "$X"
+    "$NXD_CLI" "${clr[@]}" "$@"
+    rc=$?
+    if ((rc == 0)); then printf '\n%s✓ done%s' "$G$B" "$X"
+    elif ((rc == 75)); then printf '\n%s… another change is running; try again when it finishes%s' "$Y" "$X"
+    else printf '\n%s✗ stopped (exit %s)%s' "$R$B" "$rc" "$X"; fi
+    printf '   %spress any key to go back%s' "$D" "$X"
+    read -rsn1 _ </dev/tty
+    return 0
+}
+ask() { # ask <prompt>; one line from the user, empty when cancelled
+    local reply
+    printf '\n %s❯%s %s ' "$P$B" "$X" "$1" >/dev/tty
+    read -r reply </dev/tty || return 1
+    printf '%s' "$reply"
+}
+
+# ── Package changes ─────────────────────────────────────────────────────────
+# One row per change, "kind<TAB>name<TAB>old<TAB>new<TAB>display". The CLI prints changes as
+# "name: old → new, size"; ∅ marks a missing side, ε a missing version.
+change_rows() { # JSON from `diff --json` on stdin
+    jq -r '.changes[]' | LC_ALL=C awk -v g="$G" -v r="$R" -v y="$Y" -v d="$D" -v b="$B" -v s="$S" -v x="$X" '
+        {
+            i = index($0, ": "); name = substr($0, 1, i - 1); rest = substr($0, i + 2)
+            old = ""; new = ""; size = ""
+            j = index(rest, " → ")
+            if (j) {
+                old = substr(rest, 1, j - 1); rest = substr(rest, j + 5)
+                k = index(rest, ", "); if (k) { new = substr(rest, 1, k - 1); size = substr(rest, k + 2) } else new = rest
+            } else size = rest
+            kind = "C"; if (old == "∅") kind = "A"; else if (new == "∅") kind = "R"
+            vo = (kind == "A") ? "" : old; vn = (kind == "R") ? "" : new
+            if (old == "ε") old = ""; if (new == "ε") new = ""
+            shown = name; if (length(shown) > 30) shown = substr(shown, 1, 29) "~"
+            if (kind == "A") { sym = g b "+" x; ver = sprintf("%12s   %s%-14s%s", "", g, new, x); nm = b shown x }
+            else if (kind == "R") { sym = r b "-" x; ver = sprintf("%s%12s%s   %-14s", d s, old, x, ""); nm = d s shown x }
+            else {
+                sym = y b "~" x; nm = shown
+                ver = (old == "" && new == "") ? sprintf("%12s   %s%-14s%s", "", d, "size only", x) : sprintf("%s%12s%s → %s%-14s%s", r, old, x, g, new, x)
+            }
+            printf "%s\t%s\t%s\t%s\t%s %s%*s %s %s%10s%s\t%s\n", kind, name, vo, vn, sym, nm, 31 - length(shown), "", ver, y, size, x, size
+        }'
+}
+change_summary() { # change_summary <json> <label>
+    jq -r --arg label "$2" --arg C "$C" --arg G "$G" --arg R "$R" --arg Y "$Y" --arg D "$D" --arg B "$B" --arg X "$X" '
+        "\($B)\($C)Generation \(.base) → \(.target)\($X)  \($D)\($label)\($X)",
+        (.kernel | gsub("\\s"; "") | ([scan("-([0-9]+\\.[0-9][0-9.]*)/")] | last | .[0]? // .)) as $k
+        | "\($D)NixOS \(.nixosVersion | gsub("\\s"; ""))\(if $k != "" then "  ·  linux \($k)" else "" end)\($X)",
+        "\($G)+\(.counts.added // 0) added\($X)  \($R)-\(.counts.removed // 0) removed\($X)  \($Y)~\(.counts.changed // 0) changed\($X)"' <<<"$1"
+    jq -r '[.closureBytes // 0, .counts.addedBytes // 0, .counts.removedBytes // 0] | @tsv' <<<"$1" | {
+        read -r total added removed
+        printf '%sclosure %s  ·  ▲ %s new  ▼ %s gone%s\n' "$D" "$(hb "$total")" "$(hb "$added")" "$(hb "$removed")" "$X"
+    }
+}
+# A generation never changes, so the diff of two is kept on disk, keyed by both
+# numbers and store paths (a number can be reused after deleting). Comparing
+# closures takes seconds; opening a pair seen before is then instant.
+diff_json() { # diff_json [BASE TARGET]; no arguments: newest vs previous
+    local a=${1:-} b=${2:-} key f
+    [[ -n $b ]] || b=$(gens_json | jq -r '.[0].number // empty')
+    [[ -n $a ]] || a=$(gen_base "$b" prev)
+    [[ -n $a && -n $b ]] || return 1
+    key=$(gens_json | jq -r --argjson a "$a" --argjson b "$b" '
+        (map({key: (.number | tostring), value: (.storePath | ltrimstr("/nix/store/") | .[:12])}) | from_entries) as $p
+        | "\($a)-\($b)-\($p[$a | tostring] // "x")\($p[$b | tostring] // "x")"')
+    f=$NXD_CACHE/diff-$key.json
+    if [[ ! -s $f ]]; then
+        "$NXD_CLI" --json diff "$a" "$b" >"$f.$$" 2>/dev/null && jq -e .changes "$f.$$" >/dev/null 2>&1 || { rm -f "$f.$$"; return 1; }
+        mv -f "$f.$$" "$f"
+    fi
+    cat "$f"
+}
+
+# The compare base for a generation: previous, booted, or next boot (the
+# system profile), like the window's "vs. previous / vs. booted" toggle.
+gens_json() { # gens_json [fresh]
+    local f=$NXD_STATE/gens.json
+    [[ -s $f && ${1:-} != fresh ]] || "$NXD_CLI" --json generations >"$f" 2>/dev/null || echo '[]' >"$f"
+    cat "$f"
+}
+compare_mode() { cat "$NXD_STATE/mode" 2>/dev/null || echo prev; }
+mode_label() { case $1 in prev) echo 'vs previous' ;; booted) echo 'vs booted' ;; next) echo 'vs next boot' ;; esac; }
+gen_base() { # gen_base N MODE; prints the base number or nothing
+    gens_json | jq -r --argjson n "$1" --arg m "$2" '
+        if $m == "prev" then (map(select(.number < $n)) | max_by(.number) | .number // empty)
+        elif $m == "booted" then (map(select(.booted)) | .[0].number // empty)
+        else (map(select(.active)) | .[0].number // empty) end'
+}
+gen_diff_preview() { # gen_diff_preview N [MODE]
+    local n=$1 mode=${2:-$(compare_mode)} a json
+    a=$(gen_base "$n" "$mode")
+    if [[ -z $a ]]; then printf '%s#%s has no earlier generation.%s\n' "$D" "$n" "$X"; return; fi
+    if [[ $a == "$n" ]]; then
+        printf '%s#%s is the %s generation itself.%s\n\n%s\n' "$B" "$n" "${mode/next/next-boot}" "$X" "$(key Ctrl-O 'compare with something else')"
+        return
+    fi
+    json=$(diff_json "$a" "$n") || { echo "${R}diff failed${X}"; return; }
+    change_summary "$json" "$(mode_label "$mode")"
+    echo
+    change_rows <<<"$json" | cut -f5 | grep . || printf '%sNo package changes.%s\n' "$D" "$X"
+}
+
+# The full list for two generations: filter buttons in the header (clickable,
+# or Tab to cycle, Alt-A/R/C/0), search by typing, Enter shows the store paths.
+#
+# It opens at once and fills in when the closures are compared (seconds the
+# first time, instant after), so keys typed meanwhile go to fzf.
+changes_screen() { # changes_screen [BASE TARGET] [label]; no pair: newest vs previous
+    local a=${1:-} b=${2:-} label=${3:-}
+    [[ -n $b ]] || b=$(gens_json | jq -r '.[0].number // empty')
+    [[ -n $a ]] || a=$(gen_base "$b" prev)
+    [[ -n $a && -n $b ]] || { echo "${D}Nothing to compare: there is only one generation.${X}" | page 'What changed'; return; }
+    export NXD_CHANGES=$NXD_STATE/changes.$$ NXD_A=$a NXD_B=$b NXD_LABEL=$label
+    echo all >"$NXD_STATE/filter"
+    : >"$NXD_CHANGES"
+    fzf "${FZF_BASE[@]}" --with-nth 5 --no-sort --exact --list-label " #$a → #$b ${label:+· $label }" --input-label ' Filter packages ' \
+        --ghost 'type a package name' --preview-label ' Package ' \
+        --header "${D}Comparing #$a and #$b…${X}" --header-label ' Changes ' \
+        --footer "$(keys 'Tab=next filter' 'click/Alt-A R C 0=filter' 'Enter=store paths' 'Esc/⌫=back')" \
+        --preview '$NXD_TUI _paths {2} {3} {4} {6}' \
+        --bind 'start:reload($NXD_TUI _changerows)' \
+        --bind 'load:transform-header($NXD_TUI _changehead)' \
+        --bind 'tab:transform($NXD_TUI _filter next)' \
+        --bind 'alt-0:transform($NXD_TUI _filter all),alt-a:transform($NXD_TUI _filter A),alt-r:transform($NXD_TUI _filter R),alt-c:transform($NXD_TUI _filter C)' \
+        --bind 'click-header:transform:case $FZF_CLICK_HEADER_WORD in *All*) $NXD_TUI _filter all ;; *Added*) $NXD_TUI _filter A ;; *Removed*) $NXD_TUI _filter R ;; *Changed*) $NXD_TUI _filter C ;; esac' \
+        --bind 'enter:toggle-preview,backward-eof:abort' </dev/null >/dev/null
+    rm -f "$NXD_CHANGES"
+}
+changes_load() { # the rows of $NXD_A → $NXD_B, kept in $NXD_CHANGES for the filters
+    local json
+    json=$(diff_json "$NXD_A" "$NXD_B") || return 0
+    change_rows <<<"$json" | tee "$NXD_CHANGES"
+}
+changes_header() { # summary and the filter buttons with their counts
+    local json add rem chg
+    json=$(diff_json "$NXD_A" "$NXD_B") || { echo "${R}Could not compare #$NXD_A and #$NXD_B.${X}"; return; }
+    change_summary "$json" "$NXD_LABEL" | sed -n '2,4p'
+    add=$(grep -c '^A' "$NXD_CHANGES"); rem=$(grep -c '^R' "$NXD_CHANGES"); chg=$(grep -c '^C' "$NXD_CHANGES")
+    if ((add + rem + chg == 0)); then printf '%sNo package changes between these generations.%s\n' "$D" "$X"; return; fi
+    printf '%s[All %s]%s  %s[+Added %s]%s  %s[-Removed %s]%s  %s[~Changed %s]%s\n' \
+        "$B" $((add + rem + chg)) "$X" "$G" "$add" "$X" "$R" "$rem" "$X" "$Y" "$chg" "$X"
+}
+filter_action() { # filter_action all|A|R|C|next; prints the fzf actions
+    local f=$1 cur
+    cur=$(cat "$NXD_STATE/filter" 2>/dev/null || echo all)
+    if [[ $f == next ]]; then case $cur in all) f=A ;; A) f=R ;; R) f=C ;; *) f=all ;; esac; fi
+    echo "$f" >"$NXD_STATE/filter"
+    local name
+    case $f in all) name='All' ;; A) name='Added' ;; R) name='Removed' ;; C) name='Changed' ;; esac
+    if [[ $f == all ]]; then printf 'reload(cat %q)' "$NXD_CHANGES"; else printf 'reload(grep -a %q %q || true)' "^$f" "$NXD_CHANGES"; fi
+    printf '+change-input-label( Filter packages · %s )+first' "$name"
+}
+store_paths() { # store_paths NAME OLD NEW SIZE; a card like the widget's: version, size, paths, link
+    local n v e=$'\033' url
+    url="https://github.com/NixOS/nixpkgs/search?q=$1"
+    printf '%s%s%s\n\n' "$B" "$1" "$X"
+    printf '%sVersion%s     %s%s%s → %s%s%s\n' "$D" "$X" "$R" "${2:-none}" "$X" "$G" "${3:-none}" "$X"
+    printf '%sSize delta%s  %s%s%s\n\n' "$D" "$X" "$Y" "${4:-?}" "$X"
+    for n in "$NXD_B" "$NXD_A"; do
+        v=$3; [[ $n == "$NXD_B" ]] || v=$2
+        printf '%sStore path in #%s%s\n' "$D" "$n" "$X"
+        if [[ -n $v ]]; then "$NXD_CLI" path "$1" "$v" --generation "$n" 2>/dev/null | sed 's/^/  /' | grep .; else false; fi ||
+            printf '  %snot in this generation%s\n' "$D" "$X"
+        echo
+    done
+    printf '%snixpkgs%s      %s%s' "$D" "$X" "$e]8;;$url$e\\" "$P$url$X$e]8;;$e\\"
+    echo
+}
+
+# ── Screens ─────────────────────────────────────────────────────────────────
+gen_rows() {
+    gens_json fresh | jq -r --arg O "$O" --arg P "$P" --arg C "$C" --arg G "$G" --arg D "$D" --arg B "$B" --arg X "$X" '.[] |
+        (.nixosVersion // "" | split(".")) as $v
+        | "\(.number)\t\($P)\($B)#\(.number)\($X)  \(.date[:16])  \($v[0:2] | join("."))\($D)\(if ($v | length) > 3 then " · \($v[3])" else "" end)\($X)  \($C)\(.kernel // "")\($X)\(if .active then "  \($O)◆ next boot\($X)" else "" end)\(if .booted then "  \($G)⏻ booted\($X)" else "" end)"'
+}
+# Pick any two generations and see what changed between them: Tab marks one,
+# Enter on a second compares the two (or with two marked).
+compare_screen() {
+    fzf "${FZF_BASE[@]}" --multi 2 --with-nth 2 --no-sort --list-label ' Compare two generations ' --input-label ' Search ' \
+        --ghost 'number, date or version' --header "$(header_cached)" --header-label ' System ' \
+        --footer "$(keys 'Enter=mark the first, then Enter on the second to compare' 'Tab=mark too' 'Esc/⌫=back')" \
+        --preview '$NXD_TUI _gendiff {1}' --preview-label ' Against its previous ' \
+        --bind 'start:reload($NXD_TUI _gens)' \
+        --bind 'enter:transform:if ((FZF_SELECT_COUNT == 0)); then echo "select+change-prompt(#"{1}" marked, now Enter on the second ❯ )"; else echo "execute(\$NXD_TUI _compare {1} {+1})+clear-selection+change-prompt(❯ )"; fi' \
+        --bind 'backward-eof:abort' </dev/null >/dev/null
+}
+compare_open() { # compare_open CURRENT [MARKED...]
+    local a b
+    if (($# >= 3)); then read -r a b < <(printf '%s\n' "${@:2}" | sort -n | head -2 | paste -sd' ')
+    elif (($# == 2)) && [[ $1 != "$2" ]]; then read -r a b < <(printf '%s\n%s\n' "$1" "$2" | sort -n | paste -sd' ')
+    else
+        return 0
+    fi
+    changes_screen "$a" "$b" 'compared'
+}
+generations_screen() {
+    [[ -f $NXD_STATE/mode ]] || echo prev >"$NXD_STATE/mode"
+    fzf "${FZF_BASE[@]}" --multi --with-nth 2 --no-sort --list-label ' Generations ' --input-label ' Search ' \
+        --ghost 'number, date or version' --header "$(header_cached)" --header-label ' System ' \
+        --footer "$(keys 'Enter=what changed' 'Tab=mark two to compare' "Ctrl-O=compare base" 'Ctrl-S=switch' 'Ctrl-B=boot' 'Ctrl-D=delete' 'Esc/⌫=back')" \
+        --preview '$NXD_TUI _gendiff {1}' \
+        --bind 'start:reload($NXD_TUI _gens)' \
+        --bind 'focus:transform-preview-label[echo " #"{1}" · $($NXD_TUI _modelabel) "]' \
+        --bind 'ctrl-o:execute-silent($NXD_TUI _cyclemode)+refresh-preview+transform-preview-label[echo " #"{1}" · $($NXD_TUI _modelabel) "]' \
+        --bind 'enter:execute($NXD_TUI _opengen {1} {+1})+clear-selection' \
+        --bind 'ctrl-s:execute($NXD_TUI _act switch {1})+reload($NXD_TUI _gens)+transform-header($NXD_TUI _header)' \
+        --bind 'ctrl-b:execute($NXD_TUI _act boot {1})+reload($NXD_TUI _gens)+transform-header($NXD_TUI _header)' \
+        --bind 'ctrl-d:execute($NXD_TUI _act delete {+1})+clear-selection+reload($NXD_TUI _gens)' \
+        --bind 'ctrl-r:reload($NXD_TUI _gens)+transform-header($NXD_TUI _header)' \
+        --bind 'backward-eof:abort' </dev/null >/dev/null
+}
+open_generation() { # open_generation CURRENT [MARKED...]; two marks compare each other
+    local a b
+    if (($# >= 3)); then
+        read -r a b < <(printf '%s\n' "${@:2}" | sort -n | head -2 | paste -sd' ')
+        changes_screen "$a" "$b" 'marked'
+        return
+    fi
+    a=$(gen_base "$1" "$(compare_mode)")
+    if [[ -z $a || $a == "$1" ]]; then gen_diff_preview "$1" | page "#$1"; return; fi
+    changes_screen "$a" "$1" "$(mode_label "$(compare_mode)")"
+}
+
+input_rows() { # input_rows [--refresh]
+    "$NXD_CLI" --json updates --all "$@" 2>/dev/null | jq -r --arg O "$O" --arg G "$G" --arg R "$R" --arg D "$D" --arg B "$B" --arg X "$X" '
+        sort_by(if .status == "update" then 0 elif .status == "unreachable" then 1 else 2 end, .input)[] |
+        (if .status == "update" then "\($O)↑" elif .status == "unchanged" then "\($G)✓" elif .status == "unreachable" then "\($R)✗" else "\($D)·" end) as $icon
+        | "\(.input)\t\(.status)\t\($icon)\($X) \($B)\(.input)\($X)\(" " * ([28 - (.input | length), 1] | max))\($D)\(.status)\(" " * ([12 - (.status | length), 1] | max))\($X)\(if .status == "update" then "\(.from) → \($O)\(.to)\($X)" else "\($D)\(.from)\($X)" end)  \($D)\(.date)\($X)"'
+}
+input_preview() { # input_preview NAME STATUS
+    if [[ $2 == update ]]; then
+        printf '%s%s%s has an update.%s Enter lists the packages it would change.\n\n' "$B" "$O" "$1" "$X"
+        cli notes "$1"
+    else
+        "$NXD_CLI" --json updates --all 2>/dev/null | jq -r --arg i "$1" --arg D "$D" --arg X "$X" '.[] | select(.input == $i) |
+            "\(.input): \(.status)", "\($D)locked\($X)  \(.current)", "\($D)latest\($X)  \(.latest)", "\($D)date\($X)    \(.date)",
+            "\($D)source\($X)  \(.url)", (if .reason != "" then "\($D)reason\($X)  \(.reason)" else empty end)'
+    fi
+}
+updates_screen() {
+    fzf "${FZF_BASE[@]}" --with-nth 3 --no-sort --list-label ' Flake inputs · checking upstream… ' --input-label ' Search ' --ghost 'input name' \
+        --header "$(header_cached)" --header-label ' System ' \
+        --footer "$(keys 'Enter=packages it would change' 'Ctrl-U=update input' 'Alt-U=update all' 'Ctrl-R=check again' 'Esc/⌫=back')" \
+        --preview '$NXD_TUI _inputpv {1} {2}' --preview-label ' Release notes ' \
+        --bind 'start:reload($NXD_TUI _inputs)' --bind 'load:change-list-label( Flake inputs )' \
+        --bind 'enter:execute([[ {2} == update ]] && $NXD_TUI _page "Would change" preview {1} || $NXD_TUI _inputpage {1} {2})' \
+        --bind 'ctrl-u:execute($NXD_TUI _act update {1})+reload($NXD_TUI _inputs)' \
+        --bind 'alt-u:execute($NXD_TUI _act update)+reload($NXD_TUI _inputs)' \
+        --bind 'ctrl-r:change-list-label( Flake inputs · checking upstream… )+reload($NXD_TUI _inputs --refresh)' \
+        --bind 'backward-eof:abort' </dev/null >/dev/null
+}
+
+history_rows() {
+    "$NXD_CLI" --json history 2>/dev/null | jq -r --arg G "$G" --arg R "$R" --arg D "$D" --arg B "$B" --arg X "$X" '
+        to_entries[] | .key as $i | .value |
+        "\($i)\t\(if .success then "\($G)✓" else "\($R)✗" end)\($X) \($D)\(.timestamp | fromdateiso8601? // 0 | localtime | strftime("%Y-%m-%d %H:%M"))\($X)  \($B)\(.action)\($X)\(" " * ([22 - (.action | length), 1] | max))\(.label)\(if (.genNum // -1) > 0 then "  \($D)#\(.genNum)\($X)" else "" end)"'
+}
+history_preview() { # history_preview INDEX
+    "$NXD_CLI" --json history 2>/dev/null | jq -r --argjson i "$1" --arg G "$G" --arg R "$R" --arg D "$D" --arg B "$B" --arg X "$X" '.[$i] |
+        "\($B)\(.label)\($X)",
+        "\($D)\(.action) · \(.timestamp)\(if (.genNum // -1) > 0 then " · generation \(.genNum)" else "" end)\($X)",
+        (if .success then "\($G)✓ succeeded\($X)" else "\($R)✗ failed with exit \(.exitCode)\($X)" end), "", (.output // "")'
+}
+history_screen() {
+    fzf "${FZF_BASE[@]}" --with-nth 2 --no-sort --list-label ' History ' --input-label ' Search ' --ghost 'action or label' \
+        --header "$(header_cached)" --header-label ' System ' --footer "$(keys 'Enter=full output' 'Esc/⌫=back')" \
+        --preview '$NXD_TUI _histpv {1}' --preview-label ' Output ' \
+        --bind 'start:reload($NXD_TUI _history)' \
+        --bind 'enter:execute($NXD_TUI _histpv {1} | $NXD_TUI _pagein "Run output")' \
+        --bind 'backward-eof:abort' </dev/null >/dev/null
+}
+
+dev_rows() {
+    "$NXD_CLI" --json dev list 2>/dev/null | jq -r --arg G "$G" --arg Y "$Y" --arg R "$R" --arg D "$D" --arg B "$B" --arg X "$X" --arg home "$HOME" '
+        def hb: . as $n | if $n < 1024 then "\($n)B" else ((($n | log) / (1024 | log)) | floor | if . > 4 then 4 else . end) as $i
+            | "\((($n / pow(1024; $i)) * 10 | round) / 10)\(["B","K","M","G","T"][$i])" end;
+        .[] | "\(.dir)\t\(if .state == "allowed" then "\($G)●" elif .state == "denied" then "\($R)●" else "\($Y)●" end)\($X) \($B)\(.dir | sub("^" + $home; "~"))\($X)  \($D)\(.state)\($X)  \(.cacheBytes | hb)"'
+}
+# One project the way the widget shows it: the facts, the dev shells, and every
+# flake input with the age of its lock (green: recent, yellow: a while, red: old).
+dev_card() { # dev_card DIR [shells]; shells evaluates the flake (slow)
+    local json flags=()
+    [[ ${2:-} == shells ]] && flags=(--shells)
+    json=$("$NXD_CLI" --json dev show "${flags[@]}" "$1" 2>/dev/null) || { echo "${R}could not read $1${X}"; return; }
+    jq -r --arg G "$G" --arg R "$R" --arg Y "$Y" --arg D "$D" --arg B "$B" --arg P "$P" --arg X "$X" --argjson shells "$([[ ${2:-} == shells ]] && echo true || echo false)" '
+        def ago($t): if ($t // 0) == 0 then "unknown" else
+            (now - $t) as $s
+            | if $s < 3600 then "just now" elif $s < 86400 then "\(($s / 3600) | floor)h ago"
+              elif $s < 172800 then "yesterday"
+              elif $s < 5184000 then "\(($s / 86400) | floor) days ago"
+              else "\(($s / 2592000) | floor) months ago" end end;
+        def tone($t): if ($t // 0) == 0 then $D elif (now - $t) < 2592000 then $G elif (now - $t) < 15552000 then $Y else $R end;
+        def row($k; $v): "\($D)\($k | . + (" " * (20 - length)))\($X)\($v)";
+        ([.inputs[].modified | select(. > 0)] | min) as $old
+        | "\($B)\(.name)\($X)",
+          (if .description != "" then "\($D)\(.description)\($X)" else empty end),
+          "",
+          row("direnv"; (if .envrc.state == "allowed" then "\($G)allowed\($X)" else "\($R)\(.envrc.state)\($X)" end) + (if .direnv != "" then " \($D)· \(.direnv)\($X)" else "" end)),
+          (if (.envrc.uses | length) > 0 then row("Provides"; .envrc.uses | join(", ")) else empty end),
+          row("Cached environment"; (if .cache.kb > 0 then "\(ago(.cache.mtime)) \($D)·\($X) \($Y)\(.cache.kb) KB\($X)" else "\($D)none\($X)" end)),
+          row("Flake inputs"; (if (.inputs | length) > 0 then "\(.inputs | length)\(if $old then ", oldest locked \(tone($old))\(ago($old))\($X)" else "" end)" else "\($D)no flake\($X)" end)),
+          row("Project files"; .files | join(", ")),
+          row("Path"; .dir),
+          (if $shells then "", "\($D)DEV SHELLS  \((.shells // []) | length)\($X)", ((.shells // [])[] | "  \($P)\(.)\($X)") else "", "\($D)Enter evaluates the dev shells (slow) and shows everything full screen.\($X)" end),
+          (if (.inputs | length) > 0 then "", "\($D)FLAKE INPUTS  \(.inputs | length)\($X)",
+            (.inputs[] | "  \($B)\(.name)\($X)  \(tone(.modified))\(ago(.modified))\($X)\n    \($D)\(.source) \(.ref) · \(.rev[:7])\(if .follows != "" then " · follows \(.follows)" else "" end)\($X)") else empty end)' <<<"$json"
+}
+dev_screen() {
+    fzf "${FZF_BASE[@]}" --with-nth 2 --no-sort --list-label ' Dev environments · looking… ' --input-label ' Search ' --ghost 'project path' \
+        --header "$(header_cached)" --header-label ' System ' \
+        --footer "$(keys 'Enter=details and shells' 'Ctrl-O=open a shell there' 'Ctrl-X=clear .direnv cache' 'Esc/⌫=back')" \
+        --preview '$NXD_TUI _devcard {1}' --preview-label ' Project ' \
+        --bind 'start:reload($NXD_TUI _dev)' --bind 'load:change-list-label( Dev environments )' \
+        --bind 'enter:execute($NXD_TUI _devpage {1})' \
+        --bind 'ctrl-o:execute(cd {1} && clear && printf "Shell in %s, exit to come back\n" {1} && "${SHELL:-bash}")' \
+        --bind 'ctrl-x:execute($NXD_TUI _act dev clear {1})+reload($NXD_TUI _dev)' \
+        --bind 'backward-eof:abort' </dev/null >/dev/null
+}
+
+persist_screen() {
+    printf '%s\t%s\n' status "$B◐ Status$X     ${D}persistent areas and the root filesystem$X" \
+        sizes "$B▤ Sizes$X      ${D}what each kept path takes$X" \
+        scan "$B⚠ Scan$X       ${D}suspicious autostart hooks$X" \
+        cleanup "$B✦ Cleanup$X    ${D}temp and stale data you could drop$X" |
+        fzf "${FZF_BASE[@]}" --with-nth 2 --no-sort --list-label ' Impermanence ' --input-label ' Search ' \
+            --header "$(header_cached)" --header-label ' System ' --footer "$(keys 'Enter=full screen' 'Esc/⌫=back')" \
+            --preview '$NXD_TUI _cli persist {1}' --preview-label ' Preview ' \
+            --bind 'enter:execute($NXD_TUI _page Impermanence persist {1})' \
+            --bind 'backward-eof:abort' >/dev/null
+}
+
+hash_flow() {
+    local kind what
+    kind=$(printf '%s\t%s\n' url 'a file to download' zip 'an archive, unpacked' github 'owner/repo/rev' file 'a local file' store 'a store path' |
+        fzf "${FZF_BASE[@]}" --with-nth 1,2 --list-label ' Hash of… ' --footer "$(keys 'Enter=choose' 'Esc/⌫=back')" \
+            --bind 'backward-eof:abort' | cut -f1) || return 0
+    [[ -n $kind ]] || return 0
+    clear
+    what=$(ask "$kind (url, path or name):") || return 0
+    [[ -n $what ]] || return 0
+    cli hash "$kind" "$what" | page "Hash · $kind"
+}
+
+# ── About and support ───────────────────────────────────────────────────────
+# The same facts the widget's info pane shows. The links come from the widget's
+# own ProjectInfo.js and ProjectFunding.js, so there is one place to edit them,
+# and the brand icons are its SVGs (drawn with chafa when it is there).
+CODE_DIR=$here/../../code
+ICON_DIR=$here/../../icons
+info_var() { sed -n "s/^var $1 = \"\(.*\)\";/\1/p" "$CODE_DIR/ProjectInfo.js" 2>/dev/null | head -1; }
+funding_rows() { # label<TAB>url<TAB>icon per funding link
+    awk -F'"' '/"label"/ { l = $4 } /"url"/ { u = $4 } /"icon"/ { printf "%s\t%s\t%s\n", l, u, $4 }' "$CODE_DIR/ProjectFunding.js" 2>/dev/null
+}
+link() { printf '\033]8;;%s\033\\%s%s%s\033]8;;\033\\' "$1" "$P" "${2:-$1}" "$X"; } # clickable where the terminal can
+svg_block() { # svg_block FILE COLS ROWS: the icon as blocks, empty without chafa
+    [[ $LAYOUT == roomy && $THEME != plain ]] && command -v chafa >/dev/null && [[ -f $1 ]] || return 0
+    chafa --animate off --polite on -f symbols --symbols half+quad+block+space -c "$( ((TRUECOLOR)) && echo full || echo 256)" -s "$2x$3" "$1" 2>/dev/null
+}
+beside() { # beside WIDTH <left file> <right file>: two blocks side by side
+    awk -v w="$1" 'NR == FNR { l[++n] = $0; next } { s[++m] = $0 }
+        END { for (i = 1; i <= (n > m ? n : m); i++) printf "%s   %s\n", (i <= n ? l[i] : sprintf("%" w "s", "")), s[i] }' "$2" "$3"
+}
+about_stats() { # about_stats [fetch|-] [release|counts]: stars, downloads and the latest release, cached for an hour
+    local f=$NXD_CACHE/about-stats.json repo ver
+    repo=$(info_var repository); repo=${repo#https://github.com/}
+    if [[ ${1:-} == fetch ]] && [[ ! -s $f || -n $(find "$f" -mmin +60 2>/dev/null) ]]; then
+        command -v curl >/dev/null || return 0
+        {
+            printf '{"stars":%s,"downloads":%s,"latest":%s}\n' \
+                "$(curl -fsm 4 "https://img.shields.io/github/stars/$repo.json" | jq '.value // null' 2>/dev/null || echo null)" \
+                "$(curl -fsm 4 "https://img.shields.io/github/downloads/$repo/total.json" | jq '.value // null' 2>/dev/null || echo null)" \
+                "$(curl -fsm 4 "https://api.github.com/repos/$repo/releases/latest" | jq '.tag_name // null' 2>/dev/null || echo null)"
+        } >"$f.new" 2>/dev/null && mv "$f.new" "$f"
+    fi
+    [[ -s $f ]] || return 0
+    ver=$("$NXD_CLI" --version 2>/dev/null); ver=${ver#nixdatifier }
+    jq -r --arg v "$ver" --arg sel "${2:-release}" --arg D "$D" --arg G "$G" --arg Y "$Y" --arg X "$X" '
+        if $sel == "counts" then
+            ([(if .stars then "\($Y)★ \(.stars)\($X) stars" else empty end),
+              (if .downloads then "\(.downloads) downloads on GitHub" else empty end)] | join("  \($D)·\($X)  "))
+        else
+        (if .latest then (.latest | ltrimstr("v")) as $l
+            | if $l == $v then "\($G)✓ up to date\($X) \($D)(\($l))\($X)" else "latest release \($l) \($D)· you run \($v)\($X)" end else empty end) end' "$f" 2>/dev/null
+}
+about_card() { # about_card [full]: the project, its links and how to support it
+    local repo author licence store profile ver tmp1 tmp2 label url icon col
+    repo=$(info_var repository); author=$(info_var author); licence=$(info_var license)
+    store=$(info_var store); profile=$(info_var profile)
+    ver=$("$NXD_CLI" --version 2>/dev/null); ver=${ver#nixdatifier }
+    tmp1=$NXD_STATE/about.l.$$ tmp2=$NXD_STATE/about.r.$$
+    svg_block "$here/../../../icon-emblem.svg" 16 7 >"$tmp1"
+    {
+        printf '%s%s❄  nixdatifier%s  %s%s%s\n' "$B" "$P" "$X" "$D" "$ver" "$X"
+        printf '%sNixOS generations, package diffs, updates and dev shells%s\n\n' "$D" "$X"
+        printf '%sby%s %s\n' "$D" "$X" "$(link "$profile" "$author")"
+        printf '%s%s%s\n' "$D" "$licence" "$X"
+        about_stats "${1:--}" release
+    } >"$tmp2"
+    if [[ -s $tmp1 ]]; then beside 16 "$tmp1" "$tmp2"; else cat "$tmp2"; fi
+    printf '\n%s%sLinks%s\n' "$B" "$P" "$X"
+    printf '  %-16s %s\n' 'Repository' "$(link "$repo")" 'Releases' "$(link "$repo/releases")" 'Issues' "$(link "$repo/issues")"
+    [[ -z $store ]] || printf '  %-16s %s\n' 'OpenDesktop' "$(link "$store")"
+    printf '\n%s%sSupport the project%s\n%sIt is free and stays free. If it saves you time, these keep it going:%s\n\n' "$B" "$P" "$X" "$D" "$X"
+    while IFS=$'\t' read -r label url icon; do
+        svg_block "$ICON_DIR/$icon" 6 3 >"$tmp1"
+        printf '%s%s%s\n%s\n' "$B" "$label" "$X" "$(link "$url")" >"$tmp2"
+        if [[ -s $tmp1 ]]; then beside 6 "$tmp1" "$tmp2"; else cat "$tmp2"; fi
+        echo
+    done < <(funding_rows)
+    # The star: the widget's own star icon, the link, and the counts when known
+    # star.svg is an outline, which turns to mush at a few cells: fill it in the
+    # theme's warning colour (same path, just solid) before drawing it.
+    col=${T[warn]:-#f2cc70}
+    sed -e "s/fill=\"none\"/fill=\"$col\"/" -e "s/stroke=\"#[0-9a-fA-F]*\"/stroke=\"$col\"/" -e 's/stroke-width="[0-9.]*"/stroke-width="2.4"/' \
+        "$ICON_DIR/star.svg" >"$NXD_STATE/star.svg" 2>/dev/null
+    svg_block "$NXD_STATE/star.svg" 8 4 >"$tmp1"
+    {
+        printf '%s%sStar it on GitHub%s\n%s\n' "$([[ -s $tmp1 ]] || printf '%s★ ' "$Y")" "$B$Y" "$X" "$(link "$repo/stargazers")"
+        printf '%sA star is the cheapest way to say thanks and helps others find it.%s\n' "$D" "$X"
+        about_stats "${1:--}" counts
+    } >"$tmp2"
+    if [[ -s $tmp1 ]]; then beside 6 "$tmp1" "$tmp2"; else cat "$tmp2"; fi
+    rm -f "$tmp1" "$tmp2" "$NXD_STATE/star.svg"
+}
+
+# ── Settings ────────────────────────────────────────────────────────────────
+# What the widget's General tab asks for, for the command line: saved with
+# `nixdatifier config`, read by every command. The look (theme, layout) is the
+# view's own and changes with Enter right here.
+settings_desc() { # settings_desc KEY: what it is
+    case $1 in
+        flake) echo 'System flake directory. Empty: found in /etc/nixos, ~/nixos-config or ~/.config/nixos.' ;;
+        config_repo) echo 'Git repository that records each generation (which revision built it). Empty: the flake directory.' ;;
+        secrets) echo 'Directory of decrypted sops/agenix secrets whose names are listed. Empty: /run/secrets or /run/agenix.d.' ;;
+        secrets_source) echo 'The secrets file in the flake (secrets.yaml and the like), used to check freshness. Empty: searched in the flake.' ;;
+        persist) echo 'Impermanence roots, separated by colons (for example /persist:/data). Empty: found from the mounts.' ;;
+        priv) echo 'Command that gets root for switching and cleaning: sudo, doas or pkexec. Empty: sudo.' ;;
+        theme) echo 'Colour theme: deep, marina, midnight, full, plain or your own (see docs/cli.md). Enter cycles.' ;;
+        layout) echo 'roomy: boxed sections with the logo. compact: no boxes. Enter switches.' ;;
+    esac
+}
+settings_rows() { # key<TAB>display
+    local k v src
+    while IFS='|' read -r k v src; do
+        printf '%s\t%s%-16s%s %s%s%s %s%s%s\n' "$k" "$B" "$k" "$X" "${v:+$P}" "${v:-}" "${v:+$X}" "$D" "$([[ -n $v ]] && echo "($src)" || echo unset)" "$X"
+    done < <("$NXD_CLI" --json config 2>/dev/null | jq -r '.[] | [.key, .value, .source] | join("|")')
+    printf '%s\t%s%-16s%s %s%s%s\n' theme "$B" theme "$X" "$P" "$THEME" "$X"
+    printf '%s\t%s%-16s%s %s%s%s\n' layout "$B" layout "$X" "$P" "$LAYOUT" "$X"
+}
+settings_preview() { # settings_preview KEY
+    local line
+    printf '%s%s%s\n\n%s\n' "$B" "$1" "$X" "$(settings_desc "$1")"
+    case $1 in
+        theme | layout) printf '\n%sSaved in %s%s\n' "$D" "$CONF" "$X" ;;
+        *)
+            line=$("$NXD_CLI" --json config 2>/dev/null | jq -r --arg k "$1" '.[] | select(.key == $k) | .source')
+            [[ $line == environment ]] && printf '\n%sSet by an environment variable now; it wins over what is saved.%s\n' "$Y" "$X"
+            printf '\n%sSaved in %s%s\n' "$D" "$("$NXD_CLI" config path 2>/dev/null)" "$X" ;;
+    esac
+}
+settings_edit() { # settings_edit KEY: change one setting
+    local cur new
+    case $1 in
+        theme | layout) cycle_conf "$1"; return 0 ;;
+    esac
+    clear
+    cur=$("$NXD_CLI" config get "$1" 2>/dev/null)
+    printf '%s%s%s\n%s%s%s\n\n' "$B" "$1" "$X" "$D" "$(settings_desc "$1")" "$X"
+    read -e -r -i "$cur" -p "  ❯ " new </dev/tty || return 0
+    [[ $new == "$cur" ]] || "$NXD_CLI" config set "$1" "$new" 2>&1
+}
+settings_screen() {
+    fzf "${FZF_BASE[@]}" --with-nth 2 --no-sort --list-label ' Settings ' --input-label ' Search ' --ghost 'setting' \
+        --header "$(header_cached)" --header-label ' System ' \
+        --footer "$(keys 'Enter=change' 'Ctrl-X=clear' 'Esc/⌫=back')" \
+        --preview '$NXD_TUI _setpv {1}' --preview-label ' About this setting ' \
+        --bind 'start:reload($NXD_TUI _setrows)' \
+        --bind 'enter:execute($NXD_TUI _setedit {1})+reload($NXD_TUI _setrows)' \
+        --bind 'ctrl-x:execute-silent($NXD_TUI _setclear {1})+reload($NXD_TUI _setrows)' \
+        --bind 'backward-eof:abort' </dev/null >/dev/null
+}
+
+# ── Home ────────────────────────────────────────────────────────────────────
+# key, icon, colour, title, description, what Enter does (the preview label)
+home_rows() {
+    item() { printf '%s\t%s%s%s  %s%-18s%s %s%s%s\t%s\n' "$1" "$3" "$2" "$X" "$B" "$4" "$X" "$D" "$5" "$X" "$6"; }
+    item overview '❄' "$C" Overview 'the system at a glance' 'Enter: full screen'
+    item generations '◆' "$P" Generations 'browse, compare, switch, delete' 'Enter: open the generations'
+    item diff '±' "$P" 'What changed' 'newest generation vs previous' 'Enter: all package changes'
+    item compare '⇄' "$P" Compare 'pick any two generations' 'Enter: choose two to compare'
+    item updates '↑' "$O" Updates 'flake inputs behind upstream' 'Enter: inputs, notes, update'
+    item health '✚' "$G" Health 'release, reboot, units, caches' 'Enter: full screen'
+    item disk '▤' "$C" Disk 'store size, what GC could free' 'Enter: full screen'
+    item clean '✦' "$Y" 'Clean up' 'old generations, then garbage' 'Enter: runs it (asks first)'
+    item history '⟲' "$V" History 'what earlier changes did' 'Enter: every run with output'
+    item dev 'λ' "$V" 'Dev environments' 'direnv projects and their cache' 'Enter: projects'
+    item persist '◐' "$C" Impermanence 'what survives a reboot' 'Enter: status, sizes, scan, cleanup'
+    item secrets '◇' "$O" Secrets 'sops/agenix names, never values' 'Enter: full screen'
+    item profiles '⊞' "$P" Profiles 'Home Manager and nix profile' 'Enter: full screen'
+    item info 'i' "$C" 'System info' 'host, version, uptime' 'Enter: full screen'
+    item hash '#' "$O" 'Hash calculator' 'fixed-output hash and SRI' 'Enter: pick a type, paste a URL'
+    item about '♥' "$P" 'About & support' 'the project, links, how to support it' 'Enter: full screen'
+    item settings '⚙' "$P" Settings 'flake, secrets and persist paths, look' 'Enter: change them'
+    item quit '✕' "$D" Quit 'leave nixdatifier' 'Enter: quit'
+}
+home_preview() { # home_preview KEY
+    local w=${FZF_PREVIEW_COLUMNS:-60} json
+    case $1 in
+        overview)
+            overview_top "$w"
+            echo
+            printf '%s%sRecent generations%s\n' "$B" "$P" "$X"
+            gen_rows | head -5 | cut -f2- ;;
+        generations | compare) gen_rows | cut -f2- ;;
+        settings) settings_rows | cut -f2- ;;
+        about) about_card ;;
+        diff)
+            json=$(diff_json) || { echo "${R}diff failed${X}"; return; }
+            change_summary "$json" 'newest vs previous'; echo; change_rows <<<"$json" | cut -f5 ;;
+        updates) cli updates; echo; printf '%sEnter for every input, its release notes and updating it.%s\n' "$D" "$X" ;;
+        history) history_rows | head -40 | cut -f2- ;;
+        dev) dev_rows | cut -f2- ;;
+        persist) cli persist status ;;
+        clean)
+            printf '%sWhat Enter would do%s %s(dry run: keeps the 5 newest, deletes older than 14 days, never the running or booted one; then collects garbage)%s\n\n' "$B$Y" "$X" "$D" "$X"
+            "$NXD_CLI" "${clr[@]}" --dry-run --yes clean 2>&1 ;;
+        hash) cli help hash ;;
+        quit) printf '\n  %sSee you.%s\n' "$D" "$X" ;;
+        *) cli "$1" ;;
+    esac
+}
+home_enter() { # home_enter KEY
+    case $1 in
+        overview) home_preview overview | page Overview ;;
+        generations) generations_screen ;;
+        settings) settings_screen ;;
+        about) about_card fetch | page 'About' ;;
+        compare) compare_screen ;;
+        diff) changes_screen '' '' 'newest vs previous' ;;
+        updates) updates_screen ;;
+        history) history_screen ;;
+        dev) dev_screen ;;
+        persist) persist_screen ;;
+        clean) act clean ;;
+        hash) hash_flow ;;
+        *) cli "$1" | page "$1" ;;
+    esac
+}
+home() {
+    fzf "${FZF_BASE[@]}" --with-nth 2 --no-sort --list-label ' nixdatifier ' --input-label ' Jump to ' \
+        --ghost 'type to jump · Enter opens · Esc quits · F1 keys' \
+        --header "$(header_cached)" --header-label ' System ' \
+        --footer "$(keys 'Enter=open' 'Esc=quit' 'Ctrl-R=refresh' 'Alt-P=preview' "Alt-C=colour:$THEME" "Alt-L=layout:$LAYOUT" 'F1=keys')" \
+        --preview '$NXD_TUI _home {1}' \
+        --bind 'focus:transform-preview-label(echo " "{3}" ")' \
+        --bind 'start:bg-transform-header($NXD_TUI _header --updates)' \
+        --bind 'enter:transform:[[ {1} == quit ]] && echo abort || echo "execute(\$NXD_TUI _enter {1})+refresh-preview+bg-transform-header(\$NXD_TUI _header)"' \
+        --bind 'ctrl-r:execute-silent(rm -f "$NXD_STATE"/*.json)+refresh-preview+bg-transform-header($NXD_TUI _header --updates --refresh)' \
+        --bind 'alt-c:execute-silent($NXD_TUI _cycle theme)+abort,ctrl-t:execute-silent($NXD_TUI _cycle theme)+abort,f2:execute-silent($NXD_TUI _cycle theme)+abort' \
+        --bind 'alt-l:execute-silent($NXD_TUI _cycle layout)+abort,ctrl-y:execute-silent($NXD_TUI _cycle layout)+abort,f3:execute-silent($NXD_TUI _cycle layout)+abort' \
+        --bind 'click-footer:transform:case "$FZF_CLICK_FOOTER_WORD" in *preview*|Alt-P) echo toggle-preview ;; *colour*|Alt-C|Ctrl-T) echo "execute-silent(\$NXD_TUI _cycle theme)+abort" ;; *layout*|Alt-L|Ctrl-Y) echo "execute-silent(\$NXD_TUI _cycle layout)+abort" ;; esac' \
+        --bind 'backward-eof:ignore' < <(home_rows) >/dev/null
+    return 0
+}
+
+help_text() {
+    printf '%s%sKeys%s\n\n' "$B" "$C" "$X"
+    printf '  %-16s %s\n' 'Enter' 'open the highlighted item or run it' 'Esc' 'back (quits on the home screen)' \
+        'Backspace' 'back, when the search is empty' 'type' 'filter the list' 'Ctrl-R' 'refresh' \
+        'Alt-P  Ctrl-/' 'show or hide the preview (click it in the footer too)' 'Shift-↑↓' 'scroll the preview' 'Alt-↑↓' 'page the preview'
+    printf '\n%s%sGenerations%s\n\n' "$B" "$P" "$X"
+    printf '  %-16s %s\n' 'Enter' 'package changes of that generation' 'Tab' 'mark; two marks compare each other' \
+        'Ctrl-O' 'compare against previous / booted / next boot' 'Ctrl-S  Ctrl-B' 'switch now / boot next time' \
+        'Ctrl-D' 'delete the marked (or highlighted) generations'
+    printf '\n%s%sWhat changed%s\n\n' "$B" "$P" "$X"
+    printf '  %-16s %s\n' 'Tab' 'All → Added → Removed → Changed' 'Alt-A R C 0' 'jump to a filter (or click it)' 'Enter' 'store paths of the package'
+    printf '\n%s%sUpdates%s\n\n' "$B" "$O" "$X"
+    printf '  %-16s %s\n' 'Enter' 'packages the update would change' 'Ctrl-U  Alt-U' 'update this input / all inputs'
+    printf '\n%sEverything that changes the system asks first and lands in History.%s\n' "$D" "$X"
+}
+
+# The fallback without a usable fzf: numbers or any command line.
+numbered_menu() {
+    local reply item words
+    while :; do
+        printf '\n%s%s❄ nixdatifier%s  %s\n\n' "$B" "$C" "$X" "$("$NXD_CLI" status "${clr[@]}" 2>/dev/null)"
+        cat <<'MENU'
+   1  Health            release, reboot needed, failed units
+   2  Generations       what you can go back to
+   3  Updates           flake inputs behind upstream
+   4  What changed      newest generation vs previous
+   5  Switch            pick a generation to run now
+   6  Clean up          old generations and garbage
+   7  Disk              store size, what GC could free
+   8  Dev environments  direnv projects and their cache
+   9  History           what earlier changes did
+   q  Quit              (or type any command, like: diff 3 2)
+MENU
+        read -r -p $'\n> ' reply || { echo; return 0; }
+        case $reply in
+            1) item=health ;; 2) item=generations ;; 3) item=updates ;; 4) item='diff' ;; 5) item=switch ;;
+            6) item=clean ;; 7) item=disk ;; 8) item='dev list' ;; 9) item=history ;;
+            q | Q | quit | exit) return 0 ;;
+            '') continue ;;
+            *) item=$reply ;;
+        esac
+        read -r -a words <<<"$item"
+        echo
+        "$NXD_CLI" "${clr[@]}" "${words[@]}"
+        read -r -p $'\n[Enter] back to the menu ' _ || return 0
+    done
+}
+fzf_usable() {
+    local v
+    [[ -z ${NIXDATIFIER_NO_FZF:-} ]] && command -v fzf >/dev/null || return 1
+    v=$(fzf --version 2>/dev/null | cut -d' ' -f1)
+    [[ $(printf '%s\n%s\n' "$FZF_MIN" "$v" | sort -V | head -1) == "$FZF_MIN" ]]
+}
+
+# ── Endpoints for fzf, then the entry point ─────────────────────────────────
+base_opts
+case ${1:-} in
+    _header) status_line "${@:2}" | tee "$NXD_STATE/header" ;;
+    _home) home_preview "$2" ;;
+    _enter) home_enter "$2" ;;
+    _help) help_text ;;
+    _setrows) settings_rows ;;
+    _setpv) settings_preview "$2" ;;
+    _setedit) settings_edit "$2" ;;
+    _setclear) case $2 in theme | layout) ;; *) "$NXD_CLI" config unset "$2" >/dev/null 2>&1 ;; esac ;;
+    _fit) # _fit COLUMNS LINES: wide: preview on the right; tall but narrow: below; else hidden
+        if (($2 >= 70)); then echo 'show-preview+change-preview-window(right,55%,wrap)'
+        elif (($3 >= 32)); then echo 'show-preview+change-preview-window(bottom,40%,wrap)'
+        else echo 'hide-preview'; fi ;;
+    _cycle) cycle_conf "$2"; : >"$NXD_STATE/restart" ;;
+    _devcard) dev_card "$2" ;;
+    _devpage) dev_card "$2" shells | page "$(basename "$2")" ;;
+    _cli) cli "${@:2}" ;;
+    _page) title=$2; shift 2; cli "$@" | page "$title" ;;
+    _pagein) page "$2" ;;
+    _act) act "${@:2}" ;;
+    _gens) gen_rows ;;
+    _gendiff) gen_diff_preview "$2" ;;
+    _compare) compare_open "${@:2}" ;;
+    _opengen) open_generation "${@:2}" ;;
+    _modelabel) mode_label "$(compare_mode)" ;;
+    _cyclemode) next=$(case $(compare_mode) in prev) echo booted ;; booted) echo next ;; *) echo prev ;; esac); echo "$next" >"$NXD_STATE/mode" ;;
+    _filter) filter_action "$2" ;;
+    _changerows) changes_load ;;
+    _changehead) changes_header ;;
+    _paths) store_paths "$2" "${3:-}" "${4:-}" "${5:-}" ;;
+    _inputs) input_rows "${@:2}" ;;
+    _inputpv) input_preview "$2" "$3" ;;
+    _inputpage) input_preview "$2" "$3" | page "$2" ;;
+    _history) history_rows ;;
+    _histpv) history_preview "$2" ;;
+    _dev) dev_rows ;;
+    _*) printf 'tui: unknown endpoint %s\n' "$1" >&2; exit 2 ;;
+    *)
+        [[ -t 0 && -t 1 ]] || { echo 'tui: needs a terminal (use nixdatifier commands in scripts)' >&2; exit 2; }
+        if ! fzf_usable; then numbered_menu; exit 0; fi
+        NXD_STATE=$(mktemp -d "${TMPDIR:-/tmp}/nixdatifier-tui.XXXXXX") || exit 1
+        NXD_CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/nixdatifier/tui
+        mkdir -p "$NXD_CACHE" || NXD_CACHE=$NXD_STATE
+        find "$NXD_CACHE" -name 'diff-*' -mtime +60 -delete 2>/dev/null
+        export NXD_STATE NXD_CACHE
+        # The scratch directory is in /tmp (often RAM): remove it however we end, and
+        # sweep the ones a killed session left behind.
+        trap 'rm -rf "$NXD_STATE"' EXIT
+        trap 'exit 130' INT HUP TERM
+        echo $$ >"$NXD_STATE/pid"
+        for d in "${TMPDIR:-/tmp}"/nixdatifier-tui.*; do
+            [[ -d $d && -O $d && $d != "$NXD_STATE" ]] || continue
+            kill -0 "$(cat "$d/pid" 2>/dev/null)" 2>/dev/null || rm -rf "$d"
+        done
+        printf '%s❄ nixdatifier%s  %sstarting…%s\r' "$B$P" "$X" "$D" "$X"
+        # F2/F3 change the look, which is read at start: leave fzf, start again.
+        home
+        if [[ -e $NXD_STATE/restart ]]; then
+            rm -f "$NXD_STATE/restart"
+            rm -rf "$NXD_STATE"
+            exec "$NXD_TUI"
+        fi ;;
+esac

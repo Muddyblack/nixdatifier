@@ -440,10 +440,13 @@ Item {
         return (root.settings.usePkexec ? "pkexec " : "") + command;
     }
 
-    // Runs a script with the Nix tools on PATH, folding stderr into stdout so
-    // failures reach the toast and the history entry.
-    function systemShell(script) {
-        return "sh -c \"export PATH=$PATH:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin; " + script + " 2>&1\"";
+    // Runs the command line (tools/sh/nixdatifier) so the window and a terminal
+    // share one implementation of every change. The CLI takes the system-operation
+    // lock and records the run in the history; the window only asks (--yes) and
+    // translates the label.
+    function cli(args, flakeDir) {
+        const label = root.currentActionType ? " --label " + shq(root.currentActionType) : "";
+        return shq(root.scriptDir + "nixdatifier") + " --yes --priv " + (root.settings.usePkexec ? "pkexec" : "none") + label + (flakeDir ? " --flake " + shq(flakeDir) : "") + " " + args;
     }
 
     // ── Operations ────────────────────────────────────────────────────────────
@@ -1960,11 +1963,11 @@ Item {
         root.isBusy = true;
         root.updatingInput = inputName;
         root.currentActionType = qsTr("Updating %1…").arg(inputName);
-        const cmd = "cd " + shq(root.flakePath) + " && nix flake update " + shq(inputName);
+        const cmd = cli("update " + shq(inputName), root.flakePath);
         sh(cmd, function (c, out, err, code) {
             root.isBusy = false;
             root.updatingInput = "";
-            root.recordHistoryEntry("flake-update", root.currentActionType, -1, code, (err || out || "").trim());
+            root.loadHistory();
             if (code !== 0) {
                 root.pushToast(qsTr("Update failed: ") + (err || out || "").trim(), true);
                 return;
@@ -1974,7 +1977,7 @@ Item {
             root.refreshFlakeContext(function () {
                 root.checkFlakeUpdates(false, true);
             });
-        }, true);
+        });
     }
 
     function runDryPreview(inputName, overrideRef) {
@@ -2184,12 +2187,14 @@ Item {
         root.isBusy = true;
         root.currentActionType = action === "switch" ? qsTr("Activating generation…") : action === "rollback" ? qsTr("Setting next boot…") : qsTr("Deleting generation…");
 
-        const profileSwitch = privileged("nix-env --profile /nix/var/nix/profiles/system --switch-generation " + genNum);
-        const cmd = systemShell(action === "delete" ? privileged("nix-env --profile /nix/var/nix/profiles/system --delete-generations " + genNum) : profileSwitch + " && " + privileged("/nix/var/nix/profiles/system/bin/switch-to-configuration " + (action === "switch" ? "switch" : "boot")));
-
+        const cmd = cli({
+            switch: "switch",
+            rollback: "boot",
+            delete: "delete"
+        }[action] + " " + genNum);
         sh(cmd, function (c, out, err, code) {
             root.isBusy = false;
-            root.recordHistoryEntry(action, root.currentActionType, genNum, code, (err || out || "").trim());
+            root.loadHistory();
             if (code !== 0) {
                 const msg = (err || out || "").trim();
                 const labels = {
@@ -2216,7 +2221,7 @@ Item {
                 root.selectedGenNum = -1;
             root.refreshGenerations();
             root.probeDiskUsage(true);
-        }, true);
+        });
     }
 
     function executeCleanup(mode) {
@@ -2234,17 +2239,16 @@ Item {
         }
         const gcArgs = {
             gc: "",
-            "gc-14d": " --delete-older-than 14d",
-            "gc-all": " -d"
+            "gc-14d": " --older-than 14d",
+            "gc-all": " --all"
         }[mode];
         if (gcArgs === undefined)
             return;
         root.isBusy = true;
         root.currentActionType = qsTr("Cleaning Nix store…");
-        const cmd = systemShell(privileged("nix-collect-garbage" + gcArgs));
-        sh(cmd, function (c, out, err, code) {
+        sh(cli("gc" + gcArgs), function (c, out, err, code) {
             root.isBusy = false;
-            root.recordHistoryEntry(mode, root.currentActionType, -1, code, (err || out || "").trim());
+            root.loadHistory();
             root.refreshGenerations();
             root.probeDiskUsage(true);
             if (code !== 0) {
@@ -2255,7 +2259,7 @@ Item {
             const msg = freed ? qsTr("GC complete — %1 freed.").arg(freed[1]) : qsTr("GC complete.");
             root.pushToast(msg, false);
             root.notify(qsTr("Nix — garbage collected"), msg, false);
-        }, true);
+        });
     }
 
     // ── Parsers ───────────────────────────────────────────────────────────────

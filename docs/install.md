@@ -15,6 +15,25 @@ nix profile install github:Muddyblack/nixdatifier
 nixdatifier --autostart # registers autostart entry to run in tray at login
 ```
 
+## Command line only (no GUI, no Qt)
+
+```bash
+nix run github:Muddyblack/nixdatifier#cli -- generations
+nix profile install github:Muddyblack/nixdatifier#cli   # installs `nixdatifier`
+```
+
+The `cli` package is just the shell helpers (about 340 KB on top of tools you already have), so it suits servers and terminal-only setups. The default package (`nixdatifier`) is the tray app and includes the same command line: `nixdatifier generations` works there too. Install one or the other, not both, since both provide `bin/nixdatifier`.
+
+Both packages ship Tab completion for Bash, zsh and fish. NixOS and Home Manager pick it up on their own. With a plain `nix profile install` your shell may not look in the profile, so run this once and it works everywhere:
+
+```bash
+nixdatifier completion install   # detects your shell, asks, adds one line to its startup file
+```
+
+Open a new terminal afterwards. Running it again changes nothing.
+
+Want both the tray app and the command line? Install just the app: it already includes `nixdatifier` on the command line. If you do put both packages in one profile there is no conflict; the app wins.
+
 ## NixOS module
 
 ```nix
@@ -38,8 +57,15 @@ nixdatifier --autostart # registers autostart entry to run in tray at login
 }
 ```
 
+Terminal only? Set `ui = false` and the module installs the `cli` package instead of the tray app and adds no autostart entry:
+
+```nix
+programs.nixdatifier = { enable = true; ui = false; };
+```
+
 Or install specific packages directly via `environment.systemPackages`:
-- `nixdatifier.packages.${pkgs.system}.nixdatifier` (standalone desktop app)
+- `nixdatifier.packages.${pkgs.system}.cli` (command line only)
+- `nixdatifier.packages.${pkgs.system}.nixdatifier` (standalone desktop app, includes the command line)
 - `nixdatifier.packages.${pkgs.system}.default` (KDE Plasma 6 widget)
 - `nixdatifier.packages.${pkgs.system}.hyprland` (Quickshell / Hyprland panel & pill)
 
@@ -55,6 +81,7 @@ Or install specific packages directly via `environment.systemPackages`:
   programs.nixdatifier = {
     enable = true;
     autostart = true; # default: true, starts in tray at login
+    # ui = false;     # command line only
   };
 }
 ```

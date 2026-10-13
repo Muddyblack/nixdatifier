@@ -5,6 +5,7 @@
 , qtdeclarative
 , qtsvg
 , wrapQtAppsHook
+, installShellFiles
 , bash
 , jq
 , git
@@ -18,6 +19,8 @@
 , inotify-tools
 , libnotify
 , direnv
+, fzf
+, chafa
 , version
 , src
 }:
@@ -27,14 +30,21 @@ stdenv.mkDerivation {
 
   sourceRoot = "source/standalone";
 
-  nativeBuildInputs = [ cmake wrapQtAppsHook ];
+  nativeBuildInputs = [ cmake wrapQtAppsHook installShellFiles ];
   buildInputs = [ qtbase qtdeclarative qtsvg ];
 
   # The shell helpers need these. They are appended, so a tool already on the
   # user's PATH (notably `nix` itself and the setuid `pkexec`) always wins.
   qtWrapperArgs = [
-    "--suffix PATH : ${lib.makeBinPath [ bash jq git curl coreutils util-linux findutils gnugrep gnused gawk inotify-tools libnotify direnv ]}"
+    "--suffix PATH : ${lib.makeBinPath [ bash jq git curl coreutils util-linux findutils gnugrep gnused gawk inotify-tools libnotify direnv fzf chafa ]}"
   ];
+
+  postInstall = ''
+    ${bash}/bin/bash $out/share/nixdatifier/package/contents/tools/sh/nixdatifier completion bash > nixdatifier.bash
+    ${bash}/bin/bash $out/share/nixdatifier/package/contents/tools/sh/nixdatifier completion zsh > nixdatifier.zsh
+    ${bash}/bin/bash $out/share/nixdatifier/package/contents/tools/sh/nixdatifier completion fish > nixdatifier.fish
+    installShellCompletion --cmd nixdatifier --bash nixdatifier.bash --zsh nixdatifier.zsh --fish nixdatifier.fish
+  '';
 
   doInstallCheck = true;
   installCheckPhase = ''

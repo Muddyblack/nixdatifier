@@ -194,7 +194,8 @@ shellpkgs() {
 
 # Measures every direnv project with a cache, four at a time at idle priority.
 space() {
-    local tmp n=0 dir
+    local n=0 dir
+    # Not local: the EXIT trap runs after this function has returned.
     tmp=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/nixdatifier-space.XXXXXXXX") || exit 1
     trap 'rm -rf -- "$tmp"' EXIT
     while IFS= read -r dir; do

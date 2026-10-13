@@ -937,7 +937,8 @@ Item {
         function test_failed_gc_refreshes_partially_changed_store_and_profiles() {
             core.executeCleanup("gc-14d");
             compare(jobs.length, 1);
-            verify(jobs[0].cmd.indexOf("--delete-older-than 14d") > 0);
+            verify(jobs[0].cmd.indexOf("nixdatifier' ") > 0);
+            verify(jobs[0].cmd.indexOf("gc --older-than 14d") > 0);
             jobs[0].callback(jobs[0].cmd, "", "collection failed after pruning profiles", 1);
             verify(!core.isBusy);
             verify(jobs.some(j => j.cmd.indexOf("/generations'") > 0));

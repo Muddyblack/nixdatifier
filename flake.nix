@@ -50,9 +50,46 @@
               fileset = pkgs.lib.fileset.unions [ ./standalone ./tray ./package ];
             };
           };
+          # The command line alone: shell helpers and no Qt, so a server or a
+          # terminal-only setup does not build or download any GUI toolkit.
+          cli = pkgs.stdenvNoCC.mkDerivation {
+            pname = "nixdatifier-cli";
+            inherit version;
+            src = ./package;
+            nativeBuildInputs = [ pkgs.makeWrapper pkgs.installShellFiles ];
+            dontConfigure = true;
+            dontBuild = true;
+            installPhase = ''
+              runHook preInstall
+              dest="$out/share/nixdatifier/package"
+              mkdir -p "$dest/contents" "$out/bin"
+              cp metadata.json icon-emblem.png icon-emblem.svg "$dest/"
+              install -Dm644 icon-emblem.svg "$out/share/icons/hicolor/scalable/apps/nixdatifier.svg"
+              cp -r contents/tools contents/code contents/icons "$dest/contents/"
+              ${pkgs.bash}/bin/bash contents/tools/sh/nixdatifier completion bash > nixdatifier.bash
+              ${pkgs.bash}/bin/bash contents/tools/sh/nixdatifier completion zsh > nixdatifier.zsh
+              ${pkgs.bash}/bin/bash contents/tools/sh/nixdatifier completion fish > nixdatifier.fish
+              installShellCompletion --cmd nixdatifier --bash nixdatifier.bash --zsh nixdatifier.zsh --fish nixdatifier.fish
+              # Appended, so the nix and sudo already on the system always win.
+              for helper in "$dest"/contents/tools/sh/*; do
+                [ -f "$helper" ] && [ -x "$helper" ] && wrapProgram "$helper" --suffix PATH : ${pkgs.lib.makeBinPath (with pkgs; [ bash jq git curl coreutils util-linux findutils gnugrep gnused gawk inotify-tools direnv fzf chafa ])}
+              done
+              ln -s "$dest/contents/tools/sh/nixdatifier" "$out/bin/nixdatifier"
+              runHook postInstall
+            '';
+            meta = {
+              description = "Command line for NixOS generations, flake updates, cleanup and dev environments";
+              license = pkgs.lib.licenses.mit;
+              platforms = pkgs.lib.platforms.linux;
+              mainProgram = "nixdatifier";
+              # Lose the bin/nixdatifier conflict to the tray app, so both can
+              # sit in one profile.
+              priority = 10;
+            };
+          };
         in
         {
-          inherit tray nixdatifier;
+          inherit tray nixdatifier cli;
           hyprland = pkgs.stdenvNoCC.mkDerivation {
             pname = "nixdatifier-hyprland";
             inherit version;
@@ -143,6 +180,10 @@
           nixdatifier = {
             type = "app";
             program = "${self.packages.${system}.nixdatifier}/bin/nixdatifier";
+          };
+          cli = {
+            type = "app";
+            program = "${self.packages.${system}.cli}/bin/nixdatifier";
           };
           hyprland = {
             type = "app";

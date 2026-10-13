@@ -11,6 +11,8 @@
 #include <QTextStream>
 #include <QtQml>
 #include <cstdio>
+#include <vector>
+#include <unistd.h>
 
 #include "Host.h"
 #include "IconProvider.h"
@@ -22,6 +24,8 @@ const char *usage =
     "Nixdatifier: NixOS generations, flake updates and dev environments.\n"
     "\n"
     "Usage: nixdatifier [option]\n"
+    "       nixdatifier <command> [args]   command line: generations, updates, diff, disk, gc, ...\n"
+    "                                      (see: nixdatifier help)\n"
     "  (none)           open the window (starts the app if it is not running)\n"
     "  --background     start in the tray without opening the window\n"
     "  --toggle         show or hide the window of the running instance\n"
@@ -96,6 +100,30 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; ++i)
         args << QString::fromLocal8Bit(argv[i]);
     const QString option = args.value(0);
+
+    // Anything that is not an option is a command for the shell CLI the window
+    // itself uses, so the terminal and the UI behave the same.
+    if (!option.isEmpty() && !option.startsWith('-')) {
+        // No QCoreApplication yet, so applicationDirPath() is not available.
+        const QString exe = QFileInfo(QStringLiteral("/proc/self/exe")).canonicalFilePath();
+        const QString dataDir = findDataDir(QFileInfo(exe).absolutePath());
+        if (dataDir.isEmpty()) {
+            fputs("Could not find the Nixdatifier files. Set NIXDATIFIER_DATA.\n", stderr);
+            return 1;
+        }
+        const QByteArray script = (dataDir + QStringLiteral("/package/contents/tools/sh/nixdatifier")).toLocal8Bit();
+        std::vector<QByteArray> storage;
+        storage.push_back(script);
+        for (const QString &arg : args)
+            storage.push_back(arg.toLocal8Bit());
+        std::vector<char *> argvOut;
+        for (QByteArray &arg : storage)
+            argvOut.push_back(arg.data());
+        argvOut.push_back(nullptr);
+        execv(script.constData(), argvOut.data());
+        perror("nixdatifier");
+        return 1;
+    }
 
     if (option == "-h" || option == "--help") {
         fputs(usage, stdout);
