@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -1058,6 +1059,342 @@ printf '%s' "$value"
         self.assertEqual(self.run_helper("run", *args).stdout, "call\n")
         self.assertEqual(self.run_helper("run", "invalidate", "impermanence").returncode, 0)
         self.assertEqual(self.run_helper("run", *args).stdout, "call\ncall\n")
+
+
+class Cli(HelperCase):
+    """The nixdatifier command line, against a fake profiles directory."""
+
+    def setUp(self):
+        super().setUp()
+        tools = self.root / "tools"
+        shutil.copytree(HELPERS, tools)
+        self.profiles = self.root / "profiles"
+        for name in ("nixdatifier", "generations"):
+            path = tools / name
+            path.write_text(
+                path.read_text()
+                .replace("/nix/var/nix/profiles", str(self.profiles))
+                .replace("/run/booted-system", str(self.root / "booted"))
+            )
+        self.cli = str(tools / "nixdatifier")
+        self.profiles.mkdir()
+        for number in (1, 2, 3):
+            store = self.root / f"store{number}"
+            store.mkdir()
+            (store / "nixos-version").write_text(f"25.05.{number}")
+            (self.profiles / f"system-{number}-link").symlink_to(store)
+        (self.profiles / "system").symlink_to("system-3-link")
+        (self.root / "booted").symlink_to(self.root / "store2")
+        # Stand-ins for the commands that change the system.
+        self.calls = self.root / "calls"
+        for name in ("nix-env", "nix-collect-garbage"):
+            self.script(self.bin / name, f"echo \"{name} $*\" >> '{self.calls}'; echo done\n")
+
+    def cli_run(self, *args, **kwargs):
+        return subprocess.run(
+            [self.cli, *args], env=self.env, text=True, capture_output=True, timeout=15, check=False, **kwargs
+        )
+
+    def test_generations_json_marks_running_and_booted(self):
+        rows = json.loads(self.cli_run("--json", "generations").stdout)
+        self.assertEqual([r["number"] for r in rows], [3, 2, 1])
+        self.assertEqual([r["active"] for r in rows], [True, False, False])
+        self.assertEqual([r["booted"] for r in rows], [False, True, False])
+        self.assertEqual(rows[0]["nixosVersion"], "25.05.3")
+        limited = json.loads(self.cli_run("--json", "--limit", "1", "generations").stdout)
+        self.assertEqual(len(limited), 1)
+
+    def test_typo_suggestions_do_not_run_commands(self):
+        for args, suggestion in (
+            (("generatoins",), "generations"),
+            (("--limti", "2", "generations"), "--limit"),
+            (("dev", "shwo"), "show"),
+            (("persist", "cleanu"), "cleanup"),
+            (("help", "generatoins"), "generations"),
+            (("udpate",), "update"),
+        ):
+            with self.subTest(args=args):
+                result = self.cli_run(*args)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("Did you mean:", result.stderr)
+                self.assertIn(suggestion, result.stderr)
+                self.assertEqual(result.stdout, "")
+        self.assertFalse(self.calls.exists())
+
+    def test_missing_option_value_is_usage_error(self):
+        for args in (("--limit",), ("--flake", "--json", "updates")):
+            result = self.cli_run(*args)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("needs a value", result.stderr)
+
+    def test_generations_without_compgen(self):
+        startup = self.root / "bash-startup"
+        startup.write_text("enable -n compgen 2>/dev/null || true\n")
+        self.env["BASH_ENV"] = str(startup)
+        result = self.cli_run("--json", "generations")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(json.loads(result.stdout)), 3)
+
+    def test_plain_output_has_no_header(self):
+        lines = self.cli_run("--plain", "generations").stdout.splitlines()
+        self.assertEqual(len(lines), 3)
+        self.assertEqual(lines[0].split("\t")[0], "3")
+
+    def test_changes_need_confirmation_and_refuse_protected_generations(self):
+        asked = self.cli_run("delete", "1", stdin=subprocess.DEVNULL)
+        self.assertEqual(asked.returncode, 1)
+        self.assertIn("--yes", asked.stderr)
+        for protected in ("3", "2"):
+            result = self.cli_run("--yes", "delete", protected)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("cannot be deleted", result.stderr)
+        self.assertEqual(self.cli_run("--yes", "delete", "9").returncode, 1)
+        self.assertFalse(self.calls.exists())
+
+    def test_delete_runs_command_and_records_history(self):
+        result = self.cli_run("--yes", "--priv", "none", "--label", "Deleting…", "delete", "1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"--profile {self.profiles}/system --delete-generations 1", self.calls.read_text())
+        entry = json.loads(self.cli_run("--json", "history").stdout)[0]
+        self.assertEqual(
+            (entry["action"], entry["label"], entry["genNum"], entry["success"]), ("delete", "Deleting…", 1, True)
+        )
+
+    def test_dry_run_changes_nothing(self):
+        result = self.cli_run("--dry-run", "gc", "--older-than", "14d")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("[dry-run]", result.stdout)
+        self.assertFalse(self.calls.exists())
+        self.assertEqual(json.loads(self.cli_run("--json", "history").stdout), [])
+
+    def test_gc_argument_validation_and_failure_is_recorded(self):
+        self.assertEqual(self.cli_run("--yes", "gc", "--older-than", "soon").returncode, 2)
+        self.script(self.bin / "nix-collect-garbage", "echo broke >&2; exit 4\n")
+        result = self.cli_run("--yes", "--priv", "none", "gc", "--all")
+        self.assertEqual(result.returncode, 4)
+        entry = json.loads(self.cli_run("--json", "history").stdout)[0]
+        self.assertEqual((entry["action"], entry["success"]), ("gc-all", False))
+        self.assertIn("broke", entry["output"])
+
+    def test_updates_lists_inputs(self):
+        flake = self.root / "flake"
+        flake.mkdir()
+        (flake / "flake.nix").write_text("{}")
+        lock = {
+            "nodes": {
+                "root": {"inputs": {"a": "a"}},
+                "a": {"locked": {"type": "tarball", "rev": "abc", "lastModified": 0}, "original": {"type": "tarball"}},
+            }
+        }
+        (flake / "flake.lock").write_text(json.dumps(lock))
+        result = self.cli_run("--json", "--check", "--flake", str(flake), "updates", "--all")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)[0]["status"], "pinned")
+
+    def test_abbreviations_aliases_and_help(self):
+        self.assertEqual(self.cli_run("--plain", "gen").stdout.splitlines()[0].split("\t")[0], "3")
+        self.assertEqual(self.cli_run("ls", "--plain").returncode, 0)
+        ambiguous = self.cli_run("s")
+        self.assertEqual(ambiguous.returncode, 2)
+        self.assertIn("could be", ambiguous.stderr)
+        detail = self.cli_run("gc", "--help").stdout
+        self.assertIn("--older-than 14d | --all", detail)
+        self.assertIn("nixdatifier", self.cli_run("help", "delete").stdout)
+
+    def test_status_is_one_line_and_json_for_scripts(self):
+        line = self.cli_run("status").stdout.strip()
+        self.assertTrue(line.startswith("gen 3"), line)
+        data = json.loads(self.cli_run("--json", "status").stdout)
+        self.assertEqual((data["running"], data["booted"], data["generations"]), (3, 2, 3))
+
+    def test_delete_selects_by_keep_and_never_the_protected(self):
+        result = self.cli_run("--dry-run", "delete", "--keep", "1")
+        self.assertIn("Will delete: 1", result.stderr)
+        self.assertNotIn("Will delete: 2", result.stderr)
+        self.assertIn("--delete-generations 1", result.stdout)
+        nothing = self.cli_run("--yes", "delete", "--keep", "9")
+        self.assertIn("Nothing to delete", nothing.stderr)
+        self.assertFalse(self.calls.exists())
+
+    def test_rollback_switches_to_the_generation_before(self):
+        result = self.cli_run("--dry-run", "rollback")
+        self.assertIn("--switch-generation 2", result.stdout)
+
+    def test_json_change_prints_one_result_object(self):
+        result = self.cli_run("--yes", "--json", "--priv", "none", "delete", "1")
+        self.assertEqual(json.loads(result.stdout), {"ok": True, "action": "delete", "exitCode": 0, "generation": 1})
+        self.assertIn("done", result.stderr)
+
+    def test_secrets_lists_names_but_never_values(self):
+        deployed = self.root / "run-secrets"
+        deployed.mkdir()
+        (deployed / "wifi").write_text("hunter2")
+        source = self.root / "secrets.yaml"
+        source.write_text(
+            "wifi: ENC[AES256_GCM,data:xx]\nsops:\n    version: 3.9.0\n    age:\n        - recipient: age1abc\n"
+        )
+        result = self.cli_run("--json", "secrets", "--secrets", str(deployed), "--source", str(source))
+        self.assertNotIn("hunter2", result.stdout)
+        data = json.loads(result.stdout)
+        self.assertEqual(data["deployed"]["names"], ["wifi"])
+        self.assertEqual(
+            (data["source"]["encryption"], data["source"]["type"], data["source"]["recipients"]),
+            ("encrypted", "age", 1),
+        )
+
+    def test_completion_scripts_are_valid(self):
+        bash = self.cli_run("completion", "bash").stdout
+        self.assertEqual(subprocess.run(["bash", "-n"], input=bash, text=True, check=False).returncode, 0)
+        self.assertIn("__nixdatifier_candidates", self.cli_run("completion", "fish").stdout)
+        self.assertEqual(self.cli_run("completion", "tcsh").returncode, 2)
+
+    def test_completion_suggests_both_diff_generations(self):
+        for words in (("diff", ""), ("diff", "3", ""), ("--json", "diff", "3", ""), ("gen", "--generation", "")):
+            with self.subTest(words=words):
+                result = self.cli_run("_complete", *words)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.splitlines(), ["3", "2", "1"])
+        self.assertEqual(self.cli_run("_complete", "diff", "3", "2", "").stdout, "")
+        self.assertEqual(self.cli_run("_complete", "diff", "3", "2").stdout, "2\n")
+        self.assertFalse(self.calls.exists())
+
+    def test_completion_commands_options_and_flake_inputs(self):
+        self.assertEqual(self.cli_run("_complete", "gener").stdout, "generations\n")
+        self.assertEqual(self.cli_run("_complete", "diff", "--gen").stdout, "--generation\n")
+        self.assertEqual(self.cli_run("_complete", "dev", "sh").stdout, "show\nshells\n")
+        flake = self.root / "flake"
+        flake.mkdir()
+        (flake / "flake.nix").write_text("{}")
+        (flake / "flake.lock").write_text(
+            json.dumps({"nodes": {"root": {"inputs": {"nixpkgs": "nixpkgs", "home-manager": "hm"}}}})
+        )
+        self.assertEqual(self.cli_run("_complete", "--flake", str(flake), "update", "nix").stdout, "nixpkgs\n")
+
+    def test_bash_completion_uses_invoked_executable_without_compgen(self):
+        completion = self.root / "completion.bash"
+        completion.write_text(self.cli_run("completion", "bash").stdout)
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'source "$1"; enable -n compgen 2>/dev/null || true; COMP_WORDS=("$2" diff 3 ""); COMP_CWORD=3; _nixdatifier; printf "%s\\n" "${COMPREPLY[@]}"',
+                "bash",
+                str(completion),
+                self.cli,
+            ],
+            env=self.env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["3", "2", "1"])
+
+    @unittest.skipUnless(shutil.which("zsh"), "zsh is not installed")
+    def test_zsh_completion_when_sourced_and_autoloaded(self):
+        completion = self.root / "_nixdatifier"
+        completion.write_text(self.cli_run("completion", "zsh").stdout)
+        for setup in ('source "$1"', 'fpath=("${1:h}" $fpath); autoload -Uz _nixdatifier'):
+            result = subprocess.run(
+                [
+                    "zsh",
+                    "-f",
+                    "-c",
+                    "autoload -Uz compinit; compinit -D; "
+                    + setup
+                    + '; compadd() { print -rl -- "${@:2}"; }; words=("$2" diff 3 ""); CURRENT=4; _nixdatifier',
+                    "zsh",
+                    str(completion),
+                    self.cli,
+                ],
+                env=self.env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(), ["3", "2", "1"])
+
+    def test_completion_install_is_idempotent_and_per_shell(self):
+        home = self.root / "home"
+        home.mkdir()
+        self.env["HOME"] = str(home)
+        self.env.pop("ZDOTDIR", None)
+        self.env["XDG_CONFIG_HOME"] = str(home / ".config")
+        for shell, target in (("bash", ".bashrc"), ("zsh", ".zshrc")):
+            for _ in range(2):
+                result = self.cli_run("--yes", "completion", "install", shell)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            text = (home / target).read_text()
+            self.assertEqual(text.count(f"completion {shell}"), 1)
+        self.assertEqual(self.cli_run("--yes", "completion", "install", "fish").returncode, 0)
+        self.assertIn("__nixdatifier_candidates", (home / ".config/fish/completions/nixdatifier.fish").read_text())
+        self.assertEqual(self.cli_run("--yes", "completion", "install", "tcsh").returncode, 2)
+        dry = self.cli_run("--dry-run", "completion", "install", "bash")
+        self.assertEqual(dry.returncode, 0)
+
+    def test_clean_defaults_spare_recent_generations_then_collects(self):
+        result = self.cli_run("--yes", "--priv", "none", "clean")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls.read_text()
+        self.assertNotIn("--delete-generations", calls)
+        self.assertIn("nix-collect-garbage", calls)
+
+    def test_menu_is_listed_and_bare_command_without_terminal_is_usage(self):
+        self.assertIn("menu", self.cli_run("--help").stdout)
+        self.assertEqual(self.cli_run().returncode, 2)
+        self.assertEqual(self.cli_run("switch").returncode, 2)
+
+    def tui_run(self, *args, **extra_env):
+        state = self.root / "tui-state"
+        state.mkdir(exist_ok=True)
+        env = {**self.env, "NXD_STATE": str(state), "NXD_CACHE": str(state), "NO_COLOR": "1", **extra_env}
+        return subprocess.run(
+            [str(Path(self.cli).parent / "tui"), *args],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+
+    def test_tui_without_terminal_is_usage(self):
+        self.assertEqual(self.tui_run().returncode, 2)
+
+    def test_tui_lists_generations_with_next_boot_and_booted(self):
+        rows = [line.split("\t") for line in self.tui_run("_gens").stdout.splitlines()]
+        self.assertEqual([r[0] for r in rows], ["3", "2", "1"])
+        self.assertIn("next boot", rows[0][1])
+        self.assertIn("booted", rows[1][1])
+
+    def test_tui_compare_base_cycles_previous_booted_next_boot(self):
+        labels = []
+        for _ in range(3):
+            self.tui_run("_cyclemode")
+            labels.append(self.tui_run("_modelabel").stdout.strip())
+        self.assertEqual(labels, ["vs booted", "vs next boot", "vs previous"])
+        self.assertIn("no earlier generation", self.tui_run("_gendiff", "1").stdout)
+        self.tui_run("_cyclemode")
+        self.assertIn("booted generation itself", self.tui_run("_gendiff", "2").stdout)
+
+    def test_tui_change_filters_cycle_and_reload_the_kept_rows(self):
+        state = self.root / "tui-state"
+        state.mkdir(exist_ok=True)
+        (state / "filter").write_text("all\n")
+        actions = [self.tui_run("_filter", "next", NXD_CHANGES=str(state / "rows")).stdout for _ in range(4)]
+        self.assertIn("grep -a \\^A", actions[0])
+        self.assertIn("grep -a \\^R", actions[1])
+        self.assertIn("grep -a \\^C", actions[2])
+        self.assertTrue(actions[3].startswith("reload(cat "))
+
+    def test_persist_reports_helper_errors_instead_of_empty_tables(self):
+        result = self.cli_run("persist", "ls", "/definitely/not/persistent")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+
+    def test_unknown_command_is_a_usage_error(self):
+        self.assertEqual(self.cli_run("frobnicate").returncode, 2)
+        self.assertIn("Usage:", self.cli_run("--help").stdout)
 
 
 if __name__ == "__main__":

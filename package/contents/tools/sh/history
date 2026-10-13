@@ -41,7 +41,9 @@ case "$mode" in
         ls -1t "$hist_dir"/*.json 2>/dev/null | tail -n +51 | xargs -r rm --
         ;;
     list)
-        jq -s 'sort_by(.timestamp) | reverse' "$hist_dir"/*.json 2>/dev/null || echo '[]'
+        shopt -s nullglob
+        entries=("$hist_dir"/*.json)
+        if ((${#entries[@]})); then jq -s 'sort_by(.timestamp) | reverse' "${entries[@]}" 2>/dev/null || echo '[]'; else echo '[]'; fi
         ;;
     clear)
         rm -f "$hist_dir"/*.json

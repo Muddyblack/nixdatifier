@@ -84,6 +84,7 @@ NixOS module, Home Manager, KDE Store, and manual installs are in [docs/install.
 | | |
 |---|---|
 | [Install](docs/install.md) | Nix, NixOS, Home Manager, KDE Store, requirements |
+| [Command line](docs/cli.md) | `nixdatifier generations`, `updates`, `gc`, … with text, TSV and JSON output |
 | [Hosts](docs/hosts.md) | Standalone app, Plasma widget, Quickshell panel, tray and CLI flags |
 | [Configuration](docs/configuration.md) | Every setting and its default |
 | [Features](docs/features.md) | What each tab does |

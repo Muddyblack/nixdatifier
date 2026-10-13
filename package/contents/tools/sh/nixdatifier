@@ -1,0 +1,980 @@
+#!/usr/bin/env bash
+# nixdatifier: the command line. Every window (Plasma, Hyprland, standalone)
+# runs its system actions through this script, so a terminal, a script or an AI
+# agent gets exactly the behaviour the UI has: same locks, same cache, same
+# history. Read commands print text, TSV (--plain) or JSON (--json); data goes
+# to stdout, progress and messages to stderr; changes ask first (--yes skips)
+# and are recorded in the history the UI shows.
+set -uo pipefail
+export LC_ALL=C
+export PATH="$PATH:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:${HOME:-/root}/.nix-profile/bin"
+here=$(dirname "$(realpath "$0")")
+profiles=/nix/var/nix/profiles
+version=$(jq -r '.KPlugin.Version // empty' "$here/../../../metadata.json" 2>/dev/null)
+
+COMMANDS="generations updates diff disk health status history info hash profiles secrets persist dev path preview notes snapshot update switch boot rollback delete clean gc menu config completion help"
+OPTIONS="--json --plain --flake --yes --dry-run --refresh --priv --label --check --limit --all --older-than --keep --quiet --color --roots --secrets --source --host --days --shells --config --updates --generation --help --version"
+
+# One entry per command: "<usage>|<summary>|<detail>". The overview, `help CMD`
+# and `CMD --help` all read this.
+help_entry() {
+    case $1 in
+        generations) echo "generations [--limit N]#system generations, newest first#Marks the running (ACTIVE) and booted generation. JSON has storePath, nixosVersion and kernel." ;;
+        updates) echo "updates [--all] [--check]#flake inputs behind upstream#Probes each input's remote (cached 30 s). --all also lists up-to-date and pinned inputs. --check exits 2 when an update exists, for cron and CI." ;;
+        diff) echo "diff [--config] [A [B]]#what changed between generations (default: newest vs previous)#Package changes with sizes. --config shows the changes in your .nix files instead (needs recorded snapshots, see: help snapshot)." ;;
+        disk) echo "disk [STORE-PATH]#store size and what GC could free; or why a path is kept#With a store path: its GC roots, referrers and closure size." ;;
+        health) echo "health#release/EOL, reboot needed, failed units, binary caches#Read only. Works on any distro with Nix; NixOS-only checks are left out elsewhere." ;;
+        status) echo "status [--updates]#one-line summary for prompts and status bars#Running generation, reboot needed, failed units. --updates adds a (cached) upstream check. --json for scripts." ;;
+        history) echo "history#what earlier switches, cleanups and updates did#Shared with the window: the last 50 runs, including their output (--json)." ;;
+        info) echo "info#host, NixOS version, uptime#" ;;
+        hash) echo "hash <url|zip|github|file|store> <input>#fixed-output hash and SRI form#Prints the hash as the tool reports it, then the sha256-... form." ;;
+        profiles) echo "profiles#Home Manager and nix profile generations#Reads the profile links only; works without NixOS." ;;
+        secrets) echo "secrets [--secrets DIR] [--source FILE]#sops/agenix secret names and freshness (never values)#Defaults: /run/secrets or /run/agenix.d; the source file is found in the flake. Env: NIXDATIFIER_SECRETS, NIXDATIFIER_SECRETS_SOURCE." ;;
+        persist) echo "persist [status|sizes|ls [DIR]|scan|cleanup|rm PATH...]#impermanence: what survives a reboot#status shows the persistent areas; sizes measures entries; ls lists a folder; scan looks for suspicious autostart hooks; cleanup finds temp and stale data (--days N, default 180); rm deletes a path inside a persistent area (asks first). Extra roots: --roots /a:/b or NIXDATIFIER_PERSIST. NIXDATIFIER_IMP_ALL=1 includes data disks." ;;
+        dev) echo "dev [list|show DIR|shells DIR|pkgs DIR SHELL|clear DIR]#direnv/flake dev environments#list shows projects direnv knows with their .direnv cache size; show describes one (--shells also evaluates its devShells); clear removes DIR/.direnv (asks first)." ;;
+        path) echo "path NAME [VERSION] [--generation N]#store paths of a package in a generation's closure#Default generation: the running system." ;;
+        preview) echo "preview INPUT#which packages would change if INPUT were updated#Dry-run build with the input overridden; downloads only the flake source. --host NAME picks the configuration (default: this host)." ;;
+        notes) echo "notes INPUT#upstream releases and commits between your lock and latest#GitHub only; set GITHUB_TOKEN to lift the rate limit." ;;
+        snapshot) echo "snapshot [REPO]#remember which config commit built the running generation#Run it after a rebuild (the window does it automatically) so 'diff --config' can compare your .nix files. 'generations' records it too when a flake is found." ;;
+        update) echo "update [INPUT]#nix flake update (all inputs, or one) in the flake directory#Asks first; recorded in history." ;;
+        switch) echo "switch N#make generation N the running system now#Asks first. Needs root (sudo by default, see --priv)." ;;
+        boot) echo "boot N#make generation N the next boot only#Asks first. Reboot to use it." ;;
+        rollback) echo "rollback#switch to the generation before the running one#Asks first." ;;
+        delete) echo "delete N... (or --keep N [--older-than DAYS])#delete generations; never the running or booted one#--keep N keeps the N newest; --older-than DAYS selects by age; together both must match. Lists what it will remove before asking." ;;
+        clean) echo "clean [--keep N] [--older-than DAYS]#one step: delete old generations, then collect garbage#Defaults: keep the 5 newest and delete generations older than 14 days (never the running or booted one), then run gc. Asks once per step; --yes for none. On non-NixOS it only collects garbage." ;;
+        gc) echo "gc [--older-than 14d | --all]#collect garbage#--all also deletes every old generation (nix-collect-garbage -d)." ;;
+        config) echo "config [list|get KEY|set KEY VALUE|unset KEY|path]#paths and preferences kept between runs#Saved in ~/.config/nixdatifier/config (NIXDATIFIER_CONFIG moves it) and read before every command; an environment variable or option still wins. Keys: flake (system flake directory), config_repo (git repository recording each generation), secrets (sops/agenix directory), secrets_source (the secrets file in the flake), persist (impermanence roots, colon separated), priv (sudo, doas or pkexec)." ;;
+        menu) echo "menu#interactive view: browse, compare and act without flags#What a bare 'nixdatifier' opens in a terminal: sections with live previews, generations you can open and compare, updates with release notes, keys for switch, boot, delete and update (F1 lists them). Needs fzf 0.70+, else a numbered menu (or set NIXDATIFIER_NO_FZF=1). Set NIXDATIFIER_MODE=cli to make a bare 'nixdatifier' print the help instead; 'nixdatifier menu' always opens it." ;;
+        completion) echo "completion <bash|zsh|fish|install>#print a shell completion script, or set it up for you#'completion install' detects your shell and adds completion to its startup file (fish: its completions folder); safe to repeat. Manual: source <(nixdatifier completion bash)" ;;
+        help) echo "help [COMMAND]#this help#" ;;
+        *) return 1 ;;
+    esac
+}
+
+usage() {
+    local c e
+    echo 'Usage: nixdatifier [options] <command> [args]'
+    echo
+    for c in $COMMANDS; do
+        e=$(help_entry "$c")
+        printf '  %-44s %s\n' "$(cut -d'#' -f1 <<<"$e")" "$(cut -d'#' -f2 <<<"$e")"
+    done
+    cat <<'EOF'
+
+Options (anywhere on the line):
+  -j, --json            JSON (stable keys; sizes in bytes, times as epoch or ISO)
+      --plain           tab-separated rows without header (cut, awk)
+  -q, --quiet           no progress, no command output on success
+      --color WHEN      auto (default), always, never; NO_COLOR is honoured
+  -f, --flake DIR       flake directory (default $NIXDATIFIER_FLAKE, /etc/nixos, ~/nixos-config)
+  -y, --yes             do not ask before changing anything (required without a terminal)
+  -n, --dry-run         show what a change would run, run nothing
+      --refresh         ignore cached results
+      --priv WAY        sudo (default), doas, pkexec or none; root needs nothing
+      --label TEXT      history label (the window passes its translated one)
+  -V, --version
+
+Exit status: 0 ok, 1 failed, 2 usage error (or --check found updates),
+75 another change is running. Commands may be abbreviated: 'nixdatifier gen'.
+Run 'nixdatifier help <command>' for details.
+EOF
+}
+help_for() {
+    local e
+    e=$(help_entry "$1") || { printf 'nixdatifier: unknown command: %s\n' "$1" >&2; exit 2; }
+    printf 'Usage: nixdatifier %s\n  %s\n' "$(cut -d'#' -f1 <<<"$e")" "$(cut -d'#' -f2 <<<"$e")"
+    [[ -n $(cut -d'#' -f3- <<<"$e") ]] && printf '\n%s\n' "$(cut -d'#' -f3- <<<"$e" | fold -s -w 78)"
+    return 0
+}
+
+die() { printf 'nixdatifier: %s\n' "$*" >&2; exit 1; }
+usage_error() { printf 'nixdatifier: %s\nTry: nixdatifier --help\n' "$*" >&2; exit 2; }
+
+# Suggest nearby spellings, but never execute a corrected command automatically.
+unknown_name() {
+    local kind=$1 given=$2 choices=$3 suggestion
+    suggestion=$(awk -v given="$given" -v choices="$choices" 'BEGIN {
+        count = split(choices, names, " "); best = 3
+        for (n = 1; n <= count; n++) {
+            word = names[n]; a = length(given); b = length(word)
+            for (i = 0; i <= a; i++) d[i,0] = i
+            for (j = 0; j <= b; j++) d[0,j] = j
+            for (i = 1; i <= a; i++) for (j = 1; j <= b; j++) {
+                cost = (substr(given,i,1) != substr(word,j,1))
+                v = d[i-1,j] + 1
+                if (d[i,j-1] + 1 < v) v = d[i,j-1] + 1
+                if (d[i-1,j-1] + cost < v) v = d[i-1,j-1] + cost
+                if (i > 1 && j > 1 && substr(given,i,1) == substr(word,j-1,1) && substr(given,i-1,1) == substr(word,j,1) && d[i-2,j-2] + 1 < v) v = d[i-2,j-2] + 1
+                d[i,j] = v
+            }
+            if (d[a,b] < best) { best = d[a,b]; result = word }
+            else if (d[a,b] == best) result = result " " word
+        }
+        if (best <= 2) print result
+    }')
+    printf 'nixdatifier: unknown %s: %s\n' "$kind" "$given" >&2
+    [[ -z $suggestion ]] || printf 'Did you mean: %s?\n' "$suggestion" >&2
+    printf 'Try: nixdatifier --help\n' >&2
+    exit 2
+}
+
+# Saved settings (nixdatifier config): they fill in what the environment leaves
+# empty, so a variable or option on the command line still wins.
+CONFIG_FILE=${NIXDATIFIER_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/nixdatifier/config}
+CONFIG_KEYS="flake config_repo secrets secrets_source persist priv"
+config_var() { # config_var KEY: the environment variable a key stands for
+    case $1 in flake) echo NIXDATIFIER_FLAKE ;; config_repo) echo NIXDATIFIER_CONFIG_REPO ;; secrets) echo NIXDATIFIER_SECRETS ;;
+        secrets_source) echo NIXDATIFIER_SECRETS_SOURCE ;; persist) echo NIXDATIFIER_PERSIST ;; priv) echo NIXDATIFIER_PRIV ;; esac
+}
+config_file_get() { [[ -f $CONFIG_FILE ]] && sed -n "s/^$1=//p" "$CONFIG_FILE" | tail -1; return 0; }
+if [[ -f $CONFIG_FILE ]]; then
+    for _k in $CONFIG_KEYS; do
+        _v=$(config_file_get "$_k"); _e=$(config_var "$_k")
+        [[ -z $_v || -n ${!_e:-} ]] || export "$_e=$_v"
+    done
+    unset _k _v _e
+fi
+
+fmt=text yes=0 dry=0 refresh=0 quiet=0 priv=${NIXDATIFIER_PRIV:-sudo} flake=${NIXDATIFIER_FLAKE:-} label='' check=0 all=0 limit=0
+older='' keep='' roots=${NIXDATIFIER_PERSIST:-} secrets_dir=${NIXDATIFIER_SECRETS:-} secrets_src=${NIXDATIFIER_SECRETS_SOURCE:-}
+host=auto days=180 shells=0 config=0 generation='' want_help=0 want_updates=0 color=auto args=()
+# Shells call this private, read-only endpoint with the words being completed.
+completion_words=()
+if [[ ${1:-} == _complete ]]; then
+    completion_words=("${@:2}")
+    set -- completion _candidates
+fi
+while (($#)); do
+    case $1 in
+        --color | --flake | -f | --priv | --label | --older-than | --keep | --limit | --roots | --secrets | --source | --host | --days | --generation | -g)
+            (($# >= 2)) && [[ -n $2 && $2 != -* ]] || usage_error "$1 needs a value"
+            ;;
+    esac
+    case $1 in
+        -j | --json) fmt=json ;;
+        --plain) fmt=plain ;;
+        -q | --quiet) quiet=1 ;;
+        --color) color=${2:?--color needs auto, always or never}; shift ;;
+        -f | --flake) flake=${2:?--flake needs a directory}; shift ;;
+        -y | --yes) yes=1 ;;
+        -n | --dry-run) dry=1 ;;
+        --refresh) refresh=1 ;;
+        --priv) priv=${2:?--priv needs sudo, doas, pkexec or none}; shift ;;
+        --label) label=${2:?--label needs text}; shift ;;
+        --check) check=1 ;;
+        --all) all=1 ;;
+        --older-than) older=${2:?--older-than needs a duration like 14d}; shift ;;
+        --keep) keep=${2:?--keep needs a number}; shift ;;
+        --limit) limit=${2:?--limit needs a number}; shift ;;
+        --roots) roots=${2:?--roots needs /path:/path}; shift ;;
+        --secrets) secrets_dir=${2:?--secrets needs a path}; shift ;;
+        --source) secrets_src=${2:?--source needs a path}; shift ;;
+        --host) host=${2:?--host needs a name}; shift ;;
+        --days) days=${2:?--days needs a number}; shift ;;
+        --generation | -g) generation=${2:?--generation needs a number}; shift ;;
+        --shells) shells=1 ;;
+        --config) config=1 ;;
+        --updates) want_updates=1 ;;
+        -h | --help) want_help=1 ;;
+        -V | --version) echo "nixdatifier ${version:-unknown}"; exit 0 ;;
+        --) shift; args+=("$@"); break ;;
+        -*) unknown_name option "$1" "$OPTIONS" ;;
+        *) args+=("$1") ;;
+    esac
+    shift
+done
+for n in limit days; do [[ ${!n} =~ ^[0-9]+$ ]] || usage_error "--${n} needs a number"; done
+[[ $priv =~ ^(sudo|doas|pkexec|none)$ ]] || usage_error '--priv takes sudo, doas, pkexec or none'
+[[ -z $keep || $keep =~ ^[0-9]+$ ]] || usage_error '--keep needs a number'
+[[ -z $older || $older =~ ^[0-9]+d?$ ]] || usage_error '--older-than needs days, like 14d'
+older=${older%d}
+cmd=${args[0]:-}
+((${#args[@]})) && args=("${args[@]:1}")
+
+# Names the way people type them: aliases, then a unique prefix.
+resolve_command() {
+    local given=$1 c matches=()
+    case $given in gens | ls | list) echo generations; return ;; rm) echo delete; return ;; store) echo disk; return ;; secret) echo secrets; return ;; esac
+    for c in $COMMANDS; do [[ $c == "$given" ]] && { echo "$c"; return; }; done
+    for c in $COMMANDS; do [[ $c == "$given"* ]] && matches+=("$c"); done
+    ((${#matches[@]} == 1)) && { echo "${matches[0]}"; return; }
+    if ((${#matches[@]})); then usage_error "'$given' could be: ${matches[*]}"; fi
+    unknown_name command "$given" "$COMMANDS"
+}
+if [[ -z $cmd ]]; then
+    ((want_help)) && { usage; exit 0; }
+    if [[ -t 0 && -t 1 && $fmt == text && ${NIXDATIFIER_MODE:-tui} != cli ]]; then cmd=menu; else usage >&2; exit 2; fi
+fi
+cmd=$(resolve_command "$cmd") || exit $?
+if ((want_help)); then help_for "$cmd"; exit 0; fi
+if [[ $cmd == help ]]; then
+    if [[ -n ${args[0]:-} ]]; then
+        help_cmd=$(resolve_command "${args[0]}") || exit $?
+        help_for "$help_cmd"
+    else usage; fi
+    exit 0
+fi
+[[ $cmd == completion ]] || command -v jq >/dev/null || die 'jq is required'
+
+# ── Output ──────────────────────────────────────────────────────────────────
+# Commands build JSON once. Text and TSV are views of it, so the three formats
+# cannot drift apart. A column is "key", "key:b" (bytes) or "key:t" (epoch time);
+# the suffixes only affect the text view.
+case $color in
+    always) paint=1 ;;
+    never) paint=0 ;;
+    *) paint=0; [[ -t 1 && -z ${NO_COLOR:-} && ${TERM:-} != dumb ]] && paint=1 ;;
+esac
+hdr=0
+JQ_DEFS='
+def hb: if . == null then "" else . as $n | if $n < 1024 then "\($n)B" else
+    ((($n | log) / (1024 | log)) | floor | if . > 4 then 4 else . end) as $i
+    | "\((($n / pow(1024; $i)) * 10 | round) / 10)\(["B","K","M","G","T"][$i])" end end;
+def tm: if . == null or . == 0 then "" else localtime | strftime("%Y-%m-%d %H:%M") end;
+def cell: if . == null then "" elif . == true then "yes" elif . == false then "-" else tostring end;'
+render() { # render <columns>  (JSON array on stdin)
+    if [[ $fmt == json ]]; then jq .; return; fi
+    local human=1
+    hdr=1
+    [[ $fmt == plain ]] && { hdr=0; human=0; }
+    jq -r --arg cols "$1" --argjson hdr "$hdr" --argjson human "$human" "$JQ_DEFS"'
+        ($cols | split(",") | map(split(":"))) as $k
+        | (if $hdr == 1 then [$k[] | (if (.[2] // "") != "" then .[2] else .[0] end) | gsub("(?<a>[a-z])(?<b>[A-Z])"; "\(.a)_\(.b)") | ascii_upcase] | @tsv else empty end),
+          (.[] | . as $row | [$k[] | $row[.[0]] as $v | (.[1] // "") as $t
+              | if $human == 1 and $t == "b" then ($v | hb) elif $human == 1 and $t == "t" then ($v | tm) else ($v | cell) end] | @tsv)' | view
+}
+# Aligned columns for people, raw TSV for --plain; colour only on a terminal.
+view() {
+    if [[ $fmt == plain ]]; then cat; return; fi
+    local out
+    if command -v column >/dev/null; then out=$(column -t -s $'\t'); else out=$(cat); fi
+    if ((paint)); then
+        [[ -z ${warn_sed:-} ]] || out=$(sed -E "$warn_sed" <<<"$out")
+        ((hdr)) && out=$(sed '1s/.*/\x1b[1m&\x1b[0m/' <<<"$out")
+        out=$(sed -E 's/\b(failed|unreachable|high|dead|stale)\b/\x1b[31m&\x1b[0m/g; s/\b(update|slow|medium|reboot)\b/\x1b[33m&\x1b[0m/g; s/\b(ok|yes|fresh|unchanged)\b/\x1b[32m&\x1b[0m/g' <<<"$out")
+    fi
+    [[ -n $out ]] && printf '%s\n' "$out"
+    return 0
+}
+kv() { # JSON object on stdin; $1 is a jq program printing "key<TAB>value" lines
+    if [[ $fmt == json ]]; then jq .; else hdr=0; jq -r "$JQ_DEFS $1" | view; fi
+}
+note() { ((quiet)) || [[ ! -t 2 ]] || printf '\r\033[K%s' "$1" >&2; }
+unnote() { [[ -t 2 ]] && printf '\r\033[K' >&2; return 0; }
+msg() { ((quiet)) || printf '%s\n' "$*" >&2; }
+human() { numfmt --to=iec --suffix=B "$1" 2>/dev/null || printf '%sB' "$1"; }
+cached() { # cached <scope> <ttl> -- command...
+    local scope=$1 ttl=$2 rc
+    shift 3
+    ((refresh)) && ttl=0
+    note "${NOTE:-Working…}"
+    "$here/run" cached "$scope" "$ttl" -- "$@"
+    rc=$?
+    unnote
+    return "$rc"
+}
+
+# ── Generations ─────────────────────────────────────────────────────────────
+# Rows: number, date, store path, active, booted, nixos version, kernel.
+# Active/booted go to the newest generation with that closure, as in the UI.
+generation_rows() {
+    local raw active booted line num date path link kernel
+    raw=$("$here/generations") || return 1
+    active=$(sed -n 1p <<<"$raw"); booted=$(sed -n 2p <<<"$raw")
+    while IFS= read -r line; do
+        [[ $line =~ ^([0-9-]+\ [0-9:]+)\.[0-9]+\ [+-][0-9]+\ \'[^\']*system-([0-9]+)-link\'\ -\>\ \'([^\']+)\' ]] || continue
+        date=${BASH_REMATCH[1]} num=${BASH_REMATCH[2]} path=${BASH_REMATCH[3]} link="$profiles/system-${BASH_REMATCH[2]}-link"
+        kernel=$(readlink -f "$link/kernel" 2>/dev/null)
+        kernel=$(basename -- "$(dirname -- "${kernel:-/}")" | sed -n 's/.*-\([0-9][0-9.]*\)$/\1/p')
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$num" "$date" "$path" "$([[ $path == "$active" ]] && echo 1 || echo 0)" \
+            "$([[ $path == "$booted" ]] && echo 1 || echo 0)" "$(tr -d '\0' <"$link/nixos-version" 2>/dev/null)" "$kernel"
+    done <<<"$raw" | sort -t$'\t' -k1,1nr | awk -F'\t' -v OFS='\t' '
+        $4 == 1 && seenA++ { $4 = 0 } $5 == 1 && seenB++ { $5 = 0 } { print }'
+}
+generations_json() {
+    generation_rows | jq -Rn --argjson limit "$limit" '
+        [inputs | split("\t") | {number: (.[0] | tonumber), date: .[1], storePath: .[2],
+            active: (.[3] == "1"), booted: (.[4] == "1"), nixosVersion: .[5], kernel: .[6]}]
+        | if $limit > 0 then .[:$limit] else . end'
+}
+need_nixos() {
+    local link
+    for link in "$profiles"/system-*-link; do [[ -L $link ]] && return 0; done
+    die 'no NixOS system generations found (not NixOS? try: nixdatifier profiles)'
+}
+find_flake() { # sets $flake quietly; returns 1 when there is none
+    [[ -n $flake ]] || flake=$("$here/flake-context" "" | sed -n 1p)
+    [[ -n $flake && -f $flake/flake.nix ]] || return 1
+    flake=$(realpath "$flake")
+}
+resolve_flake() { find_flake || die 'no flake found: pass --flake DIR or set NIXDATIFIER_FLAKE'; }
+running_gen() { generation_rows | awk -F'\t' '$4 == 1 {print $1; exit}'; }
+
+cmd_generations() {
+    need_nixos
+    # Same as the window: remember which config commit built this generation.
+    local repo=${NIXDATIFIER_CONFIG_REPO:-} active
+    [[ -n $repo ]] || { find_flake && repo=$flake; }
+    active=$(running_gen)
+    [[ -n $repo && -n $active ]] && "$here/config-snapshot" "$active" "$repo" >/dev/null 2>&1
+    generations_json | warn_sed='s/^([0-9]+ +[0-9-]+ [0-9:]+ +)yes/\1\x1b[33myes\x1b[0m/' render number,date,active::NEXT_BOOT,booted,nixosVersion,kernel
+}
+
+# ── Updates ─────────────────────────────────────────────────────────────────
+updates_json() { # updates_json <all 0|1>
+    resolve_flake
+    NOTE='Checking upstream…' cached "flake:$flake" 30 -- "$here/flake-probe" "$flake" | jq -Rn --argjson all "$1" '
+        [inputs | split("\t") | select(length > 1)
+         | {input: .[0], status: (if .[1] == "ok" then "update" else .[1] end), current: .[2], latest: .[3],
+            from: .[2][:7], to: .[3][:7], modified: ((.[4] // "0") | tonumber? // 0),
+            date: ((.[4] // "0") | tonumber? // 0 | strftime("%Y-%m-%d")), url: (.[5] // ""),
+            overrideRef: (if .[1] == "ok" then (.[6] // "") else "" end), reason: (.[7] // "")}
+         | select($all == 1 or .status == "update" or .status == "unreachable")]'
+}
+cmd_updates() {
+    local json
+    json=$(updates_json "$all") || die 'could not read the flake lock'
+    render input,status,from,to,date <<<"$json"
+    if ((check)) && [[ $(jq 'any(.status == "update")' <<<"$json") == true ]]; then exit 2; fi
+    return 0
+}
+update_row() { # the probe row of the named input, which must have an update
+    local row
+    [[ -n ${args[0]:-} ]] || usage_error "$cmd needs an input name (see: nixdatifier updates --all)"
+    row=$(updates_json 1 | jq -c --arg i "${args[0]}" '.[] | select(.input == $i)')
+    [[ -n $row ]] || die "no flake input called ${args[0]}"
+    [[ $(jq -r .status <<<"$row") == update ]] || die "${args[0]} has no update ($(jq -r .status <<<"$row"))"
+    printf '%s' "$row"
+}
+cmd_preview() {
+    local row out
+    row=$(update_row) || exit $?
+    out=$(NOTE='Evaluating the updated system…' cached "preview:$flake:$(sha256sum "$flake/flake.lock" | cut -c1-16)" 300 -- \
+        timeout --kill-after=5s 180s "$here/dry-run-preview" "$flake" "${args[0]}" "$(jq -r .overrideRef <<<"$row")" "$host")
+    [[ $out != ERROR:* ]] || die "${out#ERROR: }"
+    jq -Rn '[inputs | split("\t") | select(length > 1 and .[1] != "") |
+        {action: .[0], name: .[1], oldVersion: .[2], newVersion: .[3], kind: (if (.[2] // "") == "" then "added" else "upgrade" end)}]' <<<"$out" |
+        render action,kind,name,oldVersion,newVersion
+}
+cmd_notes() {
+    local row out
+    row=$(update_row) || exit $?
+    out=$(NOTE='Fetching release notes…' cached notes 86400 -- timeout --kill-after=5s 60s "$here/release-notes" \
+        "$(jq -r .url <<<"$row")" "$(jq -r .current <<<"$row")" "$(jq -r .latest <<<"$row")" "$(jq -r .modified <<<"$row")") ||
+        die 'could not fetch release notes (rate limit? set GITHUB_TOKEN)'
+    if [[ $fmt == json ]]; then jq . <<<"$out"; return; fi
+    jq -r '
+        (if .compareUrl != "" then "Compare: \(.compareUrl)\n" else empty end),
+        (.releases[] | "RELEASE  \(.tag)  \(.date[:10])  \(.name)\n  \(.url)"),
+        (.commits[] | "\(.sha[:7])  \(.date[:10])  \(.author)  \(.message | split("\n")[0])"),
+        (if .moreCommits then "… more commits upstream" else empty end)' <<<"$out"
+}
+
+# ── Diff ────────────────────────────────────────────────────────────────────
+pair() { # sets $a (base) and $b (target) from args
+    local nums n
+    a=${args[0]:-} b=${args[1]:-}
+    nums=$(generation_rows | cut -f1)
+    if [[ -z $b ]]; then
+        b=${a:-$(sed -n 1p <<<"$nums")}
+        a=$(grep -x -A1 "$b" <<<"$nums" | sed -n 2p)
+        [[ -n $a ]] || die "generation $b has no earlier generation to compare with"
+    fi
+    for n in "$a" "$b"; do grep -qx "$n" <<<"$nums" || die "no generation $n"; done
+}
+cmd_diff() {
+    need_nixos
+    local a b out v k d size counts tpath bpath status message repo ca cb body
+    pair
+    if ((config)); then
+        out=$("$here/config-diff" "$a" "$b")
+        IFS=$'\x1e' read -r status message repo ca cb body <<<"$out" || true
+        if [[ $fmt == json ]]; then
+            jq -n --arg s "$status" --arg m "$message" --arg r "$repo" --arg ca "$ca" --arg cb "$cb" --arg d "$body" \
+                '{status: $s, message: $m, repo: $r, commitBase: $ca, commitTarget: $cb, diff: $d}'
+        else
+            [[ $status == ok ]] || die "${message:-config diff unavailable} (record generations with: nixdatifier snapshot)"
+            printf 'Config %s (%s) -> %s (%s)\n%s\n' "$a" "${ca:0:7}" "$b" "${cb:0:7}" "$body"
+        fi
+        return
+    fi
+    out=$(NOTE='Comparing closures…' "$here/details" "$profiles/system-$b-link" "$profiles/system-$a-link") || die 'diff failed'
+    IFS=$'\x1e' read -r -d '' v k d size <<<"$out" || true
+    d=$(sed '/^$/d' <<<"$d"); size=${size//[$'\n ']/}
+    tpath=$(readlink -f "$profiles/system-$b-link") bpath=$(readlink -f "$profiles/system-$a-link")
+    counts=$(cached generation-counts 604800 -- "$here/change-counts" "$tpath" "$bpath" 2>/dev/null) || counts='{}'
+    [[ -n $counts ]] || counts='{}'
+    if [[ $fmt == json ]]; then
+        jq -n --arg base "$a" --arg target "$b" --arg v "$v" --arg k "$k" --arg d "$d" --arg s "$size" --argjson c "$counts" '
+            {base: ($base | tonumber), target: ($target | tonumber), nixosVersion: $v, kernel: $k,
+             closureBytes: ($s | tonumber? // null), counts: $c, changes: ($d | split("\n") | map(select(length > 0)))}'
+    else
+        printf 'Generation %s -> %s   %s\n' "$a" "$b" "$v"
+        [[ -n $size ]] && printf 'Closure: %s\n' "$(human "$size")"
+        jq -r '"+\(.added // 0) added  -\(.removed // 0) removed  ~\(.changed // 0) changed"' <<<"$counts"
+        printf '%s\n' "${d:-No package changes.}"
+    fi
+}
+cmd_snapshot() {
+    local repo=${args[0]:-${NIXDATIFIER_CONFIG_REPO:-}} active
+    [[ -n $repo ]] || { resolve_flake; repo=$flake; }
+    active=$(running_gen)
+    [[ -n $active ]] || die 'no running generation found'
+    "$here/config-snapshot" "$active" "$repo" || die "could not record $repo (is it a git repository?)"
+    msg "Recorded generation $active -> $(git -C "$repo" rev-parse --short HEAD 2>/dev/null)"
+}
+
+# ── Store, health, status ───────────────────────────────────────────────────
+cmd_disk() {
+    local total reclaimable free stamp out roots refs size present path
+    if [[ -n ${args[0]:-} ]]; then
+        out=$(NOTE='Inspecting the store path…' cached "storeusage:v2:${args[0]}" 300 -- "$here/store-usage" "${args[0]}") || die 'could not inspect that path'
+        IFS=$'\x1e' read -r -d '' roots refs size present path <<<"$out" || true
+        jq -n --arg roots "$roots" --arg refs "$refs" --arg size "$size" --arg present "$present" --arg path "${path//$'\n'/}" '
+            def lines: split("\n") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0));
+            {path: $path, exists: ($present | gsub("\\s"; "") == "1"), closureBytes: ($size | gsub("\\s"; "") | tonumber? // 0),
+             roots: ($roots | lines), referrers: ($refs | lines)}' |
+            kv '"path\t\(.path)", "exists\t\(.exists)", "closure\t\(.closureBytes | hb)", (.roots[] | "root\t\(.)"), (.referrers[] | "referrer\t\(.)")'
+        return
+    fi
+    IFS=$'\x1e' read -r total reclaimable free stamp < <(NOTE='Measuring the store…' cached disk:nar-v1 1800 -- "$here/diskusage") || die 'could not measure the store'
+    jq -n --argjson t "$total" --argjson r "$reclaimable" --argjson f "$free" --argjson s "${stamp:-0}" \
+        '{storeBytes: $t, reclaimableBytes: $r, freeBytes: $f, measuredAt: $s}' |
+        kv '"store\t\(.storeBytes | hb)", "reclaimable\t\(.reclaimableBytes | hb)", "free\t\(.freeBytes | hb)"'
+}
+health_json() {
+    NOTE='Checking the system…' cached health 120 -- "$here/health" | jq -Rsn '
+        input | split("\u001e") as $p
+        | {facts: ($p[0] | split("\n") | map(select(contains("=")) | {key: split("=")[0], value: (split("=")[1:] | join("="))}) | from_entries),
+           failedUnits: ($p[1] // "" | split("\n") | map(select(length > 0) | split("\t") | {scope: .[0], unit: .[1], result: .[2], reason: .[3]})),
+           caches: ($p[2] // "" | split("\n") | map(select(length > 0) | split("\t") | {url: .[0], status: .[1], ms: (.[2] | tonumber? // null)}))}'
+}
+cmd_health() {
+    health_json | kv '
+        (.facts | to_entries[] | "\(.key)\t\(.value)"),
+        (.failedUnits[] | "failed\t\(.scope) \(.unit) \(.result) \(.reason)"),
+        (.caches[] | "cache\t\(.url) \(.status) \(.ms)ms")'
+}
+cmd_status() {
+    local gens health upd=null
+    gens=$(generations_json 2>/dev/null) || gens='[]'
+    health=$(health_json) || health='{"facts":{},"failedUnits":[],"caches":[]}'
+    ((want_updates)) && upd=$(updates_json 0 | jq 'map(select(.status == "update")) | length')
+    jq -n --argjson g "$gens" --argjson h "$health" --argjson u "${upd:-null}" '
+        {running: ($g | map(select(.active)) | .[0].number), booted: ($g | map(select(.booted)) | .[0].number), generations: ($g | length),
+         rebootRequired: ($h.facts.reboot_required == "1"), failedUnits: ($h.failedUnits | length), updates: $u,
+         release: ($h.facts.release // null), eol: ($h.facts.eol // null)}' |
+        if [[ $fmt == json ]]; then cat; else
+            jq -r '[(if .running then "gen \(.running)" else "nix" end),
+                (if .rebootRequired then "reboot needed" else empty end),
+                (if .failedUnits > 0 then "\(.failedUnits) failed units" else empty end),
+                (if .updates != null and .updates > 0 then "\(.updates) updates" else empty end)] | join(" · ")'
+        fi
+}
+cmd_history() { "$here/history" list | render timestamp,action,genNum,success,label; }
+cmd_info() {
+    "$here/sysinfo" | jq -Rsn '
+        input | split("---\n") | map(rtrimstr("\n"))
+        | {hostname: .[0], nixosVersion: .[1], uptime: .[2], lastActivation: .[3], isNixOS: (.[5] == "1")}' |
+        kv 'to_entries[] | "\(.key)\t\(.value)"'
+}
+cmd_hash() {
+    ((${#args[@]} == 2)) || usage_error 'usage: nixdatifier hash <url|zip|github|file|store> <input>'
+    local out
+    out=$(NOTE='Fetching…' "$here/hash" "${args[0]}" "${args[1]}")
+    [[ $out != ERROR:* ]] || die "${out#ERROR: }"
+    if [[ $fmt == json ]]; then jq -Rn '[inputs] | {hash: .[0], sri: (.[1] // null)}' <<<"$out"; else printf '%s\n' "$out"; fi
+}
+cmd_profiles() {
+    "$here/profile-generations" | jq -Rn '[inputs | split("\t") | select(length > 4)
+        | {kind: .[0], number: (.[1] | tonumber), time: (.[2] | tonumber), current: (.[3] == "1"), path: .[4]}]' |
+        render kind,number,time:t,current,path
+}
+cmd_path() {
+    [[ -n ${args[0]:-} ]] || usage_error 'usage: nixdatifier path NAME [VERSION] [--generation N]'
+    local profile=/run/current-system
+    [[ -z $generation ]] || profile="$profiles/system-$generation-link"
+    "$here/store-path" "$profile" "${args[0]}" "${args[1]:-ε}" | jq -Rn '[inputs | select(length > 0)]' |
+        if [[ $fmt == json ]]; then cat; else jq -r '.[]'; fi
+}
+
+# ── Secrets ─────────────────────────────────────────────────────────────────
+cmd_secrets() {
+    find_flake || flake=''
+    "$here/secrets" "$secrets_dir" "$secrets_src" "$flake" | jq -Rsn '
+        def block($kind): split("\n") | map(gsub("^\\s+|\\s+$"; ""))
+            | until(length == 0 or .[0] != ""; .[1:]) as $l
+            | if ($l | length) < 2 or $l[0] == "missing" then {path: "", exists: false, names: []} else
+              ($l | index("---")) as $s
+              | {path: $l[0], exists: ($l[1] == "exists"), lastModified: (if $s != null and $s > 2 then $l[2] else "" end),
+                 names: ($l | map(select(startswith("name:")) | .[5:]))}
+                + (if $kind == "deployed"
+                   then {freshness: ($l[$s + 1] // ""), fileCount: (($l[$s + 2] // "0") | tonumber? // 0)}
+                   else {encryption: ($l[$s + 1] // ""), sopsVersion: ($l[$s + 2] // ""), recipients: (($l[$s + 3] // "0") | tonumber? // 0), type: ($l[$s + 4] // "")} end)
+              end;
+        input | split("===") | {deployed: (.[0] | block("deployed")), source: ((.[1] // "") | block("source"))}' |
+        kv '"deployed\t\(.deployed.path | if . == "" then "not found" else . end)  \(.deployed.freshness // "")  \(.deployed.fileCount // 0) secrets",
+            (.deployed.names[] | "  \(.)\t"),
+            "source\t\(.source.path | if . == "" then "not found" else . end)  \(if (.source.encryption // "") != "" then "\(.source.encryption)/\(.source.type), \(.source.recipients) recipients" else "" end)",
+            (.source.names[] | "  \(.)\t")'
+}
+
+# ── Changing ────────────────────────────────────────────────────────────────
+# One path for every change: ask, take the cross-host lock (run mutate), show
+# the output, record it in the history. With --json the output goes to stderr
+# and stdout gets one result object.
+confirm() { # confirm <question>
+    ((yes || dry)) && return 0
+    [[ -t 0 && -t 2 ]] || die "$1 -- not interactive; pass --yes to confirm"
+    read -r -p "$1 [y/N] " reply
+    [[ $reply == [yY]* ]] || die 'cancelled'
+}
+privilege() { # echoes the privilege prefix ("" when root or --priv none)
+    if [[ $EUID -eq 0 || $priv == none ]]; then return 0; fi
+    command -v "$priv" >/dev/null || { echo "nixdatifier: $priv not found: pick another with --priv (sudo, doas, pkexec, none)" >&2; return 1; }
+    printf '%s' "$priv"
+}
+change() { # change <action> <label> <generation|-1> <script> [args...]; the script runs commands as $PRIV (root) or $RUN
+    local action=$1 text=${label:-$2} gen=$3 script=$4 out rc kept sink p
+    shift 4
+    p=$(privilege) || exit 1
+    # A dry run executes the same script with every command turned into an echo.
+    if ((dry)); then
+        PRIV="echo [dry-run] $p" RUN='echo [dry-run]' bash -c "$script" nixdatifier "$@"
+        return
+    fi
+    sink=/dev/stdout
+    [[ $fmt == json ]] && sink=/dev/stderr
+    ((quiet)) && sink=/dev/null
+    out=$(mktemp) || die 'no temp file'
+    PRIV=$p RUN='' "$here/run" mutate -- bash -c "$script" nixdatifier "$@" 2>&1 | tee "$out" >"$sink"
+    rc=${PIPESTATUS[0]}
+    kept=$(tail -c 16000 "$out"); rm -f "$out"
+    if ((quiet && rc != 0)); then printf '%s\n' "$kept" >&2; fi
+    "$here/history" record "$action" "$text" "$gen" "$rc" "$kept" || true
+    if [[ $fmt == json ]]; then
+        jq -n --arg a "$action" --argjson rc "$rc" --argjson g "$gen" '{ok: ($rc == 0), action: $a, exitCode: $rc, generation: (if $g > 0 then $g else null end)}'
+    fi
+    return "$rc"
+}
+resolved() { command -v "$1" 2>/dev/null || echo "$1"; } # sudo/pkexec reset PATH
+check_gens() { # every argument a number of an existing generation
+    local nums n
+    nums=$(generation_rows | cut -f1)
+    ((${#args[@]})) || usage_error "$cmd needs a generation number"
+    for n in "${args[@]}"; do
+        [[ $n =~ ^[1-9][0-9]*$ ]] || usage_error "not a generation number: $n"
+        grep -qx "$n" <<<"$nums" || die "no generation $n (see: nixdatifier generations)"
+    done
+}
+
+# Choose a generation from a list, with fzf when installed, else by number.
+pick_generation() { # pick_generation <prompt>; prints the number
+    local rows choice
+    rows=$(generation_rows | awk -F'\t' '{printf "%s\t%s  %s%s%s\n", $1, $2, ($6 == "" ? "-" : $6), ($4 == 1 ? "  [running]" : ""), ($5 == 1 ? "  [booted]" : "")}')
+    [[ -n $rows ]] || die 'no generations found'
+    if command -v fzf >/dev/null; then
+        choice=$(fzf --prompt "$1 > " --with-nth=2.. --delimiter=$'\t' --height=40% --reverse --bind backspace:backward-delete-char/eof <<<"$rows") || die cancelled
+        cut -f1 <<<"$choice"
+    else
+        awk -F'\t' '{printf "  %5s  %s\n", $1, $2}' <<<"$rows" >&2
+        read -r -p "$1 (number): " choice || die cancelled
+        [[ $choice =~ ^[1-9][0-9]*$ ]] || die "not a generation number: $choice"
+        printf '%s\n' "$choice"
+    fi
+}
+interactive() { [[ -t 0 && -t 2 && $fmt == text ]]; }
+
+# The interactive front end lives in its own file, tui (fzf screens over this
+# CLI). Hand it the options that matter to the commands it runs.
+cmd_menu() {
+    [[ -n $flake ]] && export NIXDATIFIER_FLAKE=$flake
+    export NIXDATIFIER_PRIV=$priv
+    ((paint)) || export NO_COLOR=1
+    exec "$here/tui"
+}
+
+cmd_rollback() {
+    need_nixos
+    local current prev
+    current=$(running_gen)
+    prev=$(generation_rows | cut -f1 | grep -x -A1 "$current" | sed -n 2p)
+    [[ -n $prev ]] || die 'there is no generation before the running one'
+    args=("$prev") cmd=switch
+    cmd_switch
+}
+cmd_switch() { # switch (live) or boot (next boot)
+    need_nixos
+    if ((${#args[@]} == 0)) && interactive; then args=("$(pick_generation "Generation to ${cmd/switch/run now}")") || exit 1; fi
+    check_gens
+    ((${#args[@]} == 1)) || usage_error "$cmd takes one generation"
+    local n=${args[0]} mode=$cmd
+    [[ $mode == switch ]] || mode=boot
+    confirm "$([[ $mode == switch ]] && echo "Activate generation $n now?" || echo "Boot generation $n next time?")"
+    # shellcheck disable=SC2016
+    change "$([[ $mode == switch ]] && echo switch || echo rollback)" \
+        "$([[ $mode == switch ]] && echo "Activating generation…" || echo "Setting next boot…")" "$n" \
+        '$PRIV "$1" --profile "$2/system" --switch-generation "$3" && $PRIV "$2/system/bin/switch-to-configuration" "$4"' \
+        "$(resolved nix-env)" "$profiles" "$n" "$mode"
+}
+
+cmd_delete() {
+    need_nixos
+    local protected n date cutoff=0 left=$keep
+    protected=$(generation_rows | awk -F'\t' '$4 == 1 || $5 == 1 {print $1}')
+    if [[ -n $keep || -n $older ]]; then
+        ((${#args[@]} == 0)) || usage_error 'give generation numbers or --keep/--older-than, not both'
+        [[ -z $older ]] || cutoff=$(date -d "$older days ago" +%s)
+        while IFS=$'\t' read -r n date _; do
+            if [[ -n $keep ]] && ((left > 0)); then left=$((left - 1)); continue; fi
+            grep -qx "$n" <<<"$protected" && continue
+            if [[ -n $older ]] && (($(date -d "$date" +%s) >= cutoff)); then continue; fi
+            args+=("$n")
+        done < <(generation_rows)
+        if ((${#args[@]} == 0)); then
+            msg 'Nothing to delete.'
+            [[ $fmt != json ]] || echo '{"ok":true,"action":"delete","exitCode":0,"generation":null}'
+            return 0
+        fi
+        msg "Will delete: ${args[*]}"
+    fi
+    if ((${#args[@]} == 0)) && interactive; then args=("$(pick_generation 'Generation to delete')") || exit 1; fi
+    check_gens
+    for n in "${args[@]}"; do
+        grep -qx "$n" <<<"$protected" && die "generation $n is the running or booted one and cannot be deleted"
+    done
+    confirm "Delete generation(s) ${args[*]}?"
+    # shellcheck disable=SC2016
+    change delete 'Deleting generation…' "${args[0]}" '$PRIV "$1" --profile "$2/system" --delete-generations "${@:3}"' \
+        "$(resolved nix-env)" "$profiles" "${args[@]}"
+}
+
+cmd_clean() {
+    if (for l in "$profiles"/system-*-link; do [[ -L $l ]] && exit 0; done; exit 1); then
+        keep=${keep:-5}
+        [[ -n $older ]] || older=14
+        args=()
+        cmd_delete || return $?
+    fi
+    older='' all=0
+    cmd_gc
+}
+cmd_gc() {
+    local flag=() mode=gc
+    if ((all)); then flag=(-d); mode=gc-all
+    elif [[ -n $older ]]; then flag=(--delete-older-than "${older}d"); mode=gc-${older}d; fi
+    confirm "Collect garbage${flag[*]:+ (${flag[*]})}?"
+    # shellcheck disable=SC2016
+    change "$mode" 'Cleaning Nix store…' -1 '$PRIV "$@"' "$(resolved nix-collect-garbage)" "${flag[@]}"
+}
+
+cmd_update() {
+    resolve_flake
+    local input=${args[0]:-}
+    confirm "Update ${input:-all inputs} in $flake?"
+    # shellcheck disable=SC2016
+    change flake-update "Updating ${input:-all inputs}…" -1 'cd "$1" && shift && $RUN nix flake update "$@"' "$flake" ${input:+"$input"}
+}
+
+# ── Impermanence ────────────────────────────────────────────────────────────
+imp() { "$here/impermanence" "$1" "$roots" "${@:2}"; } # imp <mode> [arg]
+imp_cached() { # imp_cached <ttl> <mode> [arg]
+    NOTE='Walking the persistent folders…' cached impermanence "$1" -- "$here/impermanence" "$2" "$roots" "${@:3}"
+}
+# Runs a helper mode into $impout (ttl 0: uncached). Failures arrive as one
+# "ERROR: ..." line on stdout; they stop us here, in the main shell.
+imp_get() {
+    if [[ $1 == 0 ]]; then impout=$(imp "${@:2}"); else impout=$(imp_cached "$@"); fi ||
+        die "the persistent-folder helper failed${impout:+: $impout}"
+    [[ $impout != ERROR:* ]] || die "${impout#ERROR: }"
+}
+cmd_persist() {
+    local sub=${args[0]:-status} dir
+    ((${#args[@]})) && args=("${args[@]:1}")
+    case $sub in
+        status)
+            imp_get 0 detect; printf '%s\n' "$impout" | jq -Rn '[inputs | split("\t")] as $r | {
+                detected: any($r[]; .[0] == "persist"),
+                volatileRoot: any($r[]; .[0] == "volatile" and .[1] == "yes"), why: ([$r[] | select(.[0] == "volatile") | .[2]] | first // ""),
+                rootFs: ([$r[] | select(.[0] == "rootfs") | .[1]] | first // ""),
+                areas: [$r[] | select(.[0] == "persist" or .[0] == "mount") | if .[0] == "persist"
+                    then {kind: "persist", path: .[1], via: .[2], binds: (.[3] | tonumber? // 0), fsType: .[4], totalBytes: (.[5] | tonumber? // 0), usedBytes: (.[6] | tonumber? // 0), availBytes: (.[7] | tonumber? // 0)}
+                    else {kind: "mount", path: .[1], via: "", binds: 0, fsType: .[2], totalBytes: (.[3] | tonumber? // 0), usedBytes: (.[4] | tonumber? // 0), availBytes: (.[5] | tonumber? // 0)} end],
+                entries: [$r[] | select(.[0] == "entry") | {kind: .[1], target: .[2], source: (.[3] // "")}]}' |
+                kv '"root\t\(if .volatileRoot then "wiped on boot" else "persistent" end) (\(.rootFs)) \(.why)",
+                    (.areas[] | "\(.kind)\t\(.path)  \(.fsType)  \(.usedBytes | hb) of \(.totalBytes | hb)"),
+                    "entries\t\(.entries | length)"' ;;
+        sizes)
+            imp_get 300 sizes; printf '%s\n' "$impout" | jq -Rn '[inputs | split("\t") | select(.[0] == "E" and length >= 6)
+                | {path: .[4], kind: .[1], sizeBytes: (.[2] | tonumber? // 0), newest: (.[3] | tonumber? // 0), status: (.[6] // "ok")}] | sort_by(-.sizeBytes)' |
+                render path,kind,sizeBytes:b,newest:t,status ;;
+        ls)
+            dir=${args[0]:-}
+            imp_get 600 list "$dir"; printf '%s\n' "$impout" | jq -Rn '[inputs | split("\t")] as $r | {
+                dir: ([$r[] | select(.[0] == "D") | .[1]] | first // ""), area: ([$r[] | select(.[0] == "D") | .[2]] | first // ""),
+                totalBytes: ([$r[] | select(.[0] == "D") | .[3] | tonumber? // 0] | first // 0), files: ([$r[] | select(.[0] == "D") | .[4] | tonumber? // 0] | first // 0),
+                partial: any($r[]; .[0] == "P"), moreCount: ([$r[] | select(.[0] == "R") | .[1] | tonumber? // 0] | first // 0), moreBytes: ([$r[] | select(.[0] == "R") | .[2] | tonumber? // 0] | first // 0),
+                items: [$r[] | select(.[0] == "C" and length >= 11) | {kind: .[1], sizeBytes: (.[2] | tonumber? // 0), files: (.[3] | tonumber? // 0), newest: (.[4] | tonumber? // 0), mtime: (.[5] | tonumber? // 0), mode: .[6], owner: .[7], flags: .[8], link: .[9], name: .[10]}]}' |
+                if [[ $fmt == json ]]; then cat; else
+                    listing=$(cat)
+                    jq -r "$JQ_DEFS"'"\(.dir)  \(.totalBytes | hb)  \(.files) files\(if .partial then "  (partial)" else "" end)"' <<<"$listing" >&2
+                    jq '.items' <<<"$listing" | render name,kind,sizeBytes:b,files,newest:t,owner,mode,flags
+                fi ;;
+        scan)
+            imp_get 3600 scan 14; printf '%s\n' "$impout" | jq -Rn '[inputs | split("\t") | select(length >= 4 and .[0] != "meta") | {severity: .[0], category: .[1], path: .[2], detail: .[3]}]' |
+                render severity,category,path,detail ;;
+        cleanup)
+            imp_get 3600 cleanup "$days"; printf '%s\n' "$impout" | jq -Rn '[inputs | split("\t")] as $r | {
+                cutoff: ([$r[] | select(.[0] == "M") | .[1] | tonumber? // 0] | first // 0),
+                temp: [$r[] | select(.[0] == "T" and length >= 5) | {label: .[1], sizeBytes: (.[2] | tonumber? // 0), newest: (.[3] | tonumber? // 0), path: .[4], partial: (.[5] == "partial")}] | sort_by(-.sizeBytes),
+                stale: [$r[] | select(.[0] == "S" and length >= 6) | {kind: .[1], sizeBytes: (.[2] | tonumber? // 0), files: (.[3] | tonumber? // 0), newest: (.[4] | tonumber? // 0), path: .[5]}] | sort_by(-.sizeBytes)}' |
+                if [[ $fmt == json ]]; then cat; else
+                    jq '[.temp[] | . + {group: "temp"}] + [.stale[] | . + {group: "stale", label: .kind}]' | render group,label,sizeBytes:b,newest:t,path
+                fi ;;
+        rm)
+            ((${#args[@]})) || usage_error 'usage: nixdatifier persist rm PATH... (paths as printed by persist ls, with \xHH escapes)'
+            confirm "Delete ${args[*]} from the persistent storage? This cannot be undone."
+            local p out rc failed=0 prefix
+            prefix=$(privilege) || exit 1
+            for p in "${args[@]}"; do
+                if ((dry)); then echo "[dry-run] impermanence remove $p"; continue; fi
+                out=$(imp remove "$p" 2>&1); rc=$?
+                if ((rc == 77)) && [[ -n $prefix ]]; then out=$($prefix "$here/impermanence" remove "$roots" "$p" 2>&1); rc=$?; fi
+                ((rc == 0)) || failed=1
+                "$here/history" record impermanence-remove "Delete $p" -1 "$rc" "${out:-$p}" || true
+                msg "$([[ $rc == 0 ]] && echo removed || echo "failed (${out#ERROR: })"): $p"
+            done
+            ((dry)) || "$here/run" invalidate impermanence
+            return "$failed" ;;
+        *) unknown_name 'persist subcommand' "$sub" 'status sizes ls scan cleanup rm' ;;
+    esac
+}
+
+# ── Dev environments ────────────────────────────────────────────────────────
+cmd_config() {
+    local sub=${args[0]:-list} key=${args[1]:-} k v e src
+    case $sub in
+        list)
+            for k in $CONFIG_KEYS; do
+                e=$(config_var "$k"); v=$(config_file_get "$k")
+                if [[ -n ${!e:-} && ${!e} != "$v" ]]; then src='environment'; v=${!e}; elif [[ -n $v ]]; then src='file'; else src='unset'; fi
+                printf '%s\t%s\t%s\n' "$k" "$v" "$src"
+            done | jq -Rn '[inputs | split("\t") | {key: .[0], value: .[1], source: .[2]}]' | render key,value,source ;;
+        get)
+            [[ " $CONFIG_KEYS " == *" $key "* ]] || usage_error "usage: nixdatifier config get {${CONFIG_KEYS// /|}}"
+            config_file_get "$key" ;;
+        set)
+            [[ " $CONFIG_KEYS " == *" $key "* ]] || usage_error "usage: nixdatifier config set {${CONFIG_KEYS// /|}} VALUE"
+            v=${args[2]:-}
+            [[ $v != *$'\n'* ]] || die 'a setting is one line'
+            mkdir -p "$(dirname "$CONFIG_FILE")" || die "cannot create $(dirname "$CONFIG_FILE")"
+            { grep -v "^$key=" "$CONFIG_FILE" 2>/dev/null; [[ -z $v ]] || echo "$key=$v"; } >"$CONFIG_FILE.new" && mv "$CONFIG_FILE.new" "$CONFIG_FILE"
+            if [[ -n $v ]]; then msg "$key saved"; else msg "$key cleared"; fi ;;
+        unset)
+            [[ " $CONFIG_KEYS " == *" $key "* ]] || usage_error "usage: nixdatifier config unset {${CONFIG_KEYS// /|}}"
+            [[ -f $CONFIG_FILE ]] && { grep -v "^$key=" "$CONFIG_FILE" >"$CONFIG_FILE.new"; mv "$CONFIG_FILE.new" "$CONFIG_FILE"; }
+            msg "$key cleared" ;;
+        path) echo "$CONFIG_FILE" ;;
+        *) unknown_name 'config subcommand' "$sub" 'list get set unset path' ;;
+    esac
+}
+cmd_dev() {
+    local sub=${args[0]:-list} dir out shl
+    ((${#args[@]})) && args=("${args[@]:1}")
+    dir=${args[0]:-}
+    case $sub in
+        list)
+            { "$here/devenv" discover | sed 's/^/P\t/'; "$here/devenv" space | sed 's/^/S\t/'; } | jq -Rn '
+                [inputs | split("\t")] as $r
+                | [$r[] | select(.[0] == "P") | {dir: .[1], state: .[2]}] as $p
+                | ($r | map(select(.[0] == "S")) | map({key: .[1], value: {cacheBytes: (.[2] | tonumber? // 0), cacheKind: .[3], cacheTime: (.[4] | tonumber? // 0)}}) | from_entries) as $s
+                | $p | map(. + ($s[.dir] // {cacheBytes: 0, cacheKind: "", cacheTime: 0})) | sort_by(-.cacheBytes)' |
+                render dir,state,cacheBytes:b,cacheTime:t ;;
+        show)
+            [[ -n $dir ]] || usage_error 'usage: nixdatifier dev show DIR'
+            out=$(NOTE='Reading the project…' cached "devenv:$dir" 45 -- "$here/devenv" inspect "$dir") || die "could not inspect $dir"
+            printf '%s' "$out" | jq -Rsn '
+                input | split("\u001e") as $p
+                | ($p[0] | split("\n") | map(select(index("=")) | {key: (split("=")[0]), value: (split("=")[1:] | join("="))}) | from_entries) as $m
+                | def list($v): if ($v // "") == "" then [] else $v | split(",") end;
+                  {dir: ($m.dir // ""), name: ($m.name // ""), description: ($m.description // ""), direnv: ($m.direnv // ""),
+                   envrc: {path: ($m.envrc_path // ""), state: ($m.envrc_state // "none"), uses: list($m.envrc_uses)}, files: list($m.files),
+                   cache: {path: ($m.cache_dir // ""), mtime: (($m.cache_mtime // "0") | tonumber? // 0), kb: (($m.cache_size // "0") | tonumber? // 0)},
+                   inputs: [($p[2] // "") | split("\n")[] | select(length > 0) | split("\t") | {name: .[0], type: .[1], source: .[2], ref: .[3], rev: (.[4] // ""), modified: ((.[5] // "0") | tonumber? // 0), follows: (.[6] // "")}]}' |
+                { if ((shells)); then
+                      shl=$(NOTE='Evaluating devShells (slow)…' cached "devshells:$dir" 180 -- "$here/devenv" shells "$dir" | jq -Rn '[inputs | select(length > 0)]') || shl='[]'
+                      jq --argjson s "${shl:-[]}" '. + {shells: $s}'
+                  else cat; fi; } |
+                kv '"name\t\(.name)", "dir\t\(.dir)", (if .description != "" then "description\t\(.description)" else empty end),
+                    "envrc\t\(.envrc.state)  uses: \(.envrc.uses | join(", "))", "cache\t\(.cache.kb)K  \(.cache.path)",
+                    (.inputs[] | "input\t\(.name)  \(.source) \(.ref)  \(.rev[:7])"), ((.shells // [])[] | "shell\t\(.)")' ;;
+        shells)
+            [[ -n $dir ]] || usage_error 'usage: nixdatifier dev shells DIR'
+            NOTE='Evaluating devShells (slow)…' cached "devshells:$dir" 180 -- "$here/devenv" shells "$dir" | jq -Rn '[inputs | select(length > 0)]' |
+                if [[ $fmt == json ]]; then cat; else jq -r '.[]'; fi ;;
+        pkgs)
+            [[ -n $dir && -n ${args[1]:-} ]] || usage_error 'usage: nixdatifier dev pkgs DIR SHELL'
+            NOTE='Evaluating…' cached "shellpkgs:$dir:${args[1]}" 600 -- "$here/devenv" shellpkgs "$dir" "${args[1]}" | jq -Rn '[inputs | select(length > 0)]' |
+                if [[ $fmt == json ]]; then cat; else jq -r '.[]'; fi ;;
+        clear)
+            [[ -n $dir ]] || usage_error 'usage: nixdatifier dev clear DIR'
+            confirm "Remove $dir/.direnv? direnv rebuilds it."
+            if ((dry)); then echo "[dry-run] devenv clear $dir"; else "$here/devenv" clear "$dir" && msg "Cleared $dir/.direnv"; fi ;;
+        *) unknown_name 'dev subcommand' "$sub" 'list show shells pkgs clear' ;;
+    esac
+}
+
+# ── Completion ──────────────────────────────────────────────────────────────
+# Shared by every shell. Read generation links directly: completing a command
+# must not record config snapshots or run an update probe.
+completion_candidates() {
+    local current='' previous='' command='' word candidate choices='' i skip=0
+    local -a positional=()
+    local count=${#completion_words[@]}
+    ((count)) || return 0
+    current=${completion_words[count-1]}
+    ((count > 1)) && previous=${completion_words[count-2]}
+    for ((i=0; i<count-1; i++)); do
+        word=${completion_words[i]}
+        if ((skip)); then skip=0; continue; fi
+        case $word in
+            --flake | -f) flake=${completion_words[i+1]:-}; skip=1; continue ;;
+            --color | --priv | --label | --older-than | --keep | --limit | --roots | --secrets | --source | --host | --days | --generation | -g) skip=1; continue ;;
+            -*) continue ;;
+        esac
+        if [[ -z $command ]]; then
+            command=$(resolve_command "$word" 2>/dev/null) || return 0
+        else positional+=("$word"); fi
+    done
+    case $previous in
+        --priv) choices='sudo doas pkexec none' ;;
+        --color) choices='auto always never' ;;
+        --generation | -g) choices=$(generation_rows | cut -f1) ;;
+        --flake | -f | --roots | --secrets | --source)
+            for candidate in "$current"*; do [[ -d $candidate ]] && printf '%s/\n' "${candidate%/}"; done
+            return 0 ;;
+        --label | --older-than | --keep | --limit | --host | --days) return 0 ;;
+        *)
+            if [[ $current == -* ]]; then choices=$OPTIONS
+            elif [[ -z $command || $command == help ]]; then choices=$COMMANDS
+            else
+                case $command in
+                    diff) ((${#positional[@]} < 2)) && choices=$(generation_rows | cut -f1) ;;
+                    switch | boot) ((${#positional[@]} == 0)) && choices=$(generation_rows | cut -f1) ;;
+                    delete) choices=$(generation_rows | cut -f1) ;;
+                    completion) choices='bash zsh fish install' ;;
+                    persist) ((${#positional[@]} == 0)) && choices='status sizes ls scan cleanup rm' ;;
+                    dev) ((${#positional[@]} == 0)) && choices='list show shells pkgs clear' ;;
+                    hash) ((${#positional[@]} == 0)) && choices='url zip github file store' ;;
+                    update | preview | notes)
+                        if ((${#positional[@]} == 0)) && find_flake; then
+                            choices=$(jq -r '.nodes.root.inputs // {} | keys[]' "$flake/flake.lock" 2>/dev/null)
+                        fi ;;
+                esac
+            fi ;;
+    esac
+    for candidate in $choices; do
+        [[ $candidate == "$current"* ]] && printf '%s\n' "$candidate"
+    done
+    return 0
+}
+cmd_completion() {
+    case ${args[0]:-} in
+        _candidates) completion_candidates ;;
+        bash)
+            cat <<'EOF'
+_nixdatifier() {
+    local candidate
+    COMPREPLY=()
+    while IFS= read -r candidate; do
+        [[ -n $candidate ]] && COMPREPLY+=("$candidate")
+    done < <("${COMP_WORDS[0]}" _complete "${COMP_WORDS[@]:1:COMP_CWORD}")
+}
+complete -F _nixdatifier nixdatifier
+EOF
+            ;;
+        zsh)
+            cat <<'EOF'
+#compdef nixdatifier
+_nixdatifier() {
+    local -a candidates
+    candidates=("${(@f)$("${words[1]}" _complete "${words[@]:1:$((CURRENT-1))}")}")
+    compadd -- "${candidates[@]}"
+}
+if [[ $ZSH_EVAL_CONTEXT == *:loadautofunc ]]; then
+    _nixdatifier "$@"
+else
+    (( $+functions[compdef] )) || { autoload -Uz compinit; compinit; }
+    compdef _nixdatifier nixdatifier
+    compdef _nixdatifier -p '*/nixdatifier'
+fi
+EOF
+            ;;
+        fish)
+            cat <<'EOF'
+function __nixdatifier_candidates
+    set -l words (commandline -opc)
+    set -l current (commandline -ct)
+    command $words[1] _complete $words[2..-1] "$current"
+end
+complete -c nixdatifier -f -a '(__nixdatifier_candidates)'
+EOF
+            ;;
+        install) completion_install ;;
+        *) usage_error 'usage: nixdatifier completion <bash|zsh|fish|install>' ;;
+    esac
+}
+# Package-installed completion depends on the shell finding the profile's share
+# directory, which a plain `nix profile install` does not guarantee. This puts
+# one line in the user's own startup file instead, so it works everywhere.
+completion_install() {
+    local sh=${args[1]:-$(basename -- "${SHELL:-}")} rc line self
+    self=$(command -v nixdatifier || echo "$0")
+    case $sh in
+        bash) rc=${HOME}/.bashrc ;;
+        zsh) rc=${ZDOTDIR:-$HOME}/.zshrc ;;
+        fish) rc=${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions/nixdatifier.fish ;;
+        *) usage_error "cannot set up completion for '$sh' (bash, zsh or fish; pass one: completion install zsh)" ;;
+    esac
+    if [[ $sh == fish ]]; then
+        confirm "Write $rc?"
+        ((dry)) && { echo "[dry-run] write $rc"; return 0; }
+        mkdir -p "$(dirname "$rc")" && "$self" completion fish >"$rc" || die "could not write $rc"
+    else
+        line="command -v nixdatifier >/dev/null && source <(nixdatifier completion $sh) # nixdatifier completion"
+        if grep -qs '# nixdatifier completion$' "$rc"; then msg "Already set up in $rc"; return 0; fi
+        confirm "Add tab completion for $sh to $rc?"
+        ((dry)) && { echo "[dry-run] append to $rc: $line"; return 0; }
+        printf '\n%s\n' "$line" >>"$rc" || die "could not write $rc"
+    fi
+    msg "Done: open a new $sh (or: exec $sh) and press Tab after 'nixdatifier'."
+}
+
+case $cmd in
+    generations) cmd_generations ;;
+    updates) cmd_updates ;;
+    diff) cmd_diff ;;
+    disk) cmd_disk ;;
+    health) cmd_health ;;
+    status) cmd_status ;;
+    history) cmd_history ;;
+    info) cmd_info ;;
+    hash) cmd_hash ;;
+    profiles) cmd_profiles ;;
+    secrets) cmd_secrets ;;
+    persist) cmd_persist ;;
+    dev) cmd_dev ;;
+    path) cmd_path ;;
+    preview) cmd_preview ;;
+    notes) cmd_notes ;;
+    snapshot) cmd_snapshot ;;
+    switch | boot) cmd_switch ;;
+    rollback) cmd_rollback ;;
+    delete) cmd_delete ;;
+    gc) cmd_gc ;;
+    clean) cmd_clean ;;
+    menu) cmd_menu ;;
+    config) cmd_config ;;
+    update) cmd_update ;;
+    completion) cmd_completion ;;
+esac

@@ -464,7 +464,8 @@ Item {
         function test_input_update_is_quoted_and_exits() {
             core.runFlakeUpdateInput("input's name");
             compare(jobs.length, 1);
-            verify(jobs[0].cmd.indexOf(" mutate -- bash -c ") >= 0);
+            verify(jobs[0].cmd.indexOf("nixdatifier' ") >= 0);
+            verify(jobs[0].cmd.indexOf(" update 'input'\\''s name'") >= 0);
             verify(core.isBusy);
             compare(core.updatingInput, "input's name");
             jobs[0].callback(jobs[0].cmd, "", "failure", 1);
@@ -937,7 +938,8 @@ Item {
         function test_failed_gc_refreshes_partially_changed_store_and_profiles() {
             core.executeCleanup("gc-14d");
             compare(jobs.length, 1);
-            verify(jobs[0].cmd.indexOf("--delete-older-than 14d") > 0);
+            verify(jobs[0].cmd.indexOf("nixdatifier' ") > 0);
+            verify(jobs[0].cmd.indexOf("gc --older-than 14d") > 0);
             jobs[0].callback(jobs[0].cmd, "", "collection failed after pruning profiles", 1);
             verify(!core.isBusy);
             verify(jobs.some(j => j.cmd.indexOf("/generations'") > 0));
