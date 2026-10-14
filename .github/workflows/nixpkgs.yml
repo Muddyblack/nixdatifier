@@ -1,0 +1,40 @@
+name: nixpkgs
+
+# After `make tag`: check that the nixpkgs-style packages build for the new
+# release. The bumped files are uploaded as an artifact for the first nixpkgs
+# submission; after that, the nixpkgs bot (r-ryantm) opens the bumps itself.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+
+      - name: Use the flake's pinned nixpkgs as <nixpkgs>
+        run: |
+          nixpkgs="$(nix flake metadata --json | jq -r '.locks.nodes.nixpkgs.locked | "github:\(.owner)/\(.repo)/\(.rev)"')"
+          echo "NIX_PATH=nixpkgs=$(nix flake prefetch --json "$nixpkgs" | jq -r .storePath)" >> "$GITHUB_ENV"
+
+      # A manual run builds the version already in the files.
+      - name: Bump the packages to this tag
+        if: github.ref_type == 'tag'
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          nix run nixpkgs#nix-update -- --file nix/nixpkgs --version "$version" nixdatifier
+          nix run nixpkgs#nix-update -- --file nix/nixpkgs --version "$version" nixdatifier-cli
+
+      - name: Build both
+        run: |
+          nix-build nix/nixpkgs -A nixdatifier-cli --no-out-link
+          nix-build nix/nixpkgs -A nixdatifier --no-out-link
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nixpkgs-packages
+          path: nix/nixpkgs
