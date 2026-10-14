@@ -113,6 +113,7 @@ ShellRoot {
     App.Engine {
         id: core
         settings: cfg
+        syncSettings: true
         executor: processAdapter
         autoStart: false
         expanded: root.popupOpen && !root.settingsOpen

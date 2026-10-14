@@ -1077,6 +1077,8 @@ class Cli(HelperCase):
                 .replace("/run/booted-system", str(self.root / "booted"))
             )
         self.cli = str(tools / "nixdatifier")
+        self.env["XDG_CONFIG_HOME"] = str(self.root / "config")
+        self.env.pop("NIXDATIFIER_CONFIG", None)
         self.profiles.mkdir()
         for number in (1, 2, 3):
             store = self.root / f"store{number}"
@@ -1103,6 +1105,70 @@ class Cli(HelperCase):
         self.assertEqual(rows[0]["nixosVersion"], "25.05.3")
         limited = json.loads(self.cli_run("--json", "--limit", "1", "generations").stdout)
         self.assertEqual(len(limited), 1)
+
+    def config_file(self):
+        return Path(self.cli_run("config", "path").stdout.strip())
+
+    def test_window_settings_sync_both_ways(self):
+        window = {
+            "flakePath": "/etc/nixos",
+            "configRepoPath": "",
+            "secretsPath": "",
+            "secretsSourcePath": "",
+            "impermanencePaths": "/persist",
+            "checkInterval": 3600,
+            "customCommands": json.dumps([{"label": "up", "cmd": "nix flake update"}]),
+            "showNotifications": False,
+        }
+        # First start: the window's own values are adopted, its default interval is not.
+        first = json.loads(self.cli_run("config", "sync", "pull", json.dumps(window)).stdout)
+        self.assertEqual(self.cli_run("config", "get", "flake").stdout.strip(), "/etc/nixos")
+        self.assertEqual(self.cli_run("config", "get", "persist").stdout.strip(), "/persist")
+        self.assertEqual(self.cli_run("config", "get", "check_interval").stdout.strip(), "")
+        self.assertEqual(self.cli_run("config", "get", "notifications").stdout.strip(), "off")
+        self.assertIs(first["showNotifications"], False)
+        self.assertEqual(json.loads(first["customCommands"]), [{"label": "up", "cmd": "nix flake update"}])
+        # Afterwards the file wins: a change from the terminal view reaches the window, a clear too.
+        self.cli_run("config", "set", "check_interval", "6h")
+        self.cli_run("config", "unset", "flake")
+        later = json.loads(self.cli_run("config", "sync", "pull", json.dumps(window)).stdout)
+        self.assertEqual(later["checkInterval"], 21600)
+        self.assertEqual(later["flakePath"], "")
+        # The window changing something is written back, with the interval as a duration.
+        window.update(flakePath="/x", checkInterval=7200, customCommands="[]")
+        self.cli_run("config", "sync", "push", json.dumps(window))
+        self.assertEqual(self.cli_run("config", "get", "flake").stdout.strip(), "/x")
+        self.assertEqual(self.cli_run("config", "get", "check_interval").stdout.strip(), "2h")
+        self.assertEqual(self.cli_run("config", "get", "commands").stdout.strip(), "[]")
+        self.assertEqual(self.cli_run("config", "sync", "bogus", "{}").returncode, 2)
+
+    def test_saved_commands_run_from_the_flake_directory(self):
+        flake = self.root / "flake"
+        flake.mkdir()
+        (flake / "flake.nix").write_text("{}")
+        self.assertEqual(self.cli_run("commands", "add", "hi", "echo ran-here $PWD").returncode, 0)
+        self.assertIn("hi", self.cli_run("commands").stdout)
+        result = self.cli_run("--yes", "--flake", str(flake), "run", "hi")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"ran-here {flake}", result.stdout)
+        self.assertEqual(self.cli_run("--yes", "run", "nope").returncode, 1)
+        for n in range(2, 6):
+            added = self.cli_run("commands", "add", f"c{n}", "true")
+        self.assertEqual(added.returncode, 1)  # the window shows four
+        self.assertEqual(self.cli_run("commands", "rm", "hi").returncode, 0)
+        self.assertEqual(self.cli_run("config", "set", "commands", "not json").returncode, 2)
+
+    def test_rebuild_prefers_the_saved_rebuild_command(self):
+        flake = self.root / "flake"
+        flake.mkdir()
+        (flake / "flake.nix").write_text("{}")
+        self.cli_run("commands", "add", "rebuild", "echo custom-rebuild")
+        result = self.cli_run("--yes", "--flake", str(flake), "rebuild")
+        self.assertIn("custom-rebuild", result.stdout)
+        self.cli_run("commands", "rm", "rebuild")
+        self.script(self.bin / "nixos-rebuild", f"echo \"nixos-rebuild $*\" >> '{self.calls}'\n")
+        dry = self.cli_run("--dry-run", "--priv", "none", "--flake", str(flake), "rebuild")
+        self.assertIn("switch --flake", dry.stdout)
 
     def test_typo_suggestions_do_not_run_commands(self):
         for args, suggestion in (

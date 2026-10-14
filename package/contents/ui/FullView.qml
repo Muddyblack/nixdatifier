@@ -64,7 +64,7 @@ Pane {
     required property bool showCommandButtons
     required property var customCommands
     property string gcCustomCommand: ""
-    required property string activeViewMode   // "timeline" | "updates" | "diff" | "tools" | "secrets" | "hash" | "history" | "storeusage" | "impermanence"
+    required property string activeViewMode   // "timeline" | "updates" | "diff" | "tools" | "secrets" | "hash" | "history" | "storeusage" | "profile" | "impermanence"
     required property var deployedSecrets  // { path, exists, lastModified, age }
     required property var sourceSecrets    // { path, exists, lastModified, kind }
     required property string hostname
@@ -118,6 +118,10 @@ Pane {
     property var actionHistory: []
     property bool isLoadingHistory: false
 
+    // ── User profile (nix profile) tool state ────────────────────────────────
+    property var profilePackages: []
+    property bool isLoadingProfile: false
+
     // ── Store usage tool state ───────────────────────────────────────────────
     property var storeUsageResult: null
     property bool isProbingStoreUsage: false
@@ -169,6 +173,10 @@ Pane {
     signal dismissToast(int index)
     signal hashRequested(string mode, string input)
     signal clearHistoryRequested
+    signal profileInstallRequested(string reference)
+    signal profileUpgradeRequested(string name)
+    signal profileRemoveRequested(string name)
+    signal profileCleanRequested
     signal storeUsageRequested(string path)
     signal impermanenceListRequested(string path, bool force)
     signal impermanenceListCancelRequested
@@ -247,6 +255,12 @@ Pane {
             label: qsTr("Rebuild history"),
             hint: qsTr("Review past rebuild and update output."),
             glyph: "ic_history"
+        },
+        {
+            key: "profile",
+            label: qsTr("Your packages"),
+            hint: qsTr("Install, upgrade and remove what is in your user profile."),
+            glyph: "ic_outline_box"
         },
         {
             key: "storeusage",
@@ -1215,6 +1229,21 @@ Pane {
 
                     onClearHistoryRequested: fullView.clearHistoryRequested()
                     onCopyToClipboard: t => fullView.copyToClipboard(t)
+                }
+                ProfileTab {
+                    anchors.fill: parent
+                    activeViewMode: fullView.activeViewMode
+                    accentColor: fullView.accentColor
+                    textColor: fullView.textColor
+                    fs: fullView.fs
+                    profilePackages: fullView.profilePackages
+                    isLoadingProfile: fullView.isLoadingProfile
+                    isBusy: fullView.isBusy
+
+                    onInstallRequested: reference => fullView.profileInstallRequested(reference)
+                    onUpgradeRequested: name => fullView.profileUpgradeRequested(name)
+                    onRemoveRequested: name => fullView.profileRemoveRequested(name)
+                    onCleanRequested: fullView.profileCleanRequested()
                 }
                 StoreUsageTab {
                     anchors.fill: parent

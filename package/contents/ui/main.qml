@@ -31,6 +31,7 @@ PlasmoidItem {
     Engine {
         id: core
         settings: plasmoid.configuration
+        syncSettings: true
         executor: plasmaExecutor
         // Desktop containment displays the full view without opening a popup.
         expanded: plasmoidRoot.expanded || (Plasmoid.formFactor === PlasmaCore.Types.Planar && plasmoidRoot.visible && !!plasmoidRoot.fullRepresentationItem)

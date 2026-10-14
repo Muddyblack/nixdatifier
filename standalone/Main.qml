@@ -147,6 +147,7 @@ ApplicationWindow {
     App.Engine {
         id: core
         settings: cfg
+        syncSettings: true
         executor: runner
         autoStart: false
         expanded: win.visible && !win.settingsOpen

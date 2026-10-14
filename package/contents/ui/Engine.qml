@@ -621,6 +621,59 @@ Item {
         });
     }
 
+    // ── User profile (nix profile) ────────────────────────────────────────────
+    // Everything goes through `nixdatifier profile`, so the terminal view and
+    // this tab list and change the same packages and share one history.
+    property var profilePackages: []
+    property bool isLoadingProfile: false
+    onActiveViewModeChanged: {
+        if (root.activeViewMode === "profile")
+            root.loadProfile();
+    }
+    function loadProfile() {
+        if (root.isLoadingProfile)
+            return;
+        root.isLoadingProfile = true;
+        sh(shq(root.scriptDir + "nixdatifier") + " --json profile", function (cmd, out, err, code) {
+            root.isLoadingProfile = false;
+            let parsed = [];
+            try {
+                parsed = JSON.parse(out || "[]");
+            } catch (e) {}
+            root.profilePackages = Array.isArray(parsed) ? parsed : [];
+        });
+    }
+    function runProfileAction(kind, argument) {
+        if (root.isBusy) {
+            root.pushToast(qsTr("Already running another action — please wait."), true);
+            return;
+        }
+        const labels = {
+            "install": qsTr("Installing %1…").arg(argument),
+            "remove": qsTr("Removing %1…").arg(argument),
+            "upgrade": argument ? qsTr("Upgrading %1…").arg(argument) : qsTr("Upgrading your profile…"),
+            "clean": qsTr("Cleaning old profile versions…")
+        };
+        const done = {
+            "install": qsTr("%1 installed.").arg(argument),
+            "remove": qsTr("%1 removed.").arg(argument),
+            "upgrade": qsTr("Profile upgraded."),
+            "clean": qsTr("Old profile versions removed.")
+        };
+        root.isBusy = true;
+        root.currentActionType = labels[kind] || "";
+        sh(cli("profile " + kind + (argument ? " " + shq(argument) : "")), function (c, out, err, code) {
+            root.isBusy = false;
+            root.loadProfile();
+            root.loadHistory();
+            if (code !== 0) {
+                root.pushToast(qsTr("Failed: ") + (err || out || "").trim().split("\n").slice(-3).join(" "), true);
+                return;
+            }
+            root.pushToast(done[kind] || "", false);
+        });
+    }
+
     // ── Store usage tool ──────────────────────────────────────────────────────
     function probeStoreUsage(path) {
         if (root.isProbingStoreUsage)
@@ -2489,8 +2542,100 @@ Item {
         }
     }
 
+    // ── Settings shared with the command line ─────────────────────────────────
+    // The terminal view keeps its settings in ~/.config/nixdatifier/config. The
+    // ones both front ends have (flake and secrets paths, persistent roots,
+    // check interval, quick-run commands) are mirrored there through
+    // `nixdatifier config sync`, so changing one in either place changes it in
+    // both. The first sync adopts what this window already had.
+    property bool syncSettings: false
+    property bool _syncReady: false
+    property bool _syncApplying: false
+    readonly property var _syncKeys: ["flakePath", "configRepoPath", "secretsPath", "secretsSourcePath", "impermanencePaths", "checkInterval", "customCommands", "showNotifications"]
+    function _syncSnapshot() {
+        const values = {};
+        for (const key of root._syncKeys)
+            values[key] = root.settings[key];
+        return JSON.stringify(values);
+    }
+    function _syncCommand(mode) {
+        return shq(root.scriptDir + "nixdatifier") + " config sync " + mode + " " + shq(root._syncSnapshot());
+    }
+    function pullSharedSettings(done) {
+        if (!root.syncSettings || !root.settings) {
+            if (done)
+                done();
+            return;
+        }
+        sh(root._syncCommand("pull"), function (cmd, out, err, code) {
+            let values = null;
+            try {
+                values = code === 0 ? JSON.parse(out) : null;
+            } catch (e) {
+                values = null;
+            }
+            if (values) {
+                root._syncApplying = true;
+                for (const key of root._syncKeys) {
+                    if (values[key] !== undefined && root.settings[key] !== values[key])
+                        root.settings[key] = values[key];
+                }
+                root._syncApplying = false;
+                root._syncReady = true;
+            } else {
+                // No usable command line (not installed, unwritable config):
+                // carry on with the window's own values and keep sync off.
+                root.syncSettings = false;
+            }
+            if (done)
+                done();
+        });
+    }
+    function schedulePushSharedSettings() {
+        if (root.syncSettings && root._syncReady && !root._syncApplying)
+            syncPushTimer.restart();
+    }
+    Timer {
+        id: syncPushTimer
+        interval: 600
+        onTriggered: root.sh(root._syncCommand("push"), null)
+    }
+    Connections {
+        target: root.syncSettings ? root.settings : null
+        function onFlakePathChanged() {
+            root.schedulePushSharedSettings();
+        }
+        function onConfigRepoPathChanged() {
+            root.schedulePushSharedSettings();
+        }
+        function onSecretsPathChanged() {
+            root.schedulePushSharedSettings();
+        }
+        function onSecretsSourcePathChanged() {
+            root.schedulePushSharedSettings();
+        }
+        function onImpermanencePathsChanged() {
+            root.schedulePushSharedSettings();
+        }
+        function onCheckIntervalChanged() {
+            root.schedulePushSharedSettings();
+        }
+        function onShowNotificationsChanged() {
+            root.schedulePushSharedSettings();
+        }
+        function onCustomCommandsChanged() {
+            root.schedulePushSharedSettings();
+        }
+    }
+
     // ── Init & timers ─────────────────────────────────────────────────────────
     function start() {
+        if (root.syncSettings && !root._syncReady) {
+            pullSharedSettings(function () {
+                root.start();
+            });
+            return;
+        }
         // Probe sysinfo first so we know whether we're on NixOS before launching
         // NixOS-only operations (generations, secrets).  The probe is fast — it
         // reads /etc/hostname, /proc/uptime and a few small files.
@@ -2548,6 +2693,9 @@ Item {
     }
 
     onExpandedChanged: {
+        // Pick up what the terminal view changed while the popup was closed.
+        if (root.expanded && root._syncReady && !syncPushTimer.running)
+            root.pullSharedSettings(null);
         if (root.initialized && root.settings && root.expanded && root.autoStart) {
             root.syncFlakeContext(false);
             if (root.isNixOS && root.settings.autoRefreshOnOpen)
