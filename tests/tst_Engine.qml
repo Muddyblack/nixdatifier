@@ -110,6 +110,65 @@ Item {
             core.activeGenNum = 661;
             core.bootedGenNum = 660;
         }
+        function test_shared_settings_are_pulled_before_start_and_pushed_after_changes() {
+            core.syncSettings = true;
+            core._syncReady = false;
+            core.start();
+            compare(jobs.length, 1);
+            verify(jobs[0].cmd.indexOf("config sync pull") >= 0);
+            jobs[0].callback(jobs[0].cmd, JSON.stringify({
+                flakePath: "/from/terminal",
+                checkInterval: 21600
+            }), "", 0);
+            compare(cfg.flakePath, "/from/terminal");
+            compare(cfg.checkInterval, 21600);
+            verify(core._syncReady);
+            // What came from the file is not written straight back.
+            wait(800);
+            for (const job of jobs)
+                verify(job.cmd.indexOf("config sync push") < 0);
+            cfg.flakePath = "/from/window";
+            tryVerify(() => jobs.some(job => job.cmd.indexOf("config sync push") >= 0));
+            core.syncSettings = false;
+            cfg.flakePath = "";
+        }
+        function test_unusable_command_line_keeps_the_windows_own_settings() {
+            core.syncSettings = true;
+            core._syncReady = false;
+            core.start();
+            jobs[0].callback(jobs[0].cmd, "", "boom", 127);
+            verify(!core.syncSettings);
+            verify(jobs.length > 1);
+        }
+        function test_profile_tool_lists_and_changes_packages_through_the_cli() {
+            core.loadProfile();
+            compare(jobs.length, 1);
+            verify(jobs[0].cmd.indexOf("--json profile") >= 0);
+            jobs[0].callback(jobs[0].cmd, JSON.stringify([
+                {
+                    name: "hello",
+                    package: "hello-2.12.3",
+                    source: "flake:nixpkgs"
+                }
+            ]), "", 0);
+            compare(core.profilePackages.length, 1);
+            compare(core.profilePackages[0].name, "hello");
+            verify(!core.isLoadingProfile);
+
+            jobs = [];
+            core.runProfileAction("install", "nixpkgs#it's");
+            compare(jobs.length, 1);
+            verify(jobs[0].cmd.indexOf("--yes") >= 0);
+            verify(jobs[0].cmd.indexOf("profile install 'nixpkgs#it'\\''s'") >= 0);
+            verify(core.isBusy);
+            core.runProfileAction("remove", "hello");
+            compare(jobs.length, 1, "a second change waits for the first");
+            jobs[0].callback(jobs[0].cmd, "", "", 0);
+            verify(!core.isBusy);
+            // The list is read again once the change is done.
+            verify(jobs.some(job => job.cmd.indexOf("--json profile") >= 0));
+            core.activeViewMode = "tools";
+        }
         function test_non_nixos_startup_and_guards() {
             core.isNixOS = false;
             core.systemDetected = false;

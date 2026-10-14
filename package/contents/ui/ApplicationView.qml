@@ -62,6 +62,12 @@ FullView {
     isProbingHash: engine.isProbingHash
     actionHistory: engine.actionHistory
     isLoadingHistory: engine.isLoadingHistory
+    profilePackages: engine.profilePackages
+    isLoadingProfile: engine.isLoadingProfile
+    onProfileInstallRequested: reference => engine.runProfileAction("install", reference)
+    onProfileUpgradeRequested: name => engine.runProfileAction("upgrade", name)
+    onProfileRemoveRequested: name => engine.runProfileAction("remove", name)
+    onProfileCleanRequested: () => engine.runProfileAction("clean", "")
     storeUsageResult: engine.storeUsageResult
     isProbingStoreUsage: engine.isProbingStoreUsage
     pendingGenNum: engine.pendingGenNum

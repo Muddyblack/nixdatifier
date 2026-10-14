@@ -21,7 +21,8 @@ Misspelled commands, options and `dev`/`persist` subcommands suggest nearby name
 (for example, `generatoins` suggests `generations`) and exit with status 2.
 Suggestions never run automatically. Missing option values also report a usage error.
 
-| Area | Commands |
+| Area | Your packages | `profile [list\|install REF…\|remove NAME…\|upgrade [NAME…]\|clean]` manages what `nix profile` installed for your user (`nixpkgs#hello`, `github:user/repo`); also in the window's Tools tab and under Profiles in the interactive view. `profiles` lists the profile generations |
+| Commands |
 | --- | --- |
 | Generations | `generations`, `diff [A [B]]`, `diff --config`, `switch N`, `boot N`, `rollback`, `delete N…` / `--keep N` / `--older-than DAYS`, `profiles` (Home Manager, `nix profile`) |
 | Flake | `updates [--all] [--check]`, `update [INPUT]`, `preview INPUT` (packages that would change), `notes INPUT` (upstream releases and commits) |
@@ -32,6 +33,8 @@ Suggestions never run automatically. Missing option values also report a usage e
 | Dev environments | `dev` (`list`, `show DIR`, `shells DIR`, `pkgs DIR SHELL`, `clear DIR`) |
 | Interactive | `nixdatifier` alone (or `menu`) opens the [interactive view](#interactive-view). `switch`, `boot` and `delete` without a number let you pick a generation from a list (fzf if installed) |
 | Shell | `completion install` sets up your shell in one step; `completion bash\|zsh\|fish` prints the script |
+| Commands | `commands [list\|add LABEL CMD\|rm LABEL]` manages your quick-run commands, the same four the window's Commands panel shows; `run LABEL` runs one from the flake directory, as typed; `rebuild` runs the one labelled `rebuild`, or `nixos-rebuild switch --flake DIR` as root when there is none. All ask first and land in History |
+| Update checks | `watch on\|off\|status\|run`: a systemd user timer checks the flake inputs every `check_interval` (default `6h`) and sends a desktop notification for new updates. Off by default; also under *Update checks* in the interactive view, or `programs.nixdatifier.tui.updateCheck` in the Nix modules |
 | Cleanup | `clean` deletes old generations (keeps 5, drops older than 14 days) and collects garbage in one go |
 
 The CLI and desktop packages install Bash, zsh and fish completion scripts in

@@ -67,6 +67,10 @@ stop when settings close; the Info pane is released when hidden or another tab o
 
 On Hyprland the Design tab also has **pill mode** (`always`, `hover`, `tray`) and **popup position** (`top-left` … `bottom-right`).
 
+## Shared with the terminal view
+
+The window and `nixdatifier` (the terminal view and CLI) keep these settings in step: system flake path, configuration Git repository, secrets path and source, extra persistent folders, check interval, notifications, and the Commands. Change one in either place and it changes in both; the shared copy is `~/.config/nixdatifier/config`. The first time the window starts with this version, it adopts the values it already had, so nothing needs redoing. Environment variables (and the Nix modules' `tui.commands`) still win on the command line.
+
 ## Custom commands format
 
 The `customCommands` setting stores a JSON array:
