@@ -30,6 +30,23 @@
   System generations, package diffs, flake updates, secrets, dev environments, and Nix store usage, from a tray icon on any Linux desktop. Also available as a KDE Plasma 6 widget and a Quickshell panel.
 </p>
 
+<h3 align="center">Try it in one command, no install</h3>
+
+<table align="center">
+  <tr>
+    <td align="center"><b>🖥️ Tray app</b></td>
+    <td><code>nix run github:Muddyblack/nixdatifier</code></td>
+  </tr>
+  <tr>
+    <td align="center"><b>⌨️ CLI / TUI</b></td>
+    <td><code>nix run github:Muddyblack/nixdatifier#cli</code></td>
+  </tr>
+</table>
+
+<p align="center">
+  <sub>Requires Nix with flakes enabled. Prefer a permanent install? See the sections below.</sub>
+</p>
+
 ## A closer look
 
 <p align="center">
