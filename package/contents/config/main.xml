@@ -76,6 +76,14 @@
             <!-- encrypted source file, e.g. /etc/nixos/secrets/secrets.yaml -->
             <default></default>
         </entry>
+        <entry name="githubTokenFile" type="String">
+            <!-- file holding a GitHub token (e.g. a sops secret path) for release notes — empty = anonymous -->
+            <default></default>
+        </entry>
+        <entry name="githubUseGh" type="Bool">
+            <!-- borrow the GitHub CLI login (gh auth token) for release notes -->
+            <default>false</default>
+        </entry>
         <entry name="impermanencePaths" type="String">
             <!-- extra persistent roots, colon-separated, e.g. /persist:/mnt/data — empty = auto-detect -->
             <default></default>

@@ -144,5 +144,7 @@ There is no config file; it is flags and environment, so it works the same in a 
 | `NIXDATIFIER_PERSIST` | extra impermanence roots, `/a:/b` |
 | `NIXDATIFIER_SECRETS`, `NIXDATIFIER_SECRETS_SOURCE` | secrets directory and source file |
 | `GITHUB_TOKEN` | lifts GitHub's rate limit for `notes` |
+| `NIXDATIFIER_GITHUB_TOKEN_FILE` | file holding a GitHub token, used when `GITHUB_TOKEN` is unset (config key `github_token_file`). |
+| `NIXDATIFIER_GITHUB_USE_GH` | `on` borrows the login of a signed-in `gh` when there is no token (config key `github_use_gh`; off by default, its token often has wide scopes) |
 
 `diff --config` needs to know which config commit built each generation. `generations` and the window record it; run `nixdatifier snapshot` from a post-rebuild hook if you only rebuild from a terminal.

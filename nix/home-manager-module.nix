@@ -62,6 +62,27 @@ in
       };
     };
 
+    githubTokenFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "/run/secrets/github_pat";
+      description = ''
+        Path to a file holding a GitHub token, read when release notes are fetched (lifts GitHub's
+        anonymous limit of 60 requests per hour). Give a runtime path such as a sops-nix or agenix
+        secret, not a Nix store path: only the path is passed on, so the token never enters the store.
+      '';
+    };
+
+    githubUseGh = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        When no token file is set, borrow the login of the GitHub CLI (`gh auth token`) for release
+        notes. Off by default: that token often has wide scopes, and a dedicated read-only one in
+        githubTokenFile is the safer choice.
+      '';
+    };
+
     package = lib.mkOption {
       type = lib.types.package;
       default = self.packages.${pkgs.stdenv.hostPlatform.system}.${if cfg.ui then "nixdatifier" else "cli"};
@@ -85,6 +106,8 @@ in
     };
     home.sessionVariables = lib.optionalAttrs (cfg.tui.theme != null) { NIXDATIFIER_THEME = cfg.tui.theme; }
       // lib.optionalAttrs (cfg.tui.layout != null) { NIXDATIFIER_LAYOUT = cfg.tui.layout; }
+      // lib.optionalAttrs (cfg.githubTokenFile != null) { NIXDATIFIER_GITHUB_TOKEN_FILE = cfg.githubTokenFile; }
+      // lib.optionalAttrs cfg.githubUseGh { NIXDATIFIER_GITHUB_USE_GH = "on"; }
       // lib.optionalAttrs (cfg.tui.commands != [ ]) { NIXDATIFIER_COMMANDS = builtins.toJSON cfg.tui.commands; };
 
     systemd.user.services.nixdatifier-check = lib.mkIf cfg.tui.updateCheck.enable {
@@ -92,7 +115,9 @@ in
       Service = {
         Type = "oneshot";
         ExecStart = "${cfg.package}/bin/nixdatifier watch run";
-        Environment = [ "PATH=${lib.makeBinPath [ pkgs.libnotify ]}:/run/current-system/sw/bin" ];
+        Environment = [ "PATH=${lib.makeBinPath [ pkgs.libnotify ]}:/run/current-system/sw/bin" ]
+          ++ lib.optional (cfg.githubTokenFile != null) "NIXDATIFIER_GITHUB_TOKEN_FILE=${cfg.githubTokenFile}"
+          ++ lib.optional cfg.githubUseGh "NIXDATIFIER_GITHUB_USE_GH=on";
       };
     };
     systemd.user.timers.nixdatifier-check = lib.mkIf cfg.tui.updateCheck.enable {

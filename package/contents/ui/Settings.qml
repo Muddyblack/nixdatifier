@@ -20,6 +20,8 @@ QtObject {
     property bool showFlakeSection: true
     property string secretsPath: ""
     property string secretsSourcePath: ""
+    property string githubTokenFile: ""
+    property bool githubUseGh: false
     property string impermanencePaths: ""
     property int impermanenceStaleDays: 180
     property bool impermanenceAllDisks: false

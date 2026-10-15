@@ -2140,7 +2140,7 @@ Item {
             status: "loading"
         });
         // Results for a revision pair never change, so share them for a day.
-        sh("timeout --kill-after=5s 60s " + shq(root.scriptDir + "run") + " cached notes 86400 -- " + shq(root.scriptDir + "release-notes") + " " + shq(update.url) + " " + shq(revs[0]) + " " + shq(revs[1]) + " " + shq(String(update.oldDateTs || 0)), function (cmd, out, err, code) {
+        sh((root.settings.githubTokenFile ? "NIXDATIFIER_GITHUB_TOKEN_FILE=" + shq(root.settings.githubTokenFile) + " " : "") + (root.settings.githubUseGh ? "NIXDATIFIER_GITHUB_USE_GH=on " : "") + "timeout --kill-after=5s 60s " + shq(root.scriptDir + "run") + " cached notes 86400 -- " + shq(root.scriptDir + "release-notes") + " " + shq(update.url) + " " + shq(revs[0]) + " " + shq(revs[1]) + " " + shq(String(update.oldDateTs || 0)), function (cmd, out, err, code) {
             if (epoch !== root.flakeEpoch || !root.flakeUpdates.some(u => u.input === inputName && u.revisionKey === revisionKey))
                 return;
             let data = null;
@@ -2551,7 +2551,7 @@ Item {
     property bool syncSettings: false
     property bool _syncReady: false
     property bool _syncApplying: false
-    readonly property var _syncKeys: ["flakePath", "configRepoPath", "secretsPath", "secretsSourcePath", "impermanencePaths", "checkInterval", "customCommands", "showNotifications"]
+    readonly property var _syncKeys: ["flakePath", "configRepoPath", "secretsPath", "secretsSourcePath", "githubTokenFile", "githubUseGh", "impermanencePaths", "checkInterval", "customCommands", "showNotifications"]
     function _syncSnapshot() {
         const values = {};
         for (const key of root._syncKeys)
