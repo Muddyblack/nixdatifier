@@ -200,6 +200,22 @@ var fields = [
     "type": "String"
   },
   {
+    "key": "githubTokenFile",
+    "tab": "Behavior",
+    "group": "Secrets",
+    "label": "GitHub token file",
+    "help": "Path to a file holding a GitHub token (for example a sops secret) that lifts the rate limit for release notes. Only the path is stored. Leave empty to stay anonymous.",
+    "type": "String"
+  },
+  {
+    "key": "githubUseGh",
+    "tab": "Behavior",
+    "group": "Secrets",
+    "label": "Use the GitHub CLI login",
+    "help": "Borrow the token of a signed-in gh for release notes when no token file is set. That token often has wide scopes, so this is off by default.",
+    "type": "Bool"
+  },
+  {
     "key": "impermanencePaths",
     "tab": "Behavior",
     "group": "Impermanence",

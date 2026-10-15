@@ -12,7 +12,10 @@
 #
 # Releases and commits are only fetched from GitHub (two API calls). Commits
 # are those reachable from <new-rev> and dated after <old-rev>. Set
-# GITHUB_TOKEN (or GH_TOKEN) to lift the anonymous rate limit of 60 calls/hour.
+# GITHUB_TOKEN (or GH_TOKEN), or point NIXDATIFIER_GITHUB_TOKEN_FILE at a file
+# holding one (a sops/agenix secret, say), to lift the anonymous rate limit of
+# 60 calls/hour. With NIXDATIFIER_GITHUB_USE_GH=on, a signed-in GitHub CLI
+# (`gh auth token`) is used as a last resort.
 # On failure the reason goes to stderr and the exit status is non-zero, so the
 # caller's cache never keeps a failed result.
 set -u
@@ -52,6 +55,18 @@ command -v curl >/dev/null 2>&1 || { echo "curl not on PATH" >&2; exit 1; }
 api="https://api.github.com/repos/$owner/$repo"
 compare="https://github.com/$owner/$repo/compare/$old...$new"
 token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+if [ -z "$token" ] && [ -n "${NIXDATIFIER_GITHUB_TOKEN_FILE:-}" ]; then
+    if [ -r "$NIXDATIFIER_GITHUB_TOKEN_FILE" ]; then
+        token=$(tr -d '[:space:]' <"$NIXDATIFIER_GITHUB_TOKEN_FILE")
+    else
+        echo "GitHub token file not readable: $NIXDATIFIER_GITHUB_TOKEN_FILE (continuing without a token)" >&2
+    fi
+fi
+# Opt in (NIXDATIFIER_GITHUB_USE_GH=on): the login of the GitHub CLI. Its token
+# usually carries wide scopes, so it is never borrowed unless asked for.
+if [ -z "$token" ] && [ "${NIXDATIFIER_GITHUB_USE_GH:-}" = on ] && command -v gh >/dev/null 2>&1; then
+    token=$(timeout 5 gh auth token 2>/dev/null | tr -d '[:space:]') || token=""
+fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
@@ -68,7 +83,7 @@ fetch() {
         200) return 0 ;;
         403|429)
             if grep -qi '^x-ratelimit-remaining: *0' "$tmp/$1.h"; then
-                echo "GitHub API rate limit reached. Try again later, or set GITHUB_TOKEN." >&2
+                echo "GitHub API rate limit reached. Try again later, or set a GitHub token (GITHUB_TOKEN or a token file)." >&2
             else
                 echo "GitHub refused the request (HTTP $code)" >&2
             fi

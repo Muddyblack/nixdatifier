@@ -41,6 +41,8 @@ stop when settings close; the Info pane is released when hidden or another tab o
 | **Check flake inputs in the background** | `true` | Turns the update checks on or off. |
 | **Deployed secrets directory** | `""` | Empty detects `/run/secrets` or `/run/agenix.d`. |
 | **Encrypted source secrets path** | `""` | Empty detects a SOPS file in the flake directory. |
+| **Use the GitHub CLI login** | off | Borrows the token of a signed-in `gh` when no token file is set. Off by default because that token often has wide scopes. Nix modules: `githubUseGh`. |
+| **GitHub token file** | `""` | File holding a GitHub token (a sops-nix or agenix secret path) that lifts the rate limit for release notes. Only the path is stored. Empty stays anonymous unless **Use the GitHub CLI login** is on. Nix modules: `programs.nixdatifier.githubTokenFile`. |
 | **Extra persistent folders** | `""` | Colon-separated roots (for example `/persist:/mnt/data`) added to the ones detected from the mounts for the Persistent folders tool. |
 | **Offer cleanup for folders untouched for (days)** | `180` | How long nothing inside a home folder may change before the Persistent folders cleanup suggests it. |
 | **Show package search/filter** | `true` | Filter box above package lists. |
@@ -69,7 +71,7 @@ On Hyprland the Design tab also has **pill mode** (`always`, `hover`, `tray`) an
 
 ## Shared with the terminal view
 
-The window and `nixdatifier` (the terminal view and CLI) keep these settings in step: system flake path, configuration Git repository, secrets path and source, extra persistent folders, check interval, notifications, and the Commands. Change one in either place and it changes in both; the shared copy is `~/.config/nixdatifier/config`. The first time the window starts with this version, it adopts the values it already had, so nothing needs redoing. Environment variables (and the Nix modules' `tui.commands`) still win on the command line.
+The window and `nixdatifier` (the terminal view and CLI) keep these settings in step: system flake path, configuration Git repository, secrets path and source, GitHub token file and CLI login, extra persistent folders, check interval, notifications, and the Commands. Change one in either place and it changes in both; the shared copy is `~/.config/nixdatifier/config`. The first time the window starts with this version, it adopts the values it already had, so nothing needs redoing. Environment variables (and the Nix modules' `tui.commands`) still win on the command line.
 
 ## Custom commands format
 

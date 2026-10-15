@@ -1115,6 +1115,8 @@ class Cli(HelperCase):
             "configRepoPath": "",
             "secretsPath": "",
             "secretsSourcePath": "",
+            "githubTokenFile": "",
+            "githubUseGh": False,
             "impermanencePaths": "/persist",
             "checkInterval": 3600,
             "customCommands": json.dumps([{"label": "up", "cmd": "nix flake update"}]),

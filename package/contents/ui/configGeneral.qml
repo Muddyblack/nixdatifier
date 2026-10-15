@@ -29,6 +29,8 @@ Kirigami.Page {
     property alias cfg_showFlakeSection: state.showFlakeSection
     property alias cfg_secretsPath: state.secretsPath
     property alias cfg_secretsSourcePath: state.secretsSourcePath
+    property alias cfg_githubTokenFile: state.githubTokenFile
+    property alias cfg_githubUseGh: state.githubUseGh
     property alias cfg_impermanencePaths: state.impermanencePaths
     property alias cfg_impermanenceStaleDays: state.impermanenceStaleDays
     property alias cfg_impermanenceAllDisks: state.impermanenceAllDisks
@@ -75,6 +77,8 @@ Kirigami.Page {
     property alias cfg_showFlakeSectionDefault: defaults.showFlakeSection
     property alias cfg_secretsPathDefault: defaults.secretsPath
     property alias cfg_secretsSourcePathDefault: defaults.secretsSourcePath
+    property alias cfg_githubTokenFileDefault: defaults.githubTokenFile
+    property alias cfg_githubUseGhDefault: defaults.githubUseGh
     property alias cfg_impermanencePathsDefault: defaults.impermanencePaths
     property alias cfg_impermanenceStaleDaysDefault: defaults.impermanenceStaleDays
     property alias cfg_impermanenceAllDisksDefault: defaults.impermanenceAllDisks
