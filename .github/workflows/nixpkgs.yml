@@ -1,12 +1,17 @@
 name: nixpkgs
 
-# After `make tag`: check that the nixpkgs-style packages build for the new
+# After a release: check that the nixpkgs-style packages build for the new
 # release. The bumped files are uploaded as an artifact for the first nixpkgs
 # submission; after that, the nixpkgs bot (r-ryantm) opens the bumps itself.
 on:
-  push:
-    tags:
-      - "v*"
+  # Called by release.yml once the tag and release exist (a tag created by
+  # Actions' own token does not start workflows by itself).
+  workflow_call:
+    inputs:
+      version:
+        description: "Release tag, e.g. v2.3.0"
+        type: string
+        default: ""
   workflow_dispatch:
 
 jobs:
@@ -23,9 +28,11 @@ jobs:
 
       # A manual run builds the version already in the files.
       - name: Bump the packages to this tag
-        if: github.ref_type == 'tag'
+        if: inputs.version != ''
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${INPUT_VERSION#v}"
           nix run nixpkgs#nix-update -- --file nix/nixpkgs --version "$version" nixdatifier
           nix run nixpkgs#nix-update -- --file nix/nixpkgs --version "$version" nixdatifier-cli
 

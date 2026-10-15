@@ -11,7 +11,7 @@
 
 ## What `make tag` does for you
 
-1. `make tag` bumps `package/metadata.json`, commits, tags `vX.Y.Z` and pushes.
+1. `make tag` bumps `package/metadata.json` on a `release/vX.Y.Z` branch and opens a PR; merging it tags `vX.Y.Z`.
 2. The **Release** workflow builds the `.plasmoid` and creates the GitHub release.
 3. The **nixpkgs** workflow bumps `version` and `hash` in `nix/nixpkgs` with `nix-update`, builds both packages against the flake's pinned nixpkgs, and uploads the result as an artifact. A failing build means the release is not packageable; fix it before the next tag.
 

@@ -33,7 +33,7 @@ pack: ## build .plasmoid archive
 	  echo "wrote $$out"; \
 	fi
 
-tag: ## bump version, commit, tag, push
+tag: ## open a release PR (bump version); merging it tags + publishes
 	@./tag.sh
 
 app: ## run the standalone window + tray app (any desktop)
