@@ -16,7 +16,25 @@ stop when settings close; the Info pane is released when hidden or another tab o
 | **Check updates every (seconds)** | `3600` | Flake input check interval (60–86400). |
 | **Maximum generations shown** | `10` | Generations listed in the timeline (3–200). |
 | **Detect hostname and flake configuration** | `true` | When off, previews need a flake with exactly one NixOS configuration. |
+| **Check tarball inputs** | `true` | Check inputs fetched as tarballs (channels, `.tar.zst`). A light HEAD request compares the immutable URL Nix locked; Nix only downloads the archive if the server gives no hint. |
+| **Check nested inputs** | `false` | Walk every transitive input instead of the root inputs (plus a wrapper flake's own inputs). One request per input. |
 | **Open on** | `timeline` | Starting view: `timeline`, `updates`, `diff`, `tools`, `devenv`, `secrets`, `hash`, `history`, `storeusage`, or `impermanence`. |
+
+Update checks read the root inputs of the configured flake's `flake.lock`, independently
+of how many NixOS or Home Manager outputs it defines. When the flake is a wrapper (it has
+a single input, or an input of type `path`), that input's own direct inputs are checked
+too and shown as `wrapper/input`. Turn on **Check nested inputs** to follow deeper levels. **Configuration Git
+repository** only controls generation history.
+
+Git-backed inputs are checked against their upstream revision. Tarball inputs are
+resolved with `nix flake metadata --refresh` and compared by their unpacked content
+hash, so compression formats supported by your Nix installation work too. These
+checks can download archives. Immutable archive URLs remain unchanged until you
+edit the input URL.
+
+For troubleshooting, run `nixdatifier --refresh --json updates --all` to include
+unchanged, pinned/unsupported, and unreachable inputs. Fetch failures include a
+reason; the widget also shows a notification when an upstream cannot be reached.
 
 ## Commands
 

@@ -34,11 +34,11 @@ class HelperCase(unittest.TestCase):
         path.chmod(0o755)
         return str(path)
 
-    def run_helper(self, name, *args):
+    def run_helper(self, name, *args, env=None):
         return subprocess.run(
             [str(HELPERS / name), *args],
             check=False,
-            env=self.env,
+            env={**self.env, **(env or {})},
             text=True,
             capture_output=True,
             timeout=15,
@@ -215,6 +215,222 @@ fi
         self.assertIn("DNS lookup failed", self.run_helper("flake-probe", str(self.root)).stdout)
         self.script(self.bin / "git", "exit 124\n")
         self.assertIn("timed out after 40s", self.run_helper("flake-probe", str(self.root)).stdout)
+
+    def test_tarball_probe_compares_content_and_reports_failures(self):
+        url = "https://example.org/nixpkgs/nixos-unstable.tar.zst"
+        locked_url = "https://example.org/nixpkgs/revision.tar.zst"
+        (self.root / "flake.lock").write_text(
+            json.dumps(
+                {
+                    "root": "config",
+                    "nodes": {
+                        "config": {"inputs": {"nixpkgs": "nixpkgs"}},
+                        "nixpkgs": {
+                            "original": {"type": "tarball", "url": url},
+                            "locked": {"type": "tarball", "narHash": "sha256-old", "lastModified": 1},
+                        },
+                    },
+                }
+            )
+        )
+        payload = self.root / "metadata.json"
+        args = self.root / "nix-args"
+        self.script(self.bin / "nix", f"printf '%s\\n' \"$@\" > '{args}'; cat '{payload}'\n")
+        self.script(self.bin / "git", "exit 99\n")
+        for content_hash, status in (("sha256-old", "unchanged"), ("sha256-new", "ok")):
+            with self.subTest(status=status):
+                payload.write_text(json.dumps({"locked": {"narHash": content_hash, "url": locked_url}}))
+                result = self.run_helper("flake-probe", str(self.root))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                fields = result.stdout.strip().split("\t")
+                self.assertEqual(fields[:6], ["nixpkgs", status, "sha256-old", content_hash, "1", url])
+                self.assertEqual(fields[6], locked_url)
+                self.assertEqual(
+                    args.read_text().splitlines(),
+                    [
+                        "flake",
+                        "metadata",
+                        "--refresh",
+                        "--json",
+                        "--no-write-lock-file",
+                        url,
+                    ],
+                )
+        for response in ("exit 1", "echo invalid", "echo '{}'"):
+            self.script(self.bin / "nix", response + "\n")
+            result = self.run_helper("flake-probe", str(self.root))
+            self.assertIn("\tunreachable\t", result.stdout)
+            self.assertIn("Could not resolve tarball metadata", result.stdout)
+
+    def test_wrapper_flake_reports_nested_inputs(self):
+        def node(owner, repo, rev):
+            return {
+                "original": {"type": "github", "owner": owner, "repo": repo},
+                "locked": {"type": "github", "owner": owner, "repo": repo, "rev": rev, "lastModified": 1},
+            }
+
+        (self.root / "flake.lock").write_text(
+            json.dumps(
+                {
+                    "root": "root",
+                    "nodes": {
+                        "root": {"inputs": {"nix-config": "nix-config"}},
+                        "nix-config": {
+                            **node("me", "nix-config", "c" * 40),
+                            "inputs": {"nixpkgs": "nixpkgs", "hm": ["nix-config", "nixpkgs"]},
+                        },
+                        "nixpkgs": node("NixOS", "nixpkgs", "a" * 40),
+                    },
+                }
+            )
+        )
+        self.script(self.bin / "curl", "echo " + "a" * 40 + "\n")
+        out = self.run_helper("flake-probe", str(self.root)).stdout
+        names = sorted(line.split("\t")[0] for line in out.splitlines())
+        self.assertEqual(names, ["nix-config", "nix-config/nixpkgs"])
+
+    def test_path_wrapper_resolves_follows_without_duplicate_requests(self):
+        old, new = "a" * 40, "b" * 40
+        dependency = {
+            "original": {"type": "github", "owner": "o", "repo": "r"},
+            "locked": {"rev": old},
+            "inputs": {"deeper": "deep"},
+        }
+        (self.root / "flake.lock").write_text(
+            json.dumps(
+                {
+                    "root": "config",
+                    "nodes": {
+                        "config": {
+                            "inputs": {
+                                "wrapper": "local",
+                                "direct": ["wrapper", "dep"],
+                                "alias": ["direct"],
+                            }
+                        },
+                        "local": {
+                            "original": {"type": "path", "path": "./public"},
+                            "locked": {"type": "path", "path": "./public"},
+                            "inputs": {"dep": "dependency", "alias": ["direct"]},
+                        },
+                        "dependency": dependency,
+                        "deep": dependency,
+                    },
+                }
+            )
+        )
+        calls = self.root / "requests"
+        self.script(self.bin / "curl", f"echo request >> '{calls}'; echo {new}\n")
+        self.script(self.bin / "git", "exit 99\n")
+        result = self.run_helper("flake-probe", str(self.root))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = {fields[0]: fields for fields in (line.split("\t") for line in result.stdout.splitlines())}
+        self.assertEqual(set(rows), {"wrapper", "direct"})
+        self.assertEqual(rows["direct"][1:4], ["ok", old, new])
+        self.assertEqual(calls.read_text().splitlines(), ["request"])
+
+    def _tarball_lock(self):
+        (self.root / "flake.lock").write_text(
+            json.dumps(
+                {
+                    "root": "root",
+                    "nodes": {
+                        "root": {"inputs": {"nixpkgs": "nixpkgs"}},
+                        "nixpkgs": {
+                            "original": {"type": "tarball", "url": "https://c.example/nixexprs.tar.xz"},
+                            "locked": {
+                                "type": "tarball",
+                                "url": "https://r.example/nixos-1.abc1234/nixexprs.tar.xz?lastModified=1&narHash=x",
+                                "narHash": "sha256-old",
+                                "lastModified": 1,
+                            },
+                        },
+                    },
+                }
+            )
+        )
+
+    def test_tarball_cheap_check_avoids_downloading(self):
+        self._tarball_lock()
+        self.script(self.bin / "nix", "exit 99\n")  # must not be needed
+        locked = "https://r.example/nixos-1.abc1234/nixexprs.tar.xz"
+        newer = "https://r.example/nixos-2.def5678/nixexprs.tar.xz"
+        for link, effective, status in (
+            (locked, locked, "unchanged"),
+            (newer, newer, "ok"),
+            (newer, "https://cdn.example/x", "ok"),  # the immutable marker wins over the final hop
+            (locked + "?edition=2", locked + "?edition=2", "ok"),  # a server's own query selects another archive
+            ("", locked, "unchanged"),  # no marker, but we landed on the locked archive
+        ):
+            with self.subTest(status=status, link=link, effective=effective):
+                header = f"Link: <{link}>; rel=immutable\\n" if link else ""
+                self.script(
+                    self.bin / "curl",
+                    f"printf 'HTTP/2 302\\n{header}\\n__EFFECTIVE__%s\\n' '{effective}'\n",
+                )
+                fields = self.run_helper("flake-probe", str(self.root)).stdout.strip().split("\t")
+                self.assertEqual(fields[1], status)
+
+    def test_tarball_cheap_check_falls_back_when_unsure(self):
+        self._tarball_lock()
+        self.script(self.bin / "nix", 'echo \'{"locked": {"narHash": "sha256-old"}}\'\n')
+        for curl in (
+            "exit 22",  # HTTP error or dead connection
+            "printf 'HTTP/2 302\\n\\n__EFFECTIVE__%s\\n' https://elsewhere.example/mutable.tar.xz",  # no marker
+        ):
+            with self.subTest(curl=curl):
+                self.script(self.bin / "curl", curl + "\n")
+                fields = self.run_helper("flake-probe", str(self.root)).stdout.strip().split("\t")
+                self.assertEqual(fields[1], "unchanged")  # decided by Nix's content hash instead
+
+    def test_tarball_checks_can_be_disabled(self):
+        self._tarball_lock()
+        self.script(self.bin / "nix", "exit 99\n")
+        self.script(self.bin / "curl", "exit 99\n")
+        out = self.run_helper("flake-probe", str(self.root), env={"FLAKE_PROBE_TARBALLS": "0"}).stdout
+        self.assertEqual(out.split("\t")[1], "pinned")
+
+    def test_deep_mode_walks_transitive_inputs(self):
+        def node(repo, inputs=None):
+            n = {
+                "original": {"type": "github", "owner": "o", "repo": repo},
+                "locked": {"type": "github", "owner": "o", "repo": repo, "rev": "a" * 40, "lastModified": 1},
+            }
+            return {**n, "inputs": inputs} if inputs else n
+
+        (self.root / "flake.lock").write_text(
+            json.dumps(
+                {
+                    "root": "root",
+                    "nodes": {
+                        "root": {"inputs": {"a": "a", "b": "b"}},
+                        "a": node("a", {"c": "c"}),
+                        "b": node("b"),
+                        "c": node("c", {"d": "d"}),
+                        "d": node("d"),
+                    },
+                }
+            )
+        )
+        self.script(self.bin / "curl", "echo " + "a" * 40 + "\n")
+        names = lambda env: sorted(  # noqa: E731
+            line.split("\t")[0] for line in self.run_helper("flake-probe", str(self.root), env=env).stdout.splitlines()
+        )
+        self.assertEqual(names({}), ["a", "b"])
+        self.assertEqual(names({"FLAKE_PROBE_DEEP": "1"}), ["a", "a/c", "a/c/d", "b"])
+
+    def test_deep_mode_has_no_depth_limit(self):
+        nodes = {"root": {"inputs": {"n0": "n0"}}}
+        for i in range(12):
+            nodes[f"n{i}"] = {
+                "original": {"type": "github", "owner": "o", "repo": f"r{i}"},
+                "locked": {"type": "github", "rev": "a" * 40, "lastModified": 1},
+                "inputs": {f"n{i + 1}": f"n{i + 1}"} if i < 11 else {},
+            }
+        (self.root / "flake.lock").write_text(json.dumps({"root": "root", "nodes": nodes}))
+        self.script(self.bin / "curl", "echo " + "a" * 40 + "\n")
+        out = self.run_helper("flake-probe", str(self.root), env={"FLAKE_PROBE_DEEP": "1"}).stdout
+        self.assertEqual(len(out.splitlines()), 12)
 
     def test_release_notes_lists_new_releases_and_commits(self):
         old, new = "a" * 40, "b" * 40
@@ -1109,6 +1325,28 @@ class Cli(HelperCase):
     def config_file(self):
         return Path(self.cli_run("config", "path").stdout.strip())
 
+    def test_probe_settings_reject_invalid_values(self):
+        for key in ("check_tarballs", "deep_inputs"):
+            for value in ("on", "off"):
+                self.assertEqual(self.cli_run("config", "set", key, value).returncode, 0)
+            result = self.cli_run("config", "set", key, "false")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("takes on or off", result.stderr)
+            self.assertEqual(self.cli_run("config", "get", key).stdout.strip(), "off")
+
+    def test_probe_settings_are_shared_through_the_config_file(self):
+        window = {"checkTarballs": False, "deepInputCheck": True}
+        self.cli_run("config", "sync", "pull", json.dumps(window))
+        self.assertEqual(self.cli_run("config", "get", "check_tarballs").stdout.strip(), "off")
+        self.assertEqual(self.cli_run("config", "get", "deep_inputs").stdout.strip(), "on")
+        self.cli_run("config", "set", "check_tarballs", "on")
+        later = json.loads(self.cli_run("config", "sync", "pull", json.dumps(window)).stdout)
+        self.assertIs(later["checkTarballs"], True)  # clearing restores the default in the window
+        self.assertIs(later["deepInputCheck"], True)
+        self.cli_run("config", "unset", "deep_inputs")
+        later = json.loads(self.cli_run("config", "sync", "pull", json.dumps(window)).stdout)
+        self.assertIs(later["deepInputCheck"], False)
+
     def test_window_settings_sync_both_ways(self):
         window = {
             "flakePath": "/etc/nixos",
@@ -1117,6 +1355,8 @@ class Cli(HelperCase):
             "secretsSourcePath": "",
             "githubTokenFile": "",
             "githubUseGh": False,
+            "checkTarballs": True,
+            "deepInputCheck": False,
             "impermanencePaths": "/persist",
             "checkInterval": 3600,
             "customCommands": json.dumps([{"label": "up", "cmd": "nix flake update"}]),

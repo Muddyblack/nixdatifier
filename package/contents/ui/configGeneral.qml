@@ -16,6 +16,8 @@ Kirigami.Page {
     property alias cfg_maxGenerations: state.maxGenerations
     property alias cfg_defaultView: state.defaultView
     property alias cfg_enableHostDetect: state.enableHostDetect
+    property alias cfg_checkTarballs: state.checkTarballs
+    property alias cfg_deepInputCheck: state.deepInputCheck
     property alias cfg_customCommands: state.customCommands
     property alias cfg_showCommandButtons: state.showCommandButtons
     property alias cfg_commandTerminal: state.commandTerminal
@@ -64,6 +66,8 @@ Kirigami.Page {
     property alias cfg_maxGenerationsDefault: defaults.maxGenerations
     property alias cfg_defaultViewDefault: defaults.defaultView
     property alias cfg_enableHostDetectDefault: defaults.enableHostDetect
+    property alias cfg_checkTarballsDefault: defaults.checkTarballs
+    property alias cfg_deepInputCheckDefault: defaults.deepInputCheck
     property alias cfg_customCommandsDefault: defaults.customCommands
     property alias cfg_showCommandButtonsDefault: defaults.showCommandButtons
     property alias cfg_commandTerminalDefault: defaults.commandTerminal

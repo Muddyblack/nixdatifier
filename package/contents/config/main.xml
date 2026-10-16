@@ -26,6 +26,14 @@
         <entry name="enableHostDetect" type="Bool">
             <default>true</default>
         </entry>
+        <entry name="checkTarballs" type="Bool">
+            <!-- check tarball flake inputs (channels, .tar.zst) for updates -->
+            <default>true</default>
+        </entry>
+        <entry name="deepInputCheck" type="Bool">
+            <!-- check every transitive input, not just the root (and wrapper) inputs -->
+            <default>false</default>
+        </entry>
 
         <!-- Custom Commands -->
         <!-- JSON array: [{"label":"…","cmd":"…","color":"accent|green|red|default"},…] max 4 -->

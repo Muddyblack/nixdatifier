@@ -728,6 +728,8 @@ settings_desc() { # settings_desc KEY: what it is
         notifications) echo 'on or off: desktop notifications when update checks find something, here and in the window. Empty: on.' ;;
         github_token_file) echo 'File holding a GitHub token (a sops/agenix secret path, say) that lifts the rate limit for release notes. Only the path is saved, never the token. Empty: anonymous.' ;;
         github_use_gh) echo 'on: borrow the GitHub CLI login (gh auth token) for release notes when no token file is set. Its token often has wide scopes, so it is off unless you switch it on. Empty: off.' ;;
+        check_tarballs) echo 'off: skip tarball flake inputs (channels, .tar.zst) when checking for updates, here and in the window. Empty: on.' ;;
+        deep_inputs) echo 'on: check every transitive flake input, not just the root (and wrapper) inputs. Costs one request per input. Empty: off.' ;;
         theme) echo 'Colour theme: deep, marina, midnight, full, plain or your own (see docs/cli.md). Enter cycles.' ;;
         layout) echo 'roomy: boxed sections with the logo. compact: no boxes. Enter switches.' ;;
     esac

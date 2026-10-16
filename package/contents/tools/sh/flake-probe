@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: flake-probe <flake-dir>
-# Reads <flake-dir>/flake.lock, probes each root input's remote in parallel
+# Reads <flake-dir>/flake.lock, probes root and wrapper inputs in parallel
 # and emits one TSV line per input:
 #
 #   name<TAB>status<TAB>currentRev<TAB>remoteRev<TAB>currentDate<TAB>url
@@ -8,7 +8,7 @@
 # status:
 #   ok           — remoteRev differs from currentRev (update available)
 #   unchanged    — already on latest
-#   pinned       — no rev / unsupported source type (skip silently)
+#   pinned       — no revision/hash / unsupported source type
 #   unreachable  — git ls-remote failed or timed out
 set -u
 
@@ -20,36 +20,139 @@ export PATH="$PATH:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:
 
 command -v jq  >/dev/null 2>&1 || { echo "ERROR: jq not on PATH"  >&2; exit 1; }
 command -v git >/dev/null 2>&1 || { echo "ERROR: git not on PATH" >&2; exit 1; }
+have_nix=0
+command -v nix >/dev/null 2>&1 && have_nix=1
 
 TIMEOUT="${FLAKE_PROBE_TIMEOUT:-40}"
 MAX_PARALLEL="${FLAKE_PROBE_PARALLEL:-8}"
+# FLAKE_PROBE_TARBALLS=0 skips tarball inputs; FLAKE_PROBE_DEEP=1 walks every
+# transitive input instead of just the root (and a wrapper flake's) inputs.
+CHECK_TARBALLS="${FLAKE_PROBE_TARBALLS:-1}"
+DEEP="${FLAKE_PROBE_DEEP:-0}"
+[ "${NIXDATIFIER_CHECK_TARBALLS:-}" = off ] && CHECK_TARBALLS=0
+[ "${NIXDATIFIER_DEEP_INPUTS:-}" = on ] && DEEP=1
 
-# Pull root inputs as TSV: name type owner repo url ref rev lastModified
+# Pull inputs as TSV: name type owner repo url ref rev lastModified narHash lockedUrl
 # Use '|' as field separator (tab is whitespace-class in IFS and collapses empty fields).
-inputs=$(jq -r '
-  .nodes.root.inputs as $ri
-  | ($ri | to_entries[]) as $e
-  | .nodes[($e.value | if type=="string" then . else .[0] end)] as $n
+inputs=$(jq -r --argjson deep "$([ "$DEEP" = 1 ] && echo true || echo false)" '
+  . as $l
+  | ($l.root // "root") as $rootId
+  # Follows are arrays of input names resolved from the root.
+  | def res($ref):
+      if $ref == null or ($ref | type) == "string" then $ref
+      else reduce $ref[] as $k ($rootId; res($l.nodes[.].inputs[$k] // null)) end;
+    def children($f):
+      ($l.nodes[$f.id].inputs // {}) | to_entries
+      | map({name: (if $f.name == "" then .key else $f.name + "/" + .key end),
+             id: res(.value), depth: ($f.depth + 1)} | select(.id != null));
+    # A wrapper (single root input, or a local path input) carries the real
+    # configuration, so its own inputs are checked too. Deep mode walks all.
+    def expand($f; $top):
+      $deep or $f.depth == 0
+      or ($f.depth == 1 and (($top | length) == 1 or ($l.nodes[$f.id].original.type // "") == "path"));
+    (children({id: $rootId, name: "", depth: 0})) as $top
+  | {seen: {($rootId): true}, frontier: [{id: $rootId, name: "", depth: 0}], out: []}
+  # Each pass adds one level; the seen set guarantees it ends, even on cycles.
+  | until(.frontier | length == 0;
+      reduce (.frontier[] | select(expand(.; $top)) | children(.)[]) as $c (. + {frontier: []};
+        if .seen[$c.id] then . else .seen[$c.id] = true | .out += [$c] | .frontier += [$c] end))
+  | .out[]
+  | . as $e
+  | $l.nodes[$e.id] as $n
   | select($n.locked != null and $n.original != null)
   | [
-      $e.key,
+      $e.name,
       ($n.original.type // ""),
       ($n.original.owner // ""),
       ($n.original.repo // ""),
       ($n.original.url // ""),
       ($n.original.ref // ""),
       ($n.locked.rev // ""),
-      ($n.locked.lastModified // 0 | tostring)
+      ($n.locked.lastModified // 0 | tostring),
+      ($n.locked.narHash // ""),
+      ($n.locked.url // "")
     ] | join("|")
 ' "$lock" 2>/dev/null) || { echo "ERROR: failed to parse flake.lock" >&2; exit 1; }
 
 [ -z "$inputs" ] && exit 0
 
+# Nix appends its own bookkeeping (lastModified, narHash, ...) to locked tarball
+# URLs. Drop only those, so a server's own query parameters still tell versions apart.
+strip_nix_params() {
+    local base="${1%%[?#]*}" query="" kept="" p
+    [[ "$1" == *\?* ]] && query="${1#*\?}" && query="${query%%#*}"
+    local IFS='&'
+    for p in $query; do
+        case "$p" in lastModified=* | narHash=* | rev=* | revCount=*) ;; *) kept+="${kept:+&}$p" ;; esac
+    done
+    printf '%s%s' "$base" "${kept:+?$kept}"
+}
+
 probe_one() {
-    local name="$1" type="$2" owner="$3" repo="$4" url="$5" ref="$6" rev="$7" date="$8"
+    local name="$1" type="$2" owner="$3" repo="$4" url="$5" ref="$6" rev="$7" date="$8" nar_hash="$9" locked_url="${10}"
     local remote_url=""
 
     case "$type" in
+        tarball)
+            # Tarball locks often have no Git revision. Let Nix resolve the
+            # original URL (including redirects and compression) and compare
+            # the unpacked content hash rather than guessing a Git remote.
+            local metadata="" latest_hash="" latest_rev="" latest_url="" status="unchanged" fields=""
+            rev="${rev:-$nar_hash}"
+            if [[ "$CHECK_TARBALLS" != 1 ]]; then
+                printf '%s\tpinned\t%s\t\t%s\t%s\n' "$name" "$rev" "$date" "$url"
+                return
+            fi
+            # Cheap path: Nix locks the immutable URL a mutable one (a channel)
+            # redirects to, so a HEAD request tells us if it moved - no download.
+            if [[ -n "$locked_url" ]] && command -v curl >/dev/null 2>&1; then
+                local hdr="" immutable="" effective=""
+                # --fail: an HTTP error or a dead connection means "don't know", never "changed".
+                if hdr=$(curl --silent --fail --head --location --max-time 15 --connect-timeout 5 \
+                    -o /dev/null -D - -w '\n__EFFECTIVE__%{url_effective}\n' "$url" 2>/dev/null); then
+                    hdr=${hdr//$'\r'/}
+                    # Only the server's own immutable marker (what Nix trusts) can prove an update.
+                    immutable=$(sed -n 's/^[Ll]ink:[[:space:]]*<\([^>]*\)>;.*rel="\{0,1\}immutable.*/\1/p' <<< "$hdr" | tail -1)
+                    effective=$(sed -n 's/^__EFFECTIVE__//p' <<< "$hdr" | tail -1)
+                    if [[ -z "$immutable" && "$(strip_nix_params "$effective")" == "$(strip_nix_params "$locked_url")" ]]; then
+                        immutable=$effective # landed exactly on the locked archive
+                    fi
+                fi
+                if [[ -n "$immutable" ]]; then
+                    if [[ "$(strip_nix_params "$immutable")" == "$(strip_nix_params "$locked_url")" ]]; then
+                        printf '%s\tunchanged\t%s\t%s\t%s\t%s\t\n' "$name" "$rev" "$rev" "$date" "$url"
+                    else
+                        local short="${immutable%%[?#]*}"; short="${short%/*}"; short="${short##*/}"
+                        printf '%s\tok\t%s\t%s\t%s\t%s\t%s\n' "$name" "$rev" "$short" "$date" "$url" "$immutable"
+                    fi
+                    return
+                fi
+            fi
+            if [[ -z "$nar_hash" || -z "$url" ]]; then
+                printf '%s\tpinned\t%s\t\t%s\t%s\n' "$name" "$rev" "$date" "$url"
+                return
+            fi
+            if (( have_nix )) && metadata=$(timeout --kill-after=2s "$TIMEOUT" nix flake metadata \
+                --refresh --json --no-write-lock-file "$url" 2>/dev/null); then
+                # Parse once per archive, preserving empty fields.
+                fields=$(jq -er '
+                    .locked | select(.narHash | type == "string" and length > 0)
+                    | [.narHash, (.rev // .narHash), (.url // "")] | join("|")
+                ' <<< "$metadata" 2>/dev/null) || fields=""
+                IFS='|' read -r latest_hash latest_rev latest_url <<< "$fields"
+            fi
+            if [[ -z "$latest_hash" ]]; then
+                local why="Could not resolve tarball metadata with Nix (timeout, fetch failure or invalid metadata)"
+                (( have_nix )) || why="nix not on PATH"
+                printf '%s\tunreachable\t%s\t\t%s\t%s\t\t%s\n' \
+                    "$name" "$rev" "$date" "$url" "$why"
+            else
+                [[ "$latest_hash" == "$nar_hash" ]] || status="ok"
+                printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+                    "$name" "$status" "$rev" "$latest_rev" "$date" "$url" "${latest_url:-$url}"
+            fi
+            return
+            ;;
         github)    remote_url="https://github.com/${owner}/${repo}.git" ;;
         gitlab)    remote_url="https://gitlab.com/${owner}/${repo}.git" ;;
         sourcehut) remote_url="https://git.sr.ht/${owner}/${repo}" ;;
@@ -129,9 +232,9 @@ probe_one() {
 
 # Concurrency throttle via a job slot
 running=0
-while IFS='|' read -r name type owner repo url ref rev date; do
+while IFS='|' read -r name type owner repo url ref rev date nar_hash locked_url; do
     [ -z "$name" ] && continue
-    probe_one "$name" "$type" "$owner" "$repo" "$url" "$ref" "$rev" "$date" &
+    probe_one "$name" "$type" "$owner" "$repo" "$url" "$ref" "$rev" "$date" "$nar_hash" "$locked_url" &
     running=$((running + 1))
     if [ "$running" -ge "$MAX_PARALLEL" ]; then
         wait -n 2>/dev/null || wait
