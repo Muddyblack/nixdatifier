@@ -690,7 +690,7 @@ Item {
     // beneath. Open is always there; copy and delete show on hover or focus, in the
     // same flat icon buttons as the rest of the app. Deleting one row is
     // confirmed inside the row.
-    component EntryRow: Rectangle {
+    component EntryRow: Item {
         id: er
         property string path: ""
         property string location: path     // what Open and Copy act on
@@ -749,202 +749,207 @@ Item {
             else
                 activateRow();
         }
-        border.width: activeFocus ? 1 : 0
-        border.color: accent
         Layout.fillWidth: true
-        implicitHeight: Math.max(46 * fs, rowContent.implicitHeight + 16)
-        radius: 8
-        color: confirming ? UI.Theme.wash(UI.Theme.negative, .08) : selected && checkable ? UI.Theme.wash(accent, .07) : hovered ? "#0affffff" : "transparent"
-
-        HoverHandler {
-            id: rowHover
-        }
+        implicitHeight: rowSurface.implicitHeight
         Rectangle {
-            visible: !er.first && !er.confirming
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.leftMargin: 10
-            anchors.rightMargin: 10
-            height: 1
-            color: "#0bffffff"
-        }
-        MouseArea {
-            anchors.fill: parent
-            enabled: er.clickable || er.selectable
-            cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-            onClicked: {
-                er.forceActiveFocus();
-                er.activateRow();
+            id: rowSurface
+            width: er.width
+            implicitHeight: Math.max(46 * er.fs, rowContent.implicitHeight + 16)
+            height: implicitHeight
+            border.width: er.activeFocus ? 1 : 0
+            border.color: er.accent
+            radius: 8
+            color: er.confirming ? UI.Theme.wash(UI.Theme.negative, .08) : er.selected && er.checkable ? UI.Theme.wash(er.accent, .07) : er.hovered ? "#0affffff" : "transparent"
+            HoverHandler {
+                id: rowHover
             }
-        }
-        ColumnLayout {
-            id: rowContent
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.leftMargin: 10
-            anchors.rightMargin: 6
-            spacing: 8
-            RowLayout {
-                Layout.fillWidth: true
-                opacity: er.working ? 0.6 : 1
-                spacing: 10
-                CheckBox {
-                    objectName: "entryCheckBox"
-                    visible: er.hasBox
-                    enabled: !er.working
-                    checked: er.selected
-                    Accessible.name: qsTr("Select %1").arg(er.title)
-                    implicitWidth: 28
-                    implicitHeight: 32
-                    padding: 0
-                    indicator: Rectangle {
-                        x: 2
-                        y: (parent.height - height) / 2
-                        width: 20
-                        height: 20
-                        radius: 4
-                        color: er.selected ? er.accent : "transparent"
-                        border.color: parent.activeFocus ? er.accent : "#8794a8"
-                        border.width: parent.activeFocus ? 2 : 1
-                        UI.Icon {
-                            anchors.centerIn: parent
-                            width: 13
-                            height: 13
-                            visible: er.selected
-                            source: Qt.resolvedUrl("assets/ic_check.svg")
-                            isMask: true
-                            color: "#10151d"
-                        }
-                    }
-                    onClicked: er.toggled()
+            Rectangle {
+                visible: !er.first && !er.confirming
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.leftMargin: 10
+                anchors.rightMargin: 10
+                height: 1
+                color: "#0bffffff"
+            }
+            MouseArea {
+                anchors.fill: parent
+                enabled: er.clickable || er.selectable
+                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                onClicked: {
+                    er.forceActiveFocus();
+                    er.activateRow();
                 }
-                UI.Icon {
-                    source: Qt.resolvedUrl("assets/" + er.glyph + ".svg")
-                    isMask: true
-                    color: er.glyphColor
-                    implicitWidth: 18
-                    implicitHeight: 18
-                }
-                ColumnLayout {
+            }
+            ColumnLayout {
+                id: rowContent
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.leftMargin: 10
+                anchors.rightMargin: 6
+                spacing: 8
+                RowLayout {
                     Layout.fillWidth: true
-                    spacing: 2
-                    RowLayout {
+                    opacity: er.working ? 0.6 : 1
+                    spacing: 10
+                    CheckBox {
+                        objectName: "entryCheckBox"
+                        visible: er.hasBox
+                        enabled: !er.working
+                        checked: er.selected
+                        Accessible.name: qsTr("Select %1").arg(er.title)
+                        implicitWidth: 28
+                        implicitHeight: 32
+                        padding: 0
+                        indicator: Rectangle {
+                            x: 2
+                            y: (parent.height - height) / 2
+                            width: 20
+                            height: 20
+                            radius: 4
+                            color: er.selected ? er.accent : "transparent"
+                            border.color: parent.activeFocus ? er.accent : "#8794a8"
+                            border.width: parent.activeFocus ? 2 : 1
+                            UI.Icon {
+                                anchors.centerIn: parent
+                                width: 13
+                                height: 13
+                                visible: er.selected
+                                source: Qt.resolvedUrl("assets/ic_check.svg")
+                                isMask: true
+                                color: "#10151d"
+                            }
+                        }
+                        onClicked: er.toggled()
+                    }
+                    UI.Icon {
+                        source: Qt.resolvedUrl("assets/" + er.glyph + ".svg")
+                        isMask: true
+                        color: er.glyphColor
+                        implicitWidth: 18
+                        implicitHeight: 18
+                    }
+                    ColumnLayout {
                         Layout.fillWidth: true
-                        spacing: 8
+                        spacing: 2
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            Text {
+                                Layout.fillWidth: true
+                                text: er.title
+                                textFormat: Text.PlainText
+                                color: er.textColor
+                                font.pixelSize: UI.Theme.fontPx(13, er.fs)
+                                font.weight: Font.Medium
+                                elide: Text.ElideRight
+                            }
+                            Tag {
+                                visible: er.tagText !== ""
+                                text: er.tagText
+                                tone: er.tagTone
+                                fs: er.fs
+                            }
+                        }
                         Text {
                             Layout.fillWidth: true
-                            text: er.title
+                            visible: er.subtitle !== ""
+                            text: er.subtitle
                             textFormat: Text.PlainText
-                            color: er.textColor
-                            font.pixelSize: UI.Theme.fontPx(13, er.fs)
-                            font.weight: Font.Medium
-                            elide: Text.ElideRight
-                        }
-                        Tag {
-                            visible: er.tagText !== ""
-                            text: er.tagText
-                            tone: er.tagTone
-                            fs: er.fs
+                            color: "#a9b5c7"
+                            font.family: er.monoSubtitle ? UI.Theme.fixedWidthFont.family : Qt.application.font.family
+                            font.pixelSize: UI.Theme.fontPx(11, er.fs)
+                            elide: Text.ElideMiddle
                         }
                     }
                     Text {
-                        Layout.fillWidth: true
-                        visible: er.subtitle !== ""
-                        text: er.subtitle
-                        textFormat: Text.PlainText
-                        color: "#a9b5c7"
-                        font.family: er.monoSubtitle ? UI.Theme.fixedWidthFont.family : Qt.application.font.family
-                        font.pixelSize: UI.Theme.fontPx(11, er.fs)
-                        elide: Text.ElideMiddle
+                        visible: er.sizeText !== ""
+                        text: er.sizeText
+                        color: er.textColor
+                        font.pixelSize: UI.Theme.fontPx(12, er.fs)
+                        font.weight: Font.Medium
+                    }
+                    // Hover actions keep their space so the size column never jumps.
+                    UI.ActionButton {
+                        visible: er.showCopy && !er.confirming
+                        opacity: er.hovered || er.activeFocus || activeFocus ? 1 : 0
+                        glyph: Qt.resolvedUrl("assets/ic_copy.svg")
+                        flatStyle: true
+                        implicitHeight: 30
+                        tip: qsTr("Copy path")
+                        objectName: "entryCopy"
+                        onClicked: tab.copyToClipboard(tab.plain(er.location))
+                    }
+                    UI.ActionButton {
+                        visible: er.canDelete && !er.confirming
+                        opacity: er.hovered || er.activeFocus || activeFocus ? 1 : 0
+                        enabled: !er.working
+                        glyph: Qt.resolvedUrl("assets/ic_delete.svg")
+                        flatStyle: true
+                        implicitHeight: 30
+                        tip: qsTr("Delete…")
+                        onClicked: er.deleteAsked()
+                    }
+                    UI.ActionButton {
+                        visible: er.showOpen && !er.confirming
+                        glyph: Qt.resolvedUrl("assets/ic_external.svg")
+                        flatStyle: true
+                        implicitHeight: 30
+                        tip: qsTr("Show in file manager")
+                        onClicked: tab.openRequested(er.location)
                     }
                 }
                 Text {
-                    visible: er.sizeText !== ""
-                    text: er.sizeText
-                    color: er.textColor
-                    font.pixelSize: UI.Theme.fontPx(12, er.fs)
-                    font.weight: Font.Medium
+                    Layout.fillWidth: true
+                    Layout.leftMargin: (er.hasBox ? 28 : 0) + 28
+                    visible: er.detail !== ""
+                    text: er.detail
+                    textFormat: Text.PlainText
+                    color: "#a9b5c7"
+                    font.pixelSize: UI.Theme.fontPx(11, er.fs)
+                    wrapMode: Text.Wrap
+                    lineHeight: 1.35
                 }
-                // Hover actions keep their space so the size column never jumps.
-                UI.ActionButton {
-                    visible: er.showCopy && !er.confirming
-                    opacity: er.hovered || er.activeFocus || activeFocus ? 1 : 0
-                    glyph: Qt.resolvedUrl("assets/ic_copy.svg")
-                    flatStyle: true
-                    implicitHeight: 30
-                    tip: qsTr("Copy path")
-                    objectName: "entryCopy"
-                    onClicked: tab.copyToClipboard(tab.plain(er.location))
-                }
-                UI.ActionButton {
-                    visible: er.canDelete && !er.confirming
-                    opacity: er.hovered || er.activeFocus || activeFocus ? 1 : 0
-                    enabled: !er.working
-                    glyph: Qt.resolvedUrl("assets/ic_delete.svg")
-                    flatStyle: true
-                    implicitHeight: 30
-                    tip: qsTr("Delete…")
-                    onClicked: er.deleteAsked()
-                }
-                UI.ActionButton {
-                    visible: er.showOpen && !er.confirming
-                    glyph: Qt.resolvedUrl("assets/ic_external.svg")
-                    flatStyle: true
-                    implicitHeight: 30
-                    tip: qsTr("Show in file manager")
-                    onClicked: tab.openRequested(er.location)
-                }
-            }
-            Text {
-                Layout.fillWidth: true
-                Layout.leftMargin: (er.hasBox ? 28 : 0) + 28
-                visible: er.detail !== ""
-                text: er.detail
-                textFormat: Text.PlainText
-                color: "#a9b5c7"
-                font.pixelSize: UI.Theme.fontPx(11, er.fs)
-                wrapMode: Text.Wrap
-                lineHeight: 1.35
-            }
-            Text {
-                Layout.fillWidth: true
-                visible: er.removal.state !== "" && er.removal.state !== "deleted"
-                text: er.removal.state === "queued" ? qsTr("Queued…") : er.removal.state === "deleting" ? qsTr("Deleting…") : qsTr("Could not delete: %1").arg(er.removal.message)
-                textFormat: Text.PlainText
-                color: er.removal.state === "failed" ? UI.Theme.negative : tab.secondary
-                font.pixelSize: UI.Theme.fontPx(11, er.fs)
-                wrapMode: Text.Wrap
-                Accessible.role: Accessible.StaticText
-            }
-            RowLayout {
-                Layout.fillWidth: true
-                visible: er.confirming
-                spacing: 6
                 Text {
                     Layout.fillWidth: true
-                    text: qsTr("Delete “%1” for good?").arg(er.title)
+                    visible: er.removal.state !== "" && er.removal.state !== "deleted"
+                    text: er.removal.state === "queued" ? qsTr("Queued…") : er.removal.state === "deleting" ? qsTr("Deleting…") : qsTr("Could not delete: %1").arg(er.removal.message)
                     textFormat: Text.PlainText
-                    color: UI.Theme.negative
-                    font.pixelSize: UI.Theme.fontPx(12, er.fs)
-                    elide: Text.ElideMiddle
-                }
-                UI.ActionButton {
-                    text: qsTr("Cancel")
-                    flatStyle: true
-                    implicitHeight: 30
+                    color: er.removal.state === "failed" ? UI.Theme.negative : tab.secondary
                     font.pixelSize: UI.Theme.fontPx(11, er.fs)
-                    onClicked: er.deleteCancelled()
+                    wrapMode: Text.Wrap
+                    Accessible.role: Accessible.StaticText
                 }
-                UI.ActionButton {
-                    text: qsTr("Delete")
-                    primary: true
-                    accent: UI.Theme.negative
-                    implicitHeight: 30
-                    font.pixelSize: UI.Theme.fontPx(11, er.fs)
-                    enabled: !er.working
-                    onClicked: er.deleteConfirmed()
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: er.confirming
+                    spacing: 6
+                    Text {
+                        Layout.fillWidth: true
+                        text: qsTr("Delete “%1” for good?").arg(er.title)
+                        textFormat: Text.PlainText
+                        color: UI.Theme.negative
+                        font.pixelSize: UI.Theme.fontPx(12, er.fs)
+                        elide: Text.ElideMiddle
+                    }
+                    UI.ActionButton {
+                        text: qsTr("Cancel")
+                        flatStyle: true
+                        implicitHeight: 30
+                        font.pixelSize: UI.Theme.fontPx(11, er.fs)
+                        onClicked: er.deleteCancelled()
+                    }
+                    UI.ActionButton {
+                        text: qsTr("Delete")
+                        primary: true
+                        accent: UI.Theme.negative
+                        implicitHeight: 30
+                        font.pixelSize: UI.Theme.fontPx(11, er.fs)
+                        enabled: !er.working
+                        onClicked: er.deleteConfirmed()
+                    }
                 }
             }
         }

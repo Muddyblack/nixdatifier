@@ -172,312 +172,343 @@ Item {
         return "NixOS " + (release ? release[0] : value) + (release && day ? " · " + day : "");
     }
     readonly property color statusColor: gen.booted ? UI.Theme.positive : gen.active ? UI.Theme.changed : timelineColor
-    implicitHeight: headerH + (isExpanded ? expandedColumn.implicitHeight + 20 : 0)
+    implicitHeight: detailWindow.visible ? headerH : generationContent.implicitHeight
     height: implicitHeight
     onHeightChanged: geometryChanged()
     onYChanged: geometryChanged()
-    Rectangle {
-        x: genDelegate.nodeX - 4
-        y: genDelegate.nodeY - 4
-        width: 8
-        height: 8
-        radius: 4
-        color: genDelegate.statusColor
-        Rectangle {
-            anchors.centerIn: parent
-            width: 18
-            height: 18
-            radius: 9
-            color: "transparent"
-            border.color: UI.Theme.wash(genDelegate.statusColor, .65)
-            visible: genDelegate.gen.booted && genDelegate.enableGlow
-        }
-    }
-    Rectangle {
-        x: 30
-        width: Math.max(0, parent.width - 36)
-        height: parent.height - 4
-        radius: 10
-        color: genDelegate.isExpanded ? UI.Theme.wash(genDelegate.accentColor, .055) : hover.hovered ? "#08ffffff" : "transparent"
-        border.color: genDelegate.isExpanded ? UI.Theme.wash(genDelegate.accentColor, .2) : "transparent"
-    }
-    HoverHandler {
-        id: hover
-    }
     Item {
-        id: generationHeader
-        x: 39
-        width: Math.max(0, parent.width - 50)
-        height: genDelegate.headerH
-        // Under the content so action buttons get their own clicks.
-        MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            acceptedButtons: Qt.LeftButton | Qt.RightButton
-            onClicked: mouse => {
-                if (mouse.button === Qt.RightButton) {
-                    generationMenu.popup();
-                    return;
-                }
-                const p = mapToItem(headerActions, mouse.x, mouse.y);
-                if (headerActions.visible && p.x >= 0 && p.x <= headerActions.width && p.y >= 0 && p.y <= headerActions.height)
-                    return;
-                if (genDelegate.isExpanded)
-                    genDelegate.collapseGen();
-                else
-                    genDelegate.selectGen(genDelegate.gen.number);
+        id: generationContent
+        width: genDelegate.width
+        implicitHeight: genDelegate.headerH + (genDelegate.isExpanded ? expandedColumn.implicitHeight + 20 : 0)
+        height: implicitHeight
+        Rectangle {
+            x: genDelegate.nodeX - 4
+            y: genDelegate.nodeY - 4
+            width: 8
+            height: 8
+            radius: 4
+            color: genDelegate.statusColor
+            Rectangle {
+                anchors.centerIn: parent
+                width: 18
+                height: 18
+                radius: 9
+                color: "transparent"
+                border.color: UI.Theme.wash(genDelegate.statusColor, .65)
+                visible: genDelegate.gen.booted && genDelegate.enableGlow
             }
         }
-        ColumnLayout {
-            id: headerContents
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.topMargin: 8 * genDelegate.fs
-            spacing: 5 * genDelegate.fs
-            RowLayout {
-                id: headerTopRow
-                Layout.fillWidth: true
-                spacing: 7
-                Text {
-                    text: "#" + genDelegate.gen.number
-                    color: genDelegate.gen.booted || genDelegate.gen.active ? genDelegate.statusColor : genDelegate.textColor
-                    font.pixelSize: 12 * genDelegate.fs
-                    font.weight: Font.Medium
-                }
-                Rectangle {
-                    visible: genDelegate.gen.booted || genDelegate.gen.active
-                    implicitWidth: statusLabel.implicitWidth + 12
-                    implicitHeight: statusLabel.implicitHeight + 6
-                    radius: 4
-                    color: UI.Theme.wash(genDelegate.statusColor, .1)
-                    Text {
-                        id: statusLabel
-                        anchors.centerIn: parent
-                        text: genDelegate.gen.booted ? qsTr("Booted") : qsTr("Next boot")
-                        color: genDelegate.statusColor
-                        font.pixelSize: 9 * genDelegate.fs
+        Rectangle {
+            x: 30
+            width: Math.max(0, parent.width - 36)
+            height: parent.height - 4
+            radius: 10
+            color: genDelegate.isExpanded ? UI.Theme.wash(genDelegate.accentColor, .055) : hover.hovered ? "#08ffffff" : "transparent"
+            border.color: genDelegate.isExpanded ? UI.Theme.wash(genDelegate.accentColor, .2) : "transparent"
+        }
+        HoverHandler {
+            id: hover
+        }
+        Item {
+            id: generationHeader
+            x: 39
+            width: Math.max(0, parent.width - 50)
+            height: genDelegate.headerH
+            // Under the content so action buttons get their own clicks.
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                onClicked: mouse => {
+                    if (mouse.button === Qt.RightButton) {
+                        generationMenu.popup();
+                        return;
                     }
+                    const p = mapToItem(headerActions, mouse.x, mouse.y);
+                    if (headerActions.visible && p.x >= 0 && p.x <= headerActions.width && p.y >= 0 && p.y <= headerActions.height)
+                        return;
+                    if (genDelegate.isExpanded)
+                        genDelegate.collapseGen();
+                    else
+                        genDelegate.selectGen(genDelegate.gen.number);
                 }
-                Item {
-                    Layout.fillWidth: true
-                }
+            }
+            ColumnLayout {
+                id: headerContents
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.topMargin: 8 * genDelegate.fs
+                spacing: 5 * genDelegate.fs
                 RowLayout {
-                    id: headerActions
-                    visible: genDelegate.isExpanded
-                    spacing: 5
-                    UI.ActionButton {
-                        objectName: "activate-" + genDelegate.gen.number
-                        visible: genDelegate.enableLiveSwitch
-                        text: genDelegate.compactActions ? "" : qsTr("Activate")
-                        glyph: genDelegate.svg("ic_activate")
-                        tip: qsTr("Activate generation #%1 now").arg(genDelegate.gen.number)
-                        primary: true
-                        accent: genDelegate.accentColor
-                        implicitHeight: 25 * genDelegate.fs
-                        font.pixelSize: 9 * genDelegate.fs
-                        enabled: !genDelegate.isBusy
-                        onClicked: genDelegate.requestAction(genDelegate.gen.number, "switch")
-                    }
-                    UI.ActionButton {
-                        objectName: "setBoot-" + genDelegate.gen.number
-                        text: genDelegate.compactActions ? "" : qsTr("Set boot")
-                        glyph: genDelegate.svg("ic_nextboot")
-                        tip: qsTr("Use generation #%1 on next boot").arg(genDelegate.gen.number)
-                        primary: true
-                        accent: UI.Theme.changed
-                        implicitHeight: 25 * genDelegate.fs
-                        font.pixelSize: 9 * genDelegate.fs
-                        enabled: !genDelegate.isBusy
-                        onClicked: genDelegate.requestAction(genDelegate.gen.number, "rollback")
-                    }
-                    UI.ActionButton {
-                        objectName: "delete-" + genDelegate.gen.number
-                        visible: genDelegate.showDeleteButton
-                        text: genDelegate.compactActions ? "" : qsTr("Delete")
-                        glyph: genDelegate.svg("ic_delete")
-                        tip: genDelegate.gen.active || genDelegate.gen.booted ? qsTr("The booted and next-boot generations are protected") : qsTr("Delete generation #%1").arg(genDelegate.gen.number)
-                        primary: true
-                        accent: UI.Theme.negative
-                        implicitHeight: 25 * genDelegate.fs
-                        font.pixelSize: 9 * genDelegate.fs
-                        enabled: !genDelegate.isBusy && !genDelegate.gen.active && !genDelegate.gen.booted
-                        onClicked: genDelegate.requestAction(genDelegate.gen.number, "delete")
-                    }
-                }
-                Row {
-                    objectName: "generationChanges-" + genDelegate.gen.number
-                    visible: !genDelegate.isExpanded || generationHeader.width > 480 * genDelegate.fs
-                    spacing: 6
+                    id: headerTopRow
+                    Layout.fillWidth: true
+                    spacing: 7
                     Text {
-                        visible: !genDelegate.changeSummary
-                        text: genDelegate.changeCounts && genDelegate.changeCounts.status === "loading" ? "…" : "—"
-                        color: UI.Theme.muted
-                        font.pixelSize: 10 * genDelegate.fs
+                        text: "#" + genDelegate.gen.number
+                        color: genDelegate.gen.booted || genDelegate.gen.active ? genDelegate.statusColor : genDelegate.textColor
+                        font.pixelSize: 12 * genDelegate.fs
+                        font.weight: Font.Medium
                     }
-                    Repeater {
-                        model: genDelegate.changeBadgeModel
+                    Rectangle {
+                        visible: genDelegate.gen.booted || genDelegate.gen.active
+                        implicitWidth: statusLabel.implicitWidth + 12
+                        implicitHeight: statusLabel.implicitHeight + 6
+                        radius: 4
+                        color: UI.Theme.wash(genDelegate.statusColor, .1)
                         Text {
-                            required property var modelData
-                            text: modelData.text
-                            color: modelData.color
+                            id: statusLabel
+                            anchors.centerIn: parent
+                            text: genDelegate.gen.booted ? qsTr("Booted") : qsTr("Next boot")
+                            color: genDelegate.statusColor
                             font.pixelSize: 9 * genDelegate.fs
                         }
                     }
-                    HoverHandler {
-                        id: countsHover
+                    Item {
+                        Layout.fillWidth: true
                     }
-                    ToolTip.visible: countsHover.hovered
-                    ToolTip.text: genDelegate.changeTip
-                }
+                    RowLayout {
+                        id: headerActions
+                        visible: genDelegate.isExpanded
+                        spacing: 5
+                        UI.ActionButton {
+                            objectName: "activate-" + genDelegate.gen.number
+                            visible: genDelegate.enableLiveSwitch
+                            text: genDelegate.compactActions ? "" : qsTr("Activate")
+                            glyph: genDelegate.svg("ic_activate")
+                            tip: qsTr("Activate generation #%1 now").arg(genDelegate.gen.number)
+                            primary: true
+                            accent: genDelegate.accentColor
+                            implicitHeight: 25 * genDelegate.fs
+                            font.pixelSize: 9 * genDelegate.fs
+                            enabled: !genDelegate.isBusy
+                            onClicked: genDelegate.requestAction(genDelegate.gen.number, "switch")
+                        }
+                        UI.ActionButton {
+                            objectName: "setBoot-" + genDelegate.gen.number
+                            text: genDelegate.compactActions ? "" : qsTr("Set boot")
+                            glyph: genDelegate.svg("ic_nextboot")
+                            tip: qsTr("Use generation #%1 on next boot").arg(genDelegate.gen.number)
+                            primary: true
+                            accent: UI.Theme.changed
+                            implicitHeight: 25 * genDelegate.fs
+                            font.pixelSize: 9 * genDelegate.fs
+                            enabled: !genDelegate.isBusy
+                            onClicked: genDelegate.requestAction(genDelegate.gen.number, "rollback")
+                        }
+                        UI.ActionButton {
+                            objectName: "delete-" + genDelegate.gen.number
+                            visible: genDelegate.showDeleteButton
+                            text: genDelegate.compactActions ? "" : qsTr("Delete")
+                            glyph: genDelegate.svg("ic_delete")
+                            tip: genDelegate.gen.active || genDelegate.gen.booted ? qsTr("The booted and next-boot generations are protected") : qsTr("Delete generation #%1").arg(genDelegate.gen.number)
+                            primary: true
+                            accent: UI.Theme.negative
+                            implicitHeight: 25 * genDelegate.fs
+                            font.pixelSize: 9 * genDelegate.fs
+                            enabled: !genDelegate.isBusy && !genDelegate.gen.active && !genDelegate.gen.booted
+                            onClicked: genDelegate.requestAction(genDelegate.gen.number, "delete")
+                        }
+                    }
+                    Row {
+                        objectName: "generationChanges-" + genDelegate.gen.number
+                        visible: !genDelegate.isExpanded || generationHeader.width > 480 * genDelegate.fs
+                        spacing: 6
+                        Text {
+                            visible: !genDelegate.changeSummary
+                            text: genDelegate.changeCounts && genDelegate.changeCounts.status === "loading" ? "…" : "—"
+                            color: UI.Theme.muted
+                            font.pixelSize: 10 * genDelegate.fs
+                        }
+                        Repeater {
+                            model: genDelegate.changeBadgeModel
+                            Text {
+                                required property var modelData
+                                text: modelData.text
+                                color: modelData.color
+                                font.pixelSize: 9 * genDelegate.fs
+                            }
+                        }
+                        HoverHandler {
+                            id: countsHover
+                        }
+                        ToolTip.visible: countsHover.hovered
+                        ToolTip.text: genDelegate.changeTip
+                    }
 
-                UI.DisclosureButton {
-                    objectName: "toggleGeneration-" + genDelegate.gen.number
-                    expanded: genDelegate.isExpanded
-                    enableMotion: genDelegate.uiActive && genDelegate.enableMotion
-                    implicitHeight: 25 * genDelegate.fs
-                    tip: genDelegate.isExpanded ? qsTr("Collapse generation #%1").arg(genDelegate.gen.number) : qsTr("Expand generation #%1").arg(genDelegate.gen.number)
-                    onClicked: genDelegate.isExpanded ? genDelegate.collapseGen() : genDelegate.selectGen(genDelegate.gen.number)
+                    UI.ActionButton {
+                        objectName: "openGeneration-" + genDelegate.gen.number
+                        visible: !detailWindow.visible
+                        glyph: genDelegate.svg("ic_external")
+                        tip: qsTr("Open in larger window")
+                        implicitHeight: 25 * genDelegate.fs
+                        onClicked: {
+                            if (!genDelegate.isExpanded)
+                                genDelegate.selectGen(genDelegate.gen.number);
+                            detailWindow.open();
+                        }
+                    }
+                    UI.DisclosureButton {
+                        objectName: "toggleGeneration-" + genDelegate.gen.number
+                        expanded: genDelegate.isExpanded
+                        enableMotion: genDelegate.uiActive && genDelegate.enableMotion
+                        implicitHeight: 25 * genDelegate.fs
+                        tip: genDelegate.isExpanded ? qsTr("Collapse generation #%1").arg(genDelegate.gen.number) : qsTr("Expand generation #%1").arg(genDelegate.gen.number)
+                        onClicked: genDelegate.isExpanded ? genDelegate.collapseGen() : genDelegate.selectGen(genDelegate.gen.number)
+                    }
+                }
+                Text {
+                    Layout.fillWidth: true
+                    objectName: "generationDate-" + genDelegate.gen.number
+                    text: genDelegate.friendlyTimestamp(genDelegate.gen.timestamp, genDelegate.referenceDate)
+                    color: UI.Theme.muted
+                    font.pixelSize: 10 * genDelegate.fs
+                    elide: Text.ElideRight
+                    HoverHandler {
+                        id: dateHover
+                    }
+                    ToolTip.visible: dateHover.hovered
+                    ToolTip.text: genDelegate.gen.timestamp || ""
+                }
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    Repeater {
+                        model: [
+                            {
+                                label: genDelegate.kernelLabel,
+                                value: genDelegate.details.kernelVer || "",
+                                kind: "kernel"
+                            },
+                            {
+                                label: genDelegate.releaseLabel,
+                                value: genDelegate.details.nixosVer || "",
+                                kind: "nixos"
+                            }
+                        ]
+                        Rectangle {
+                            id: spec
+                            required property var modelData
+                            objectName: modelData.kind + "Badge-" + genDelegate.gen.number
+                            visible: modelData.value !== ""
+                            width: Math.min(generationHeader.width, specLabel.implicitWidth + 16)
+                            height: 23 * genDelegate.fs
+                            color: "#0991bcff"
+                            border.color: "#1491bcff"
+                            radius: 5
+                            Text {
+                                id: specLabel
+                                anchors.fill: parent
+                                anchors.leftMargin: 8
+                                anchors.rightMargin: 8
+                                text: spec.modelData.label
+                                textFormat: Text.PlainText
+                                color: "#c7d6e8"
+                                font.pixelSize: 10 * genDelegate.fs
+                                verticalAlignment: Text.AlignVCenter
+                                elide: Text.ElideRight
+                            }
+                            Accessible.role: Accessible.StaticText
+                            Accessible.name: modelData.kind === "kernel" ? qsTr("Kernel: %1").arg(modelData.value) : "NixOS " + modelData.value
+                            HoverHandler {
+                                id: specHover
+                            }
+                            ToolTip.visible: specHover.hovered
+                            ToolTip.text: modelData.value
+                            ToolTip.delay: 450
+                        }
+                    }
                 }
             }
+            Accessible.role: Accessible.Button
+            Accessible.name: qsTr("Generation %1").arg(genDelegate.gen.number)
+            Accessible.onPressAction: genDelegate.isExpanded ? genDelegate.collapseGen() : genDelegate.selectGen(genDelegate.gen.number)
+        }
+        ColumnLayout {
+            id: expandedColumn
+            x: 40
+            y: genDelegate.headerH
+            width: Math.max(0, parent.width - 52)
+            visible: genDelegate.isExpanded
+            spacing: 10
             Text {
+                visible: genDelegate.isLoadingDetails && (!genDelegate.details.diff || !!genDelegate.details.partial)
+                text: qsTr("Loading generation details…")
+                color: genDelegate.accentColor
+                font.pixelSize: genDelegate.fpx(9)
+            }
+            RowLayout {
                 Layout.fillWidth: true
-                objectName: "generationDate-" + genDelegate.gen.number
-                text: genDelegate.friendlyTimestamp(genDelegate.gen.timestamp, genDelegate.referenceDate)
-                color: UI.Theme.muted
-                font.pixelSize: 10 * genDelegate.fs
-                elide: Text.ElideRight
-                HoverHandler {
-                    id: dateHover
+                Text {
+                    Layout.fillWidth: true
+                    text: genDelegate.details.closureBytes ? qsTr("Closure size: %1").arg(UI.Theme.formatBytes(genDelegate.details.closureBytes)) : ""
+                    color: UI.Theme.muted
+                    font.pixelSize: genDelegate.fpx(8)
                 }
-                ToolTip.visible: dateHover.hovered
-                ToolTip.text: genDelegate.gen.timestamp || ""
+                UI.ActionButton {
+                    text: genDelegate.diffMode === "prev" ? qsTr("vs. previous") : qsTr("vs. booted")
+                    tip: qsTr("Change comparison baseline")
+                    onClicked: genDelegate.diffModeToggle(genDelegate.gen.number)
+                }
+            }
+            PackageList {
+                storePathCache: genDelegate.storePathCache
+                onStorePathRequested: pkg => genDelegate.storePathRequested(pkg)
+                Layout.fillWidth: true
+                packages: genDelegate.details.diff || []
+                iconCache: genDelegate.iconCache
+                metaCache: genDelegate.metaCache
+                showPackageIcons: genDelegate.showPackageIcons
+                enableGlow: genDelegate.enableGlow
+                filterEnabled: genDelegate.diffFilterEnabled
+                textColor: genDelegate.textColor
+                accentColor: genDelegate.accentColor
+                fs: genDelegate.fs
+                viewMode: genDelegate.diffViewMode
+                onCopyToClipboard: text => genDelegate.copyToClipboard(text)
+            }
+            Disclosure {
+                Layout.fillWidth: true
+                visible: !!genDelegate.configDiff.status && genDelegate.configDiff.status !== "missing"
+                title: qsTr("Configuration changes")
+                TextEdit {
+                    width: parent.width
+                    readOnly: true
+                    selectByMouse: true
+                    wrapMode: TextEdit.NoWrap
+                    text: genDelegate.configDiff.diff || genDelegate.configDiff.message || qsTr("No configuration changes")
+                    color: genDelegate.textColor
+                    font.family: UI.Theme.fixedWidthFont.family
+                    font.pixelSize: genDelegate.fpx(8)
+                }
             }
             Flow {
                 Layout.fillWidth: true
                 spacing: 6
-                Repeater {
-                    model: [
-                        {
-                            label: genDelegate.kernelLabel,
-                            value: genDelegate.details.kernelVer || "",
-                            kind: "kernel"
-                        },
-                        {
-                            label: genDelegate.releaseLabel,
-                            value: genDelegate.details.nixosVer || "",
-                            kind: "nixos"
-                        }
-                    ]
-                    Rectangle {
-                        id: spec
-                        required property var modelData
-                        objectName: modelData.kind + "Badge-" + genDelegate.gen.number
-                        visible: modelData.value !== ""
-                        width: Math.min(generationHeader.width, specLabel.implicitWidth + 16)
-                        height: 23 * genDelegate.fs
-                        color: "#0991bcff"
-                        border.color: "#1491bcff"
-                        radius: 5
-                        Text {
-                            id: specLabel
-                            anchors.fill: parent
-                            anchors.leftMargin: 8
-                            anchors.rightMargin: 8
-                            text: spec.modelData.label
-                            textFormat: Text.PlainText
-                            color: "#c7d6e8"
-                            font.pixelSize: 10 * genDelegate.fs
-                            verticalAlignment: Text.AlignVCenter
-                            elide: Text.ElideRight
-                        }
-                        Accessible.role: Accessible.StaticText
-                        Accessible.name: modelData.kind === "kernel" ? qsTr("Kernel: %1").arg(modelData.value) : "NixOS " + modelData.value
-                        HoverHandler {
-                            id: specHover
-                        }
-                        ToolTip.visible: specHover.hovered
-                        ToolTip.text: modelData.value
-                        ToolTip.delay: 450
-                    }
+                UI.ActionButton {
+                    text: qsTr("Compare with…")
+                    glyph: genDelegate.svg("ic_diff")
+                    primary: true
+                    onClicked: compareMenu.popup()
                 }
             }
         }
-        Accessible.role: Accessible.Button
-        Accessible.name: qsTr("Generation %1").arg(genDelegate.gen.number)
-        Accessible.onPressAction: genDelegate.isExpanded ? genDelegate.collapseGen() : genDelegate.selectGen(genDelegate.gen.number)
     }
-    ColumnLayout {
-        id: expandedColumn
-        x: 40
-        y: genDelegate.headerH
-        width: Math.max(0, parent.width - 52)
-        visible: genDelegate.isExpanded
-        spacing: 10
-        Text {
-            visible: genDelegate.isLoadingDetails && (!genDelegate.details.diff || !!genDelegate.details.partial)
-            text: qsTr("Loading generation details…")
-            color: genDelegate.accentColor
-            font.pixelSize: genDelegate.fpx(9)
-        }
-        RowLayout {
-            Layout.fillWidth: true
-            Text {
-                Layout.fillWidth: true
-                text: genDelegate.details.closureBytes ? qsTr("Closure size: %1").arg(UI.Theme.formatBytes(genDelegate.details.closureBytes)) : ""
-                color: UI.Theme.muted
-                font.pixelSize: genDelegate.fpx(8)
-            }
-            UI.ActionButton {
-                text: genDelegate.diffMode === "prev" ? qsTr("vs. previous") : qsTr("vs. booted")
-                tip: qsTr("Change comparison baseline")
-                onClicked: genDelegate.diffModeToggle(genDelegate.gen.number)
-            }
-        }
-        PackageList {
-            storePathCache: genDelegate.storePathCache
-            onStorePathRequested: pkg => genDelegate.storePathRequested(pkg)
-            Layout.fillWidth: true
-            packages: genDelegate.details.diff || []
-            iconCache: genDelegate.iconCache
-            metaCache: genDelegate.metaCache
-            showPackageIcons: genDelegate.showPackageIcons
-            enableGlow: genDelegate.enableGlow
-            filterEnabled: genDelegate.diffFilterEnabled
-            textColor: genDelegate.textColor
-            accentColor: genDelegate.accentColor
-            fs: genDelegate.fs
-            viewMode: genDelegate.diffViewMode
-            onCopyToClipboard: text => genDelegate.copyToClipboard(text)
-        }
-        Disclosure {
-            Layout.fillWidth: true
-            visible: !!genDelegate.configDiff.status && genDelegate.configDiff.status !== "missing"
-            title: qsTr("Configuration changes")
-            TextEdit {
-                width: parent.width
-                readOnly: true
-                selectByMouse: true
-                wrapMode: TextEdit.NoWrap
-                text: genDelegate.configDiff.diff || genDelegate.configDiff.message || qsTr("No configuration changes")
-                color: genDelegate.textColor
-                font.family: UI.Theme.fixedWidthFont.family
-                font.pixelSize: genDelegate.fpx(8)
-            }
-        }
-        Flow {
-            Layout.fillWidth: true
-            spacing: 6
-            UI.ActionButton {
-                text: qsTr("Compare with…")
-                glyph: genDelegate.svg("ic_diff")
-                primary: true
-                onClicked: compareMenu.popup()
-            }
-        }
+    UI.DetailWindow {
+        id: detailWindow
+        objectName: "generationWindow-" + genDelegate.gen.number
+        title: qsTr("Generation #%1 — Nixdatifier").arg(genDelegate.gen.number)
+        detailItem: generationContent
     }
     Menu {
         id: generationMenu
+        MenuItem {
+            text: qsTr("Open in larger window")
+            onTriggered: {
+                genDelegate.selectGen(genDelegate.gen.number);
+                detailWindow.open();
+            }
+        }
         MenuItem {
             text: qsTr("Activate now")
             visible: genDelegate.enableLiveSwitch

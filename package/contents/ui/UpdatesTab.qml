@@ -93,7 +93,7 @@ Item {
             }
             Repeater {
                 model: root.flakeUpdates
-                Rectangle {
+                Item {
                     id: card
                     required property var modelData
                     readonly property var entry: root.dryRunCache[modelData.input] || null
@@ -101,194 +101,218 @@ Item {
                     readonly property bool updating: root.updatingInput === modelData.input
                     Layout.fillWidth: true
                     Layout.bottomMargin: 9
-                    implicitHeight: contents.implicitHeight + 20
-                    radius: 9
-                    color: "#03ffffff"
-                    border.color: "#0effffff"
-                    ColumnLayout {
-                        id: contents
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.top: parent.top
-                        anchors.margins: 10
-                        spacing: 0
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
-                            Item {
+                    implicitHeight: detailWindow.visible ? 58 : contents.implicitHeight + 20
+                    UI.DetailWindow {
+                        id: detailWindow
+                        objectName: "updateWindow-" + card.modelData.input
+                        title: qsTr("Update: %1 — Nixdatifier").arg(card.modelData.input)
+                        detailItem: cardSurface
+                    }
+                    Rectangle {
+                        id: cardSurface
+                        width: card.width
+                        implicitHeight: contents.implicitHeight + 20
+                        height: implicitHeight
+                        radius: 9
+                        color: "#03ffffff"
+                        border.color: "#0effffff"
+                        ColumnLayout {
+                            id: contents
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: 10
+                            spacing: 0
+                            RowLayout {
                                 Layout.fillWidth: true
-                                implicitHeight: 38
-                                RowLayout {
-                                    anchors.fill: parent
-                                    spacing: 10
-                                    Rectangle {
-                                        implicitWidth: 31
-                                        implicitHeight: 31
-                                        radius: 8
-                                        color: "#04ffffff"
-                                        border.color: "#0effffff"
-                                        UI.Icon {
-                                            anchors.centerIn: parent
-                                            source: Qt.resolvedUrl(card.modelData.input.indexOf("home") >= 0 ? "assets/ic_folder.svg" : "assets/ic_outline_box.svg")
-                                            width: 17
-                                            height: 17
-                                            isMask: true
-                                            color: "#93a5be"
+                                spacing: 8
+                                Item {
+                                    Layout.fillWidth: true
+                                    implicitHeight: 38
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        spacing: 10
+                                        Rectangle {
+                                            implicitWidth: 31
+                                            implicitHeight: 31
+                                            radius: 8
+                                            color: "#04ffffff"
+                                            border.color: "#0effffff"
+                                            UI.Icon {
+                                                anchors.centerIn: parent
+                                                source: Qt.resolvedUrl(card.modelData.input.indexOf("home") >= 0 ? "assets/ic_folder.svg" : "assets/ic_outline_box.svg")
+                                                width: 17
+                                                height: 17
+                                                isMask: true
+                                                color: "#93a5be"
+                                            }
                                         }
-                                    }
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 5
-                                        Text {
-                                            Layout.fillWidth: true
-                                            text: card.modelData.input
-                                            color: root.textColor
-                                            font.pixelSize: 11 * root.fs
-                                            font.weight: Font.Medium
-                                            elide: Text.ElideRight
-                                        }
-                                        RowLayout {
+                                        ColumnLayout {
                                             Layout.fillWidth: true
                                             spacing: 5
-                                            visible: !card.updating
-                                            Text {
-                                                Layout.maximumWidth: 70 * root.fs
-                                                text: card.modelData.oldRev
-                                                color: "#8293ab"
-                                                font.family: UI.Theme.fixedWidthFont.family
-                                                font.pixelSize: 9 * root.fs
-                                                elide: Text.ElideRight
-                                            }
-                                            Text {
-                                                text: "→"
-                                                color: "#8293ab"
-                                                font.pixelSize: 10 * root.fs
-                                            }
                                             Text {
                                                 Layout.fillWidth: true
-                                                text: card.modelData.newRev
-                                                color: root.accentColor
-                                                font.family: UI.Theme.fixedWidthFont.family
-                                                font.pixelSize: 9 * root.fs
+                                                text: card.modelData.input
+                                                color: root.textColor
+                                                font.pixelSize: 11 * root.fs
+                                                font.weight: Font.Medium
                                                 elide: Text.ElideRight
                                             }
-                                        }
-                                        Text {
-                                            visible: card.updating
-                                            text: qsTr("Updating input…")
-                                            color: UI.Theme.positive
-                                            font.pixelSize: 9 * root.fs
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 5
+                                                visible: !card.updating
+                                                Text {
+                                                    Layout.maximumWidth: 70 * root.fs
+                                                    text: card.modelData.oldRev
+                                                    color: "#8293ab"
+                                                    font.family: UI.Theme.fixedWidthFont.family
+                                                    font.pixelSize: 9 * root.fs
+                                                    elide: Text.ElideRight
+                                                }
+                                                Text {
+                                                    text: "→"
+                                                    color: "#8293ab"
+                                                    font.pixelSize: 10 * root.fs
+                                                }
+                                                Text {
+                                                    Layout.fillWidth: true
+                                                    text: card.modelData.newRev
+                                                    color: root.accentColor
+                                                    font.family: UI.Theme.fixedWidthFont.family
+                                                    font.pixelSize: 9 * root.fs
+                                                    elide: Text.ElideRight
+                                                }
+                                            }
+                                            Text {
+                                                visible: card.updating
+                                                text: qsTr("Updating input…")
+                                                color: UI.Theme.positive
+                                                font.pixelSize: 9 * root.fs
+                                            }
                                         }
                                     }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        enabled: !!card.modelData.overrideRef
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.togglePreview(card.modelData)
+                                    }
                                 }
-                                MouseArea {
-                                    anchors.fill: parent
-                                    enabled: !!card.modelData.overrideRef
-                                    cursorShape: Qt.PointingHandCursor
+                                RowLayout {
+                                    spacing: 5
+                                    UI.ActionButton {
+                                        objectName: "openUpdate-" + card.modelData.input
+                                        visible: !detailWindow.visible
+                                        glyph: Qt.resolvedUrl("assets/ic_external.svg")
+                                        implicitHeight: 27
+                                        tip: qsTr("Open in larger window")
+                                        onClicked: {
+                                            if (!card.opened && card.modelData.overrideRef)
+                                                root.togglePreview(card.modelData);
+                                            detailWindow.open();
+                                        }
+                                    }
+                                    UI.ActionButton {
+                                        objectName: "preview-" + card.modelData.input
+                                        glyph: Qt.resolvedUrl(card.opened ? "assets/ic_chevron_up.svg" : "assets/ic_outline_compare.svg")
+                                        implicitHeight: 27
+                                        primary: true
+                                        accent: "#b6a1e4"
+                                        tip: card.opened ? qsTr("Collapse preview") : card.entry ? qsTr("Show cached preview") : qsTr("Preview package changes")
+                                        enabled: !!card.modelData.overrideRef && (card.opened || !!card.entry || !root.isDryRunning)
+                                        onClicked: root.togglePreview(card.modelData)
+                                    }
+                                    UI.ActionButton {
+                                        objectName: "update-" + card.modelData.input
+                                        glyph: "view-refresh"
+                                        implicitHeight: 27
+                                        tip: qsTr("Update only %1").arg(card.modelData.input)
+                                        accent: UI.Theme.positive
+                                        primary: true
+                                        enabled: !root.isBusy
+                                        onClicked: root.updateInputRequested(card.modelData.input)
+                                    }
+                                    UI.ActionButton {
+                                        objectName: "source-" + card.modelData.input
+                                        glyph: "go-up-right"
+                                        implicitHeight: 27
+                                        tip: qsTr("Open source repository")
+                                        enabled: /^https?:\/\//i.test(card.modelData.url || "")
+                                        onClicked: Qt.openUrlExternally(card.modelData.url)
+                                    }
+                                }
+                            }
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Layout.topMargin: visible ? 10 : 0
+                                visible: card.opened
+                                spacing: 10
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    implicitHeight: 1
+                                    color: "#08ffffff"
+                                }
+                                ReleaseNotes {
+                                    objectName: "notes-" + card.modelData.input
+                                    Layout.fillWidth: true
+                                    entry: root.releaseNotesCache[card.modelData.input] || null
+                                    fs: root.fs
+                                    textColor: root.textColor
+                                    accentColor: root.accentColor
+                                    onRetryRequested: root.releaseNotesRequested(card.modelData.input, true)
+                                }
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    implicitHeight: 1
+                                    color: "#08ffffff"
+                                }
+                                Text {
+                                    visible: !!card.entry && card.entry.status === "loading"
+                                    text: qsTr("Evaluating package changes…")
+                                    color: root.accentColor
+                                    font.pixelSize: 10 * root.fs
+                                }
+                                UI.ActionButton {
+                                    visible: !card.entry
+                                    text: qsTr("Preview changes")
+                                    enabled: !root.isDryRunning
+                                    onClicked: root.dryRunRequested(card.modelData.input, card.modelData.overrideRef)
+                                }
+                                Text {
+                                    visible: !!card.entry && card.entry.status === "error"
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WrapAnywhere
+                                    text: card.entry ? card.entry.errorMsg || "" : ""
+                                    color: UI.Theme.negative
+                                    font.pixelSize: 10 * root.fs
+                                }
+                                UI.ActionButton {
+                                    visible: !!card.entry && card.entry.status === "error"
+                                    text: qsTr("Retry preview")
+                                    enabled: !root.isDryRunning
+                                    onClicked: root.dryRunRequested(card.modelData.input, card.modelData.overrideRef)
+                                }
+                                PackageList {
+                                    storePathCache: root.storePathCache
+                                    onStorePathRequested: pkg => root.storePathRequested(pkg)
+                                    visible: !!card.entry && card.entry.status === "ok"
+                                    Layout.fillWidth: true
+                                    packages: card.entry ? card.entry.packages || [] : []
+                                    iconCache: root.iconCache
+                                    metaCache: root.metaCache
+                                    fs: root.fs
+                                    textColor: root.textColor
+                                    accentColor: root.accentColor
+                                    showPackageIcons: root.showPackageIcons
+                                    enableGlow: root.enableGlow
+                                    onCopyToClipboard: text => root.copyToClipboard(text)
+                                }
+                                UI.ActionButton {
+                                    text: qsTr("Collapse preview")
+                                    flatStyle: true
                                     onClicked: root.togglePreview(card.modelData)
                                 }
-                            }
-                            RowLayout {
-                                spacing: 5
-                                UI.ActionButton {
-                                    objectName: "preview-" + card.modelData.input
-                                    glyph: Qt.resolvedUrl(card.opened ? "assets/ic_chevron_up.svg" : "assets/ic_outline_compare.svg")
-                                    implicitHeight: 27
-                                    primary: true
-                                    accent: "#b6a1e4"
-                                    tip: card.opened ? qsTr("Collapse preview") : card.entry ? qsTr("Show cached preview") : qsTr("Preview package changes")
-                                    enabled: !!card.modelData.overrideRef && (card.opened || !!card.entry || !root.isDryRunning)
-                                    onClicked: root.togglePreview(card.modelData)
-                                }
-                                UI.ActionButton {
-                                    objectName: "update-" + card.modelData.input
-                                    glyph: "view-refresh"
-                                    implicitHeight: 27
-                                    tip: qsTr("Update only %1").arg(card.modelData.input)
-                                    accent: UI.Theme.positive
-                                    primary: true
-                                    enabled: !root.isBusy
-                                    onClicked: root.updateInputRequested(card.modelData.input)
-                                }
-                                UI.ActionButton {
-                                    objectName: "source-" + card.modelData.input
-                                    glyph: "go-up-right"
-                                    implicitHeight: 27
-                                    tip: qsTr("Open source repository")
-                                    enabled: /^https?:\/\//i.test(card.modelData.url || "")
-                                    onClicked: Qt.openUrlExternally(card.modelData.url)
-                                }
-                            }
-                        }
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            Layout.topMargin: visible ? 10 : 0
-                            visible: card.opened
-                            spacing: 10
-                            Rectangle {
-                                Layout.fillWidth: true
-                                implicitHeight: 1
-                                color: "#08ffffff"
-                            }
-                            ReleaseNotes {
-                                objectName: "notes-" + card.modelData.input
-                                Layout.fillWidth: true
-                                entry: root.releaseNotesCache[card.modelData.input] || null
-                                fs: root.fs
-                                textColor: root.textColor
-                                accentColor: root.accentColor
-                                onRetryRequested: root.releaseNotesRequested(card.modelData.input, true)
-                            }
-                            Rectangle {
-                                Layout.fillWidth: true
-                                implicitHeight: 1
-                                color: "#08ffffff"
-                            }
-                            Text {
-                                visible: !!card.entry && card.entry.status === "loading"
-                                text: qsTr("Evaluating package changes…")
-                                color: root.accentColor
-                                font.pixelSize: 10 * root.fs
-                            }
-                            UI.ActionButton {
-                                visible: !card.entry
-                                text: qsTr("Preview changes")
-                                enabled: !root.isDryRunning
-                                onClicked: root.dryRunRequested(card.modelData.input, card.modelData.overrideRef)
-                            }
-                            Text {
-                                visible: !!card.entry && card.entry.status === "error"
-                                Layout.fillWidth: true
-                                wrapMode: Text.WrapAnywhere
-                                text: card.entry ? card.entry.errorMsg || "" : ""
-                                color: UI.Theme.negative
-                                font.pixelSize: 10 * root.fs
-                            }
-                            UI.ActionButton {
-                                visible: !!card.entry && card.entry.status === "error"
-                                text: qsTr("Retry preview")
-                                enabled: !root.isDryRunning
-                                onClicked: root.dryRunRequested(card.modelData.input, card.modelData.overrideRef)
-                            }
-                            PackageList {
-                                storePathCache: root.storePathCache
-                                onStorePathRequested: pkg => root.storePathRequested(pkg)
-                                visible: !!card.entry && card.entry.status === "ok"
-                                Layout.fillWidth: true
-                                packages: card.entry ? card.entry.packages || [] : []
-                                iconCache: root.iconCache
-                                metaCache: root.metaCache
-                                fs: root.fs
-                                textColor: root.textColor
-                                accentColor: root.accentColor
-                                showPackageIcons: root.showPackageIcons
-                                enableGlow: root.enableGlow
-                                onCopyToClipboard: text => root.copyToClipboard(text)
-                            }
-                            UI.ActionButton {
-                                text: qsTr("Collapse preview")
-                                flatStyle: true
-                                onClicked: root.togglePreview(card.modelData)
                             }
                         }
                     }
