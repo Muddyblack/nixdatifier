@@ -13,7 +13,7 @@ import "../package/contents/ui/SettingsSchema.js" as Schema
 ApplicationWindow {
     id: win
     title: core.toolTipMainText !== "" ? core.toolTipMainText + " · Nixdatifier" : "Nixdatifier"
-    width: cfg.popupWidth
+    width: settingsOpen ? Math.min(Math.max(cfg.popupWidth, 900), Screen.desktopAvailableWidth || 900) : cfg.popupWidth
     height: cfg.popupHeight
     minimumWidth: 380
     minimumHeight: 480
@@ -209,10 +209,10 @@ ApplicationWindow {
     Rectangle {
         anchors.fill: parent
         visible: win.settingsOpen
-        color: UI.Theme.backgroundColor
+        color: settingsEditor.tone.panel
         ColumnLayout {
             anchors.fill: parent
-            anchors.margins: 18
+            anchors.margins: 8
             spacing: 14
             App.SettingsEditor {
                 id: settingsEditor
@@ -223,15 +223,18 @@ ApplicationWindow {
             }
             RowLayout {
                 Layout.alignment: Qt.AlignRight
-                UI.ActionButton {
+                App.SettingsButton {
+                    tone: settingsEditor.tone
                     text: qsTr("Cancel")
                     onClicked: win.settingsOpen = false
                 }
-                UI.ActionButton {
+                App.SettingsButton {
+                    tone: settingsEditor.tone
                     text: qsTr("Apply")
                     onClicked: win.applySettings()
                 }
-                UI.ActionButton {
+                App.SettingsButton {
+                    tone: settingsEditor.tone
                     text: qsTr("OK")
                     primary: true
                     onClicked: {

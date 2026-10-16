@@ -1,11 +1,13 @@
 pragma ComponentBehavior: Bound
 import QtQuick
+import "SettingsTheme.js" as Theme
 import QtQuick.Window
 import "../code/ProjectInfo.js" as Project
 import "../code/ProjectInfoRequests.js" as InfoRequests
 
 Column {
     id: info
+    property var tone: Theme.defaults
 
     property var counts: ({})
     property var contributorList: []
@@ -19,7 +21,7 @@ Column {
     readonly property string versionStatus: latestVersion ? Project.releaseStatus(currentVersion, latestVersion) : releaseCheckState
     property bool onlineEnabled: true
     readonly property bool foregroundVisible: visible && Window.window !== null && Window.window.visible
-    readonly property color accent: "#91bcff"
+    readonly property color accent: tone.brand
 
     spacing: 14
 
@@ -113,7 +115,8 @@ Column {
                 width: parent.width
                 text: Project.name
                 wrapMode: Text.WordWrap
-                color: "#f8fafc"
+                color: tone.text
+                font.family: tone.fontFamily
                 font.pixelSize: 17
                 font.weight: Font.DemiBold
             }
@@ -131,6 +134,7 @@ Column {
                         anchors.centerIn: parent
                         text: "M"
                         color: info.accent
+                        font.family: tone.fontFamily
                         font.pixelSize: 12
                         visible: !authorAvatar.ready
                     }
@@ -159,6 +163,7 @@ Column {
         text: "Explore NixOS generations, compare packages and configurations, check flake updates, and manage rollbacks from Plasma or Hyprland. Explore the project, get updates, or help improve it."
         wrapMode: Text.WordWrap
         color: Qt.rgba(1, 1, 1, 0.55)
+        font.family: tone.fontFamily
         font.pixelSize: 11
         lineHeight: 1.25
     }
@@ -169,6 +174,7 @@ Column {
         text: info.networkMessage
         wrapMode: Text.WordWrap
         color: info.accent
+        font.family: tone.fontFamily
         font.pixelSize: 11
     }
 
@@ -191,7 +197,8 @@ Column {
 
             Text {
                 text: "Installed version · " + (info.currentVersion || "—")
-                color: "#f8fafc"
+                color: tone.text
+                font.family: tone.fontFamily
                 font.pixelSize: 11
                 font.weight: Font.DemiBold
             }
@@ -200,6 +207,7 @@ Column {
                 objectName: "latestVersionLabel"
                 text: "Latest stable release · " + (info.latestVersion || "—")
                 color: Qt.rgba(1, 1, 1, 0.5)
+                font.family: tone.fontFamily
                 font.pixelSize: 11
             }
 
@@ -209,6 +217,7 @@ Column {
                 text: info.versionStatus
                 wrapMode: Text.WordWrap
                 color: text === "Update available" ? info.accent : Qt.rgba(1, 1, 1, 0.5)
+                font.family: tone.fontFamily
                 font.pixelSize: 11
             }
 
@@ -263,7 +272,8 @@ Column {
                     x: 40
                     y: 8
                     text: info.counts[parent.modelData.id] || "—"
-                    color: "#f8fafc"
+                    color: tone.text
+                    font.family: tone.fontFamily
                     font.pixelSize: 18
                     font.weight: Font.DemiBold
                 }
@@ -274,6 +284,7 @@ Column {
                     width: parent.width - 24
                     text: parent.modelData.label + " ↗"
                     color: Qt.rgba(1, 1, 1, 0.5)
+                    font.family: tone.fontFamily
                     font.pixelSize: 10
                     elide: Text.ElideRight
                 }
@@ -307,7 +318,8 @@ Column {
 
             Text {
                 text: "License · " + Project.licenseId
-                color: "#f8fafc"
+                color: tone.text
+                font.family: tone.fontFamily
                 font.pixelSize: 11
                 font.weight: Font.DemiBold
             }
@@ -332,7 +344,8 @@ Column {
 
             Text {
                 text: "Contributors"
-                color: "#f8fafc"
+                color: tone.text
+                font.family: tone.fontFamily
                 font.pixelSize: 13
                 font.weight: Font.DemiBold
                 anchors.verticalCenter: parent.verticalCenter
@@ -375,6 +388,7 @@ Column {
                             anchors.centerIn: parent
                             text: contributorCard.modelData.login[0].toUpperCase()
                             color: info.accent
+                            font.family: tone.fontFamily
                             font.pixelSize: 12
                             visible: !contributorAvatar.ready
                         }
@@ -399,7 +413,8 @@ Column {
                             width: parent.width
                             text: contributorCard.modelData.login
                             elide: Text.ElideRight
-                            color: "#f8fafc"
+                            color: tone.text
+                            font.family: tone.fontFamily
                             font.pixelSize: 11
                             font.weight: Font.DemiBold
                         }
@@ -407,6 +422,7 @@ Column {
                         Text {
                             text: contributorCard.modelData.commits + (contributorCard.modelData.commits === 1 ? " commit" : " commits")
                             color: Qt.rgba(1, 1, 1, 0.5)
+                            font.family: tone.fontFamily
                             font.pixelSize: 9
                         }
                     }
@@ -431,7 +447,8 @@ Column {
 
         Text {
             text: "Support the project"
-            color: "#f8fafc"
+            color: tone.text
+            font.family: tone.fontFamily
             font.pixelSize: 13
             font.weight: Font.DemiBold
         }
@@ -472,7 +489,8 @@ Column {
                         wrapMode: Text.WordWrap
                         maximumLineCount: 2
                         elide: Text.ElideRight
-                        color: "#f8fafc"
+                        color: tone.text
+                        font.family: tone.fontFamily
                         font.pixelSize: 11
                         font.weight: Font.DemiBold
                     }

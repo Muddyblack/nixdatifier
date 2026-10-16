@@ -4,6 +4,7 @@ import "../package/contents/ui" as App
 import "../package/contents/code/ProjectInfo.js" as Project
 import "../package/contents/code/ProjectInfoRequests.js" as Requests
 import "../package/contents/ui/SettingsSchema.js" as Schema
+import "../package/contents/ui/SettingsTheme.js" as Theme
 
 Item {
     id: host
@@ -62,19 +63,22 @@ Item {
                 hyprland: true
             });
             verify(editor !== null);
-            for (let tab = 0; tab < 4; tab++) {
+            for (const tab of editor.navigation.filter(index => index !== 4)) {
                 editor.currentTab = tab;
                 wait(20);
-                const fields = Schema.fields.filter(f => f.tab === editor.tabKeys[tab]);
+                const fields = Schema.fields.concat(editor.placementFields).filter(f => editor.sectionFor(f) === editor.tabKeys[tab]);
                 for (const field of fields) {
                     const item = findChild(editor, "setting_" + field.key);
                     verify(item !== null, field.key);
                     verify(item.height > 0, field.key);
                 }
             }
+            editor.currentTab = 5;
             editor.width = 344;
             wait(20);
             verify(findChild(editor, "setting_panelEdgeOffset") !== null);
+            editor.currentTab = 3;
+            wait(20);
             verify(findChild(editor, "setting_accentColor").stacked);
             editor.query = "flake";
             wait(20);
@@ -102,6 +106,44 @@ Item {
             keyClick(Qt.Key_Right);
             verify(cfg.fontScale > 1);
             cfg.fontScale = 1;
+        }
+
+        function test_settings_palette_tracks_widget_colours() {
+            const editor = createTemporaryObject(editorComponent, host, {
+                settings: cfg
+            });
+            const previousAccent = cfg.accentColor;
+            const previousBackground = cfg.bgColor;
+            try {
+                cfg.accentColor = "#e4a5ce";
+                compare(String(editor.tone.brand), "#e4a5ce");
+                compare(String(findChild(editor, "setting_flakePath").tone.brand), "#e4a5ce");
+                cfg.bgColor = "#ffffff";
+                verify(Theme.contrast(editor.tone.panel, editor.tone.text) >= 4.5);
+                cfg.bgColor = "#151923";
+                verify(Theme.contrast(editor.tone.panel, editor.tone.text) >= 4.5);
+            } finally {
+                cfg.accentColor = previousAccent;
+                cfg.bgColor = previousBackground;
+            }
+        }
+
+        function test_studio_number_edit_commits_to_settings() {
+            const editor = createTemporaryObject(editorComponent, host, {
+                settings: cfg
+            });
+            const number = findChild(editor, "number_checkInterval");
+            verify(number !== null);
+            const previous = cfg.checkInterval;
+            number.contentItem.forceActiveFocus();
+            number.contentItem.selectAll();
+            keyClick(Qt.Key_7);
+            keyClick(Qt.Key_2);
+            keyClick(Qt.Key_0);
+            keyClick(Qt.Key_0);
+            keyClick(Qt.Key_Return);
+            compare(cfg.checkInterval, 7200);
+            cfg.checkInterval = previous;
         }
 
         function test_info_is_destroyed_on_hide_and_tab_change() {
