@@ -96,6 +96,22 @@ var fields = [
     "type": "Bool"
   },
   {
+    "key": "checkTarballs",
+    "tab": "General",
+    "group": "NixOS & Flake",
+    "label": "Check tarball inputs",
+    "help": "Check inputs fetched as tarballs (channels, .tar.zst) with a light request. Falls back to a full Nix download only when the server gives no hint.",
+    "type": "Bool"
+  },
+  {
+    "key": "deepInputCheck",
+    "tab": "General",
+    "group": "NixOS & Flake",
+    "label": "Check nested inputs",
+    "help": "Also check the inputs of your inputs, however deep. By default only the root inputs (and those of a wrapper flake) are checked. Costs one request per input.",
+    "type": "Bool"
+  },
+  {
     "key": "customCommands",
     "tab": "Commands",
     "group": "Quick-run commands",

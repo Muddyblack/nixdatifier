@@ -61,6 +61,8 @@ ShellRoot {
             property int maxGenerations: 10
             property string defaultView: "timeline"
             property bool enableHostDetect: true
+            property bool checkTarballs: true
+            property bool deepInputCheck: false
             property string customCommands: "[{\"label\":\"update\",\"cmd\":\"nix flake update\"},{\"label\":\"upnix\",\"cmd\":\"upnix\"}]"
             property bool showCommandButtons: true
             property string commandTerminal: ""

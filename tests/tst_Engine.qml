@@ -110,6 +110,38 @@ Item {
             core.activeGenNum = 661;
             core.bootedGenNum = 660;
         }
+        function test_probe_settings_separate_cache_and_discard_pending_results() {
+            const originalTarballs = cfg.checkTarballs;
+            const originalDeep = cfg.deepInputCheck;
+            const originalName = core.flakeCacheName;
+            core.isCheckingFlake = false;
+            core.checkFlakeUpdates();
+            compare(jobs.length, 1);
+            const pending = jobs[0];
+            cfg.checkTarballs = !originalTarballs;
+            verify(core.flakeCacheName !== originalName);
+            core._lastFlakeCacheTs = 123;
+            cfg.deepInputCheck = !originalDeep;
+            compare(core._lastFlakeCacheTs, 0);
+            pending.callback(pending.cmd, "nixpkgs\tok\told\tnew\t1\thttps://example.org\tgithub:o/r/new", "", 0);
+            compare(core.flakeUpdates.length, 0);
+            compare(jobs.length, 1); // stale results must not be written to the new cache
+            cfg.checkTarballs = originalTarballs;
+            cfg.deepInputCheck = originalDeep;
+            compare(core.flakeCacheName, originalName);
+        }
+        function test_probe_settings_discard_pending_cache_read() {
+            const original = cfg.deepInputCheck;
+            let timestamp = -1;
+            core.readFlakeCache(function (ts, tsv) {
+                timestamp = ts;
+            });
+            const pending = jobs[0];
+            cfg.deepInputCheck = !original;
+            pending.callback(pending.cmd, "123\nnixpkgs\tok\told\tnew", "", 0);
+            compare(timestamp, 0);
+            cfg.deepInputCheck = original;
+        }
         function test_shared_settings_are_pulled_before_start_and_pushed_after_changes() {
             core.syncSettings = true;
             core._syncReady = false;

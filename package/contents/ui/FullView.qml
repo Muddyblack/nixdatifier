@@ -790,66 +790,9 @@ Pane {
                 ColumnLayout {
                     width: toolsScroll.availableWidth
                     spacing: 0
-                    // Two rows of three; narrow windows get two columns instead
-                    // of squeezing six cards onto one line.
-                    GridLayout {
-                        Layout.fillWidth: true
-                        Layout.bottomMargin: 17
-                        columns: fullView.width >= 440 ? 3 : 2
-                        columnSpacing: 10
-                        rowSpacing: 10
-                        uniformCellWidths: true
-                        uniformCellHeights: true
-                        Repeater {
-                            model: fullView.tools
-                            AbstractButton {
-                                id: toolButton
-                                required property var modelData
-                                Layout.fillWidth: true
-                                Layout.fillHeight: true
-                                implicitHeight: toolContent.implicitHeight + 30
-                                padding: 13
-                                hoverEnabled: true
-                                onClicked: fullView.viewModeChanged(modelData.key)
-                                background: Rectangle {
-                                    radius: 9
-                                    color: toolButton.hovered ? UI.Theme.wash(fullView.accentColor, .05) : "#03ffffff"
-                                    border.color: toolButton.hovered ? UI.Theme.wash(fullView.accentColor, .3) : "#10ffffff"
-                                }
-                                contentItem: ColumnLayout {
-                                    id: toolContent
-                                    spacing: 0
-                                    UI.Icon {
-                                        Layout.bottomMargin: 15
-                                        source: fullView.svg(toolButton.modelData.glyph)
-                                        implicitWidth: 21
-                                        implicitHeight: 21
-                                        isMask: true
-                                        color: fullView.accentColor
-                                    }
-                                    Text {
-                                        Layout.fillWidth: true
-                                        Layout.bottomMargin: 7
-                                        text: toolButton.modelData.label
-                                        color: fullView.textColor
-                                        font.pixelSize: 11 * fullView.fs
-                                        font.weight: Font.Medium
-                                        wrapMode: Text.WordWrap
-                                    }
-                                    Text {
-                                        Layout.fillWidth: true
-                                        text: toolButton.modelData.hint
-                                        color: "#8fa0b7"
-                                        font.pixelSize: 9 * fullView.fs
-                                        wrapMode: Text.WordWrap
-                                        lineHeight: 1.6
-                                    }
-                                }
-                            }
-                        }
-                    }
                     Rectangle {
                         Layout.fillWidth: true
+                        Layout.bottomMargin: 17
                         implicitHeight: storageColumn.implicitHeight + 26
                         radius: 9
                         color: "#03ffffff"
@@ -925,15 +868,71 @@ Pane {
                                     font.pixelSize: 9 * fullView.fs
                                 }
                             }
+                            UI.ActionButton {
+                                Layout.topMargin: 13
+                                visible: fullView.isNixOS
+                                text: qsTr("Clean up old generations…")
+                                glyph: fullView.svg("ic_delete")
+                                font.pixelSize: 10 * fullView.fs
+                                onClicked: cleanupMenu.open()
+                            }
                         }
                     }
-                    UI.ActionButton {
-                        Layout.topMargin: 13
-                        visible: fullView.isNixOS
-                        text: qsTr("Clean up old generations…")
-                        glyph: fullView.svg("ic_delete")
-                        font.pixelSize: 10 * fullView.fs
-                        onClicked: cleanupMenu.open()
+                    // Narrow windows use two columns to keep tool cards readable.
+                    GridLayout {
+                        Layout.fillWidth: true
+                        columns: fullView.width >= 440 ? 3 : 2
+                        columnSpacing: 10
+                        rowSpacing: 10
+                        uniformCellWidths: true
+                        uniformCellHeights: true
+                        Repeater {
+                            model: fullView.tools
+                            AbstractButton {
+                                id: toolButton
+                                required property var modelData
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                implicitHeight: toolContent.implicitHeight + 30
+                                padding: 13
+                                hoverEnabled: true
+                                onClicked: fullView.viewModeChanged(modelData.key)
+                                background: Rectangle {
+                                    radius: 9
+                                    color: toolButton.hovered ? UI.Theme.wash(fullView.accentColor, .05) : "#03ffffff"
+                                    border.color: toolButton.hovered ? UI.Theme.wash(fullView.accentColor, .3) : "#10ffffff"
+                                }
+                                contentItem: ColumnLayout {
+                                    id: toolContent
+                                    spacing: 0
+                                    UI.Icon {
+                                        Layout.bottomMargin: 15
+                                        source: fullView.svg(toolButton.modelData.glyph)
+                                        implicitWidth: 21
+                                        implicitHeight: 21
+                                        isMask: true
+                                        color: fullView.accentColor
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        Layout.bottomMargin: 7
+                                        text: toolButton.modelData.label
+                                        color: fullView.textColor
+                                        font.pixelSize: 11 * fullView.fs
+                                        font.weight: Font.Medium
+                                        wrapMode: Text.WordWrap
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: toolButton.modelData.hint
+                                        color: "#8fa0b7"
+                                        font.pixelSize: 9 * fullView.fs
+                                        wrapMode: Text.WordWrap
+                                        lineHeight: 1.6
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
