@@ -216,6 +216,52 @@ fi
         self.script(self.bin / "git", "exit 124\n")
         self.assertIn("timed out after 40s", self.run_helper("flake-probe", str(self.root)).stdout)
 
+    def test_tarball_probe_compares_content_and_reports_failures(self):
+        url = "https://example.org/nixpkgs/nixos-unstable.tar.zst"
+        locked_url = "https://example.org/nixpkgs/revision.tar.zst"
+        (self.root / "flake.lock").write_text(
+            json.dumps(
+                {
+                    "root": "config",
+                    "nodes": {
+                        "config": {"inputs": {"nixpkgs": "nixpkgs"}},
+                        "nixpkgs": {
+                            "original": {"type": "tarball", "url": url},
+                            "locked": {"type": "tarball", "narHash": "sha256-old", "lastModified": 1},
+                        },
+                    },
+                }
+            )
+        )
+        payload = self.root / "metadata.json"
+        args = self.root / "nix-args"
+        self.script(self.bin / "nix", f"printf '%s\\n' \"$@\" > '{args}'; cat '{payload}'\n")
+        self.script(self.bin / "git", "exit 99\n")
+        for content_hash, status in (("sha256-old", "unchanged"), ("sha256-new", "ok")):
+            with self.subTest(status=status):
+                payload.write_text(json.dumps({"locked": {"narHash": content_hash, "url": locked_url}}))
+                result = self.run_helper("flake-probe", str(self.root))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                fields = result.stdout.strip().split("\t")
+                self.assertEqual(fields[:6], ["nixpkgs", status, "sha256-old", content_hash, "1", url])
+                self.assertEqual(fields[6], locked_url)
+                self.assertEqual(
+                    args.read_text().splitlines(),
+                    [
+                        "flake",
+                        "metadata",
+                        "--refresh",
+                        "--json",
+                        "--no-write-lock-file",
+                        url,
+                    ],
+                )
+        for response in ("exit 1", "echo invalid", "echo '{}'"):
+            self.script(self.bin / "nix", response + "\n")
+            result = self.run_helper("flake-probe", str(self.root))
+            self.assertIn("\tunreachable\t", result.stdout)
+            self.assertIn("Could not resolve tarball metadata", result.stdout)
+
     def test_release_notes_lists_new_releases_and_commits(self):
         old, new = "a" * 40, "b" * 40
         commits = [

@@ -18,6 +18,22 @@ stop when settings close; the Info pane is released when hidden or another tab o
 | **Detect hostname and flake configuration** | `true` | When off, previews need a flake with exactly one NixOS configuration. |
 | **Open on** | `timeline` | Starting view: `timeline`, `updates`, `diff`, `tools`, `devenv`, `secrets`, `hash`, `history`, `storeusage`, or `impermanence`. |
 
+Update checks read the root inputs of the configured flake's `flake.lock`, independently
+of how many NixOS or Home Manager outputs it defines. A wrapper flake that only takes
+your configuration repository as an input does not check that repository's nested
+inputs individually. Point **System flake path** at the repository whose inputs you
+want to monitor; **Configuration Git repository** only controls generation history.
+
+Git-backed inputs are checked against their upstream revision. Tarball inputs are
+resolved with `nix flake metadata --refresh` and compared by their unpacked content
+hash, so compression formats supported by your Nix installation work too. These
+checks can download archives. Immutable archive URLs remain unchanged until you
+edit the input URL.
+
+For troubleshooting, run `nixdatifier --refresh --json updates --all` to include
+unchanged, pinned/unsupported, and unreachable inputs. Fetch failures include a
+reason; the widget also shows a notification when an upstream cannot be reached.
+
 ## Commands
 
 | Setting | Default | Description |

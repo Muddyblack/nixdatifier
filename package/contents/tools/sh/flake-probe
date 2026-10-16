@@ -8,7 +8,7 @@
 # status:
 #   ok           — remoteRev differs from currentRev (update available)
 #   unchanged    — already on latest
-#   pinned       — no rev / unsupported source type (skip silently)
+#   pinned       — no revision/hash / unsupported source type
 #   unreachable  — git ls-remote failed or timed out
 set -u
 
@@ -27,7 +27,7 @@ MAX_PARALLEL="${FLAKE_PROBE_PARALLEL:-8}"
 # Pull root inputs as TSV: name type owner repo url ref rev lastModified
 # Use '|' as field separator (tab is whitespace-class in IFS and collapses empty fields).
 inputs=$(jq -r '
-  .nodes.root.inputs as $ri
+  .nodes[.root // "root"].inputs as $ri
   | ($ri | to_entries[]) as $e
   | .nodes[($e.value | if type=="string" then . else .[0] end)] as $n
   | select($n.locked != null and $n.original != null)
@@ -39,17 +39,44 @@ inputs=$(jq -r '
       ($n.original.url // ""),
       ($n.original.ref // ""),
       ($n.locked.rev // ""),
-      ($n.locked.lastModified // 0 | tostring)
+      ($n.locked.lastModified // 0 | tostring),
+      ($n.locked.narHash // "")
     ] | join("|")
 ' "$lock" 2>/dev/null) || { echo "ERROR: failed to parse flake.lock" >&2; exit 1; }
 
 [ -z "$inputs" ] && exit 0
 
 probe_one() {
-    local name="$1" type="$2" owner="$3" repo="$4" url="$5" ref="$6" rev="$7" date="$8"
+    local name="$1" type="$2" owner="$3" repo="$4" url="$5" ref="$6" rev="$7" date="$8" nar_hash="$9"
     local remote_url=""
 
     case "$type" in
+        tarball)
+            # Tarball locks often have no Git revision. Let Nix resolve the
+            # original URL (including redirects and compression) and compare
+            # the unpacked content hash rather than guessing a Git remote.
+            local metadata="" latest_hash="" latest_rev="" latest_url="" status="unchanged"
+            rev="${rev:-$nar_hash}"
+            if [[ -z "$nar_hash" || -z "$url" ]]; then
+                printf '%s\tpinned\t%s\t\t%s\t%s\n' "$name" "$rev" "$date" "$url"
+                return
+            fi
+            if metadata=$(timeout --kill-after=2s "$TIMEOUT" nix flake metadata \
+                --refresh --json --no-write-lock-file "$url" 2>/dev/null); then
+                latest_hash=$(jq -r '.locked.narHash // empty' <<< "$metadata" 2>/dev/null)
+                latest_rev=$(jq -r '.locked.rev // .locked.narHash // empty' <<< "$metadata" 2>/dev/null)
+                latest_url=$(jq -r '.locked.url // empty' <<< "$metadata" 2>/dev/null)
+            fi
+            if [[ -z "$latest_hash" ]]; then
+                printf '%s\tunreachable\t%s\t\t%s\t%s\t\t%s\n' \
+                    "$name" "$rev" "$date" "$url" "Could not resolve tarball metadata with Nix (timeout, fetch failure or invalid metadata)"
+            else
+                [[ "$latest_hash" == "$nar_hash" ]] || status="ok"
+                printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+                    "$name" "$status" "$rev" "$latest_rev" "$date" "$url" "${latest_url:-$url}"
+            fi
+            return
+            ;;
         github)    remote_url="https://github.com/${owner}/${repo}.git" ;;
         gitlab)    remote_url="https://gitlab.com/${owner}/${repo}.git" ;;
         sourcehut) remote_url="https://git.sr.ht/${owner}/${repo}" ;;
@@ -129,9 +156,9 @@ probe_one() {
 
 # Concurrency throttle via a job slot
 running=0
-while IFS='|' read -r name type owner repo url ref rev date; do
+while IFS='|' read -r name type owner repo url ref rev date nar_hash; do
     [ -z "$name" ] && continue
-    probe_one "$name" "$type" "$owner" "$repo" "$url" "$ref" "$rev" "$date" &
+    probe_one "$name" "$type" "$owner" "$repo" "$url" "$ref" "$rev" "$date" "$nar_hash" &
     running=$((running + 1))
     if [ "$running" -ge "$MAX_PARALLEL" ]; then
         wait -n 2>/dev/null || wait
