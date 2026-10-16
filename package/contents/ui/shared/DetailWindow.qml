@@ -48,12 +48,11 @@ Window {
                 anchors.horizontalCenter: undefined
             }
             PropertyChanges {
-                target: window.detailItem
-                x: 16
-                y: 16
-                width: scroll.availableWidth - 32
-                height: window.detailItem.implicitHeight
-                visible: true
+                window.detailItem.x: 16
+                window.detailItem.y: 16
+                window.detailItem.width: scroll.availableWidth - 32
+                window.detailItem.height: window.detailItem.implicitHeight
+                window.detailItem.visible: true
             }
         }
     }
