@@ -1,5 +1,6 @@
 pragma ComponentBehavior: Bound
 import QtQuick
+import "SettingsTheme.js" as Theme
 import QtQuick.Window
 import QtQuick.Controls.Basic as QQC
 import QtQuick.Layouts
@@ -8,6 +9,7 @@ import "shared" as UI
 
 QQC.Pane {
     id: editor
+    property var tone: Theme.fromSettings(settings)
     required property var settings
     property bool hyprland: false
     property bool infoOnlineEnabled: true
@@ -16,13 +18,32 @@ QQC.Pane {
     onCurrentTabChanged: {
         if (scroll.contentItem)
             scroll.contentItem.contentY = 0;
+        Qt.callLater(compactNavigation.revealSelection);
     }
     property string query: ""
     readonly property bool onScreen: visible && Window.window !== null && Window.window.visible
-    readonly property var tabs: [qsTr("General"), qsTr("Commands"), qsTr("Behavior"), qsTr("Design"), qsTr("Info")]
-    readonly property var tabKeys: ["General", "Commands", "Behavior", "Design", "Info"]
-    readonly property var tabIcons: ["settings", "terminal", "activate", "grid", "info"]
-    readonly property var descriptions: [qsTr("Connect your system flake and choose how generations are shown."), qsTr("Keep your rebuild commands and terminal preferences together."), qsTr("Choose how updates, generation actions and package details behave."), qsTr("Make the panel and popup feel at home on your desktop."), qsTr("Project information, releases and ways to contribute.")]
+    readonly property bool wide: width >= 740
+    readonly property var navigation: [0, 1, 2, 5, 3, 6, 4]
+    readonly property var tabs: [qsTr("System"), qsTr("Commands"), qsTr("Generations"), qsTr("Appearance"), qsTr("Info"), qsTr("Panel"), qsTr("Advanced")]
+    readonly property var tabKeys: ["General", "Commands", "Behavior", "Design", "Info", "Panel", "Advanced"]
+    readonly property var tabIcons: ["settings", "terminal", "activate", "grid", "info", "grid", "settings"]
+    readonly property var descriptions: [qsTr("Your system flake, update checks and default view."), qsTr("Your rebuild shortcuts, terminal and cleanup commands."), qsTr("Generation actions, notifications and package comparisons."), qsTr("Fine-tune the colours, typography and feel of your widget."), qsTr("Project information, releases and ways to contribute."), qsTr("Choose how Nixdatifier lives on your desktop."), qsTr("Permissions, secrets, GitHub access and persistent storage.")]
+    function sectionFor(field) {
+        if (["Secrets", "Impermanence", "Permissions"].includes(field.group))
+            return "Advanced";
+        if (["Panel", "Popup size", "Hyprland panel"].includes(field.group))
+            return "Panel";
+        return field.tab;
+    }
+    function fieldEnabled(field) {
+        if (field.key === "panelSideOffset")
+            return !String(settings.popupPosition).endsWith("center");
+        if (field.key === "customTextColor")
+            return !settings.useSystemTextColor;
+        if (["bgColor", "bgRadius"].includes(field.key))
+            return settings.showBg;
+        return true;
+    }
     readonly property var placementFields: [
         {
             key: "pillMode",
@@ -102,173 +123,332 @@ QQC.Pane {
         if (!onScreen || currentTab === 4)
             return [];
         const search = query.trim().toLowerCase();
-        return Schema.fields.concat(hyprland ? placementFields : []).filter(f => search ? (f.label + " " + f.group + " " + (f.help || "")).toLowerCase().includes(search) : f.tab === tabKeys[currentTab]);
+        return Schema.fields.concat(hyprland ? placementFields : []).filter(f => search ? (f.label + " " + f.group + " " + (f.help || "")).toLowerCase().includes(search) : sectionFor(f) === tabKeys[currentTab]);
     }
     readonly property var groups: [...new Set(shownFields.map(f => f.group))]
 
-    padding: 18
-    palette.window: "#151718"
-    palette.windowText: "#eeefeb"
-    palette.base: "#0f1112"
-    palette.text: "#eeefeb"
-    palette.button: "#24282a"
-    palette.buttonText: "#eeefeb"
-    palette.highlight: "#91bcff"
-    palette.highlightedText: "#101b2c"
-    palette.placeholderText: "#787f82"
+    padding: 16
+    palette.window: tone.panel
+    palette.windowText: tone.text
+    palette.base: tone.sunk
+    palette.text: tone.text
+    palette.button: tone.hover
+    palette.buttonText: tone.text
+    palette.highlight: tone.brand
+    palette.highlightedText: tone.brandInk
+    palette.placeholderText: tone.dim
     background: Rectangle {
-        color: "#151718"
-        radius: 14
-        border.color: "#10ffffff"
+        color: tone.panel
+        radius: 18
+        gradient: Gradient {
+            GradientStop {
+                position: 0
+                color: tone.panelTop
+            }
+            GradientStop {
+                position: 1
+                color: tone.panelBottom
+            }
+        }
+        border.color: tone.line2
+    }
+
+    Component {
+        id: navigationEntry
+        QQC.Button {
+            id: entry
+            required property int modelData
+            readonly property bool selected: editor.currentTab === modelData
+            objectName: "settingsTab_" + editor.tabKeys[modelData]
+            Layout.fillWidth: editor.wide
+            width: editor.wide ? 140 : implicitWidth
+            implicitWidth: label.implicitWidth + 54
+            implicitHeight: 36
+            padding: 12
+            onClicked: {
+                editor.query = "";
+                search.text = "";
+                editor.currentTab = modelData;
+            }
+            contentItem: RowLayout {
+                spacing: 10
+                Image {
+                    source: Qt.resolvedUrl("assets/ic_" + editor.tabIcons[entry.modelData] + ".svg")
+                    sourceSize: Qt.size(32, 32)
+                    Layout.preferredWidth: 16
+                    Layout.preferredHeight: 16
+                    opacity: entry.selected ? 1 : 0.5
+                }
+                Text {
+                    id: label
+                    Layout.fillWidth: true
+                    text: editor.tabs[entry.modelData]
+                    color: entry.selected ? tone.text : entry.hovered ? tone.text : tone.muted
+                    font.family: tone.fontFamily
+                    font.pixelSize: 12
+                    font.weight: entry.selected ? Font.DemiBold : Font.Normal
+                }
+            }
+            background: Rectangle {
+                radius: 10
+                color: entry.selected ? tone.chipPressed : entry.hovered ? tone.hover : "transparent"
+                border.color: entry.activeFocus ? tone.brand : entry.selected ? tone.chipPressedBorder : "transparent"
+                Behavior on color {
+                    ColorAnimation {
+                        duration: 120
+                    }
+                }
+            }
+        }
     }
 
     contentItem: ColumnLayout {
-        spacing: 16
+        spacing: 12
         RowLayout {
-            Layout.fillWidth: true
-            Image {
-                source: Qt.resolvedUrl("../../icon.png")
-                sourceSize: Qt.size(80, 80)
-                Layout.preferredWidth: 40
-                Layout.preferredHeight: 40
+            spacing: 12
+            Rectangle {
+                Layout.preferredWidth: 32
+                Layout.preferredHeight: 32
+                radius: 10
+                color: tone.sunk
+                border.color: tone.line2
+                Image {
+                    anchors.centerIn: parent
+                    width: 24
+                    height: 24
+                    source: Qt.resolvedUrl("../../icon.png")
+                    sourceSize: Qt.size(60, 60)
+                }
             }
             ColumnLayout {
                 Layout.fillWidth: true
                 spacing: 3
                 Text {
                     text: qsTr("nixdatifier")
-                    color: "#eeefeb"
-                    font.pixelSize: 19
+                    color: tone.text
+                    font.family: tone.fontFamily
+                    font.pixelSize: 16
                     font.weight: Font.DemiBold
                 }
                 Text {
-                    Layout.fillWidth: true
-                    text: editor.descriptions[editor.currentTab]
-                    color: "#9da3a5"
-                    font.pixelSize: 11
-                    wrapMode: Text.WordWrap
+                    visible: !editor.wide
+                    text: qsTr("Settings")
+                    color: tone.dim
+                    font.family: tone.fontFamily
+                    font.pixelSize: 12
+                }
+            }
+            Text {
+                text: editor.currentVersion
+                color: tone.dim
+                font.family: tone.fontFamily
+                font.pixelSize: 11
+            }
+        }
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 1
+            color: tone.line
+        }
+        Flickable {
+            id: compactNavigation
+            function revealSelection() {
+                if (!visible)
+                    return;
+                const entry = compactNav.children[editor.navigation.indexOf(editor.currentTab)];
+                if (entry)
+                    contentX = Math.max(0, Math.min(entry.x - (width - entry.width) / 2, contentWidth - width));
+            }
+            onVisibleChanged: Qt.callLater(revealSelection)
+            onWidthChanged: Qt.callLater(revealSelection)
+            visible: !editor.wide
+            Layout.fillWidth: true
+            Layout.preferredHeight: 36
+            contentWidth: compactNav.width
+            contentHeight: height
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            Row {
+                id: compactNav
+                spacing: 4
+                Repeater {
+                    model: editor.navigation
+                    delegate: navigationEntry
                 }
             }
         }
-        Flow {
-            Layout.fillWidth: true
-            spacing: 6
-            Repeater {
-                model: editor.tabs
-                QQC.Button {
-                    id: tabButton
-                    required property string modelData
-                    required property int index
-                    text: modelData
-                    objectName: "settingsTab_" + editor.tabKeys[index]
-                    implicitHeight: 34
-                    implicitWidth: tabContent.implicitWidth + 20
-                    padding: 10
-                    onClicked: {
-                        editor.query = "";
-                        search.text = "";
-                        editor.currentTab = index;
-                    }
-                    contentItem: RowLayout {
-                        id: tabContent
-                        spacing: 6
-                        Image {
-                            source: Qt.resolvedUrl("assets/ic_" + editor.tabIcons[tabButton.index] + ".svg")
-                            sourceSize: Qt.size(28, 28)
-                            Layout.preferredWidth: 14
-                            Layout.preferredHeight: 14
-                            opacity: editor.currentTab === tabButton.index ? 1 : 0.65
-                        }
-                        Text {
-                            text: tabButton.text
-                            color: editor.currentTab === tabButton.index ? "#c6dcff" : "#9da3a5"
-                            font.pixelSize: 11
-                        }
-                    }
-                    background: Rectangle {
-                        radius: 8
-                        color: editor.currentTab === tabButton.index ? "#22344b" : tabButton.hovered ? "#08ffffff" : "transparent"
-                        border.color: tabButton.activeFocus ? "#91bcff" : editor.currentTab === tabButton.index ? "#5091bcff" : "#10ffffff"
-                    }
-                }
-            }
-        }
-        SettingsTextField {
-            id: search
-            Layout.fillWidth: true
-            visible: editor.currentTab !== 4
-            placeholderText: qsTr("Search settings…")
-            selectByMouse: true
-            Accessible.name: qsTr("Search settings")
-            onTextChanged: editor.query = text
-        }
-        UI.ScrollView {
-            id: scroll
+        RowLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            contentWidth: availableWidth
-            clip: true
-            Column {
-                width: scroll.availableWidth
-                spacing: 18
+            spacing: 12
+            ColumnLayout {
+                visible: editor.wide
+                Layout.preferredWidth: 140
+                Layout.fillHeight: true
+                spacing: 5
                 Repeater {
-                    model: editor.groups
+                    model: editor.navigation
+                    delegate: navigationEntry
+                }
+                Item {
+                    Layout.fillHeight: true
+                }
+            }
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                spacing: 12
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    Text {
+                        text: editor.tabs[editor.currentTab]
+                        color: tone.text
+                        font.family: tone.fontFamily
+                        font.pixelSize: 20
+                        font.weight: Font.DemiBold
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: editor.descriptions[editor.currentTab]
+                        color: tone.muted
+                        font.family: tone.fontFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.WordWrap
+                        lineHeight: 1.3
+                    }
+                }
+                SettingsTextField {
+                    id: search
+                    tone: editor.tone
+                    Layout.fillWidth: true
+                    visible: editor.currentTab !== 4
+                    placeholderText: qsTr("Search all settings…")
+                    Accessible.name: qsTr("Search settings")
+                    onTextChanged: editor.query = text
+                }
+                UI.ScrollView {
+                    id: scroll
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    contentWidth: availableWidth
+                    clip: true
                     Column {
-                        id: group
-                        required property string modelData
-                        readonly property var fields: editor.shownFields.filter(f => f.group === modelData)
-                        width: parent.width
-                        spacing: 8
-                        Text {
-                            text: group.modelData.toUpperCase()
-                            color: "#b1b7b9"
-                            font.pixelSize: 10
-                            font.weight: Font.DemiBold
-                            font.letterSpacing: 1.2
-                        }
+                        width: scroll.availableWidth
+                        spacing: 12
                         Rectangle {
+                            visible: editor.currentTab === 3 && editor.query === ""
                             width: parent.width
-                            height: rows.implicitHeight + 4
+                            height: 88
                             radius: 14
-                            color: "#04ffffff"
-                            border.color: "#10ffffff"
-                            Column {
-                                id: rows
-                                x: 14
-                                y: 2
-                                width: parent.width - 28
-                                Repeater {
-                                    model: group.fields
-                                    SettingsField {
-                                        required property var modelData
-                                        required property int index
-                                        width: rows.width
-                                        height: implicitHeight
-                                        field: modelData
-                                        settings: editor.settings
-                                        first: index === 0
-                                        enabled: modelData.key !== "panelSideOffset" || !String(editor.settings.popupPosition).endsWith("center")
-                                        opacity: enabled ? 1 : 0.45
+                            color: tone.sunk
+                            border.color: tone.line2
+                            Text {
+                                x: 16
+                                y: 12
+                                text: qsTr("APPEARANCE PREVIEW")
+                                color: tone.dim
+                                font.family: tone.fontFamily
+                                font.pixelSize: 10
+                                font.letterSpacing: 1
+                            }
+                            Rectangle {
+                                anchors.centerIn: parent
+                                anchors.verticalCenterOffset: 10
+                                width: Math.min(parent.width - 40, 310)
+                                height: 42
+                                color: editor.settings.showBg ? editor.settings.bgColor : "transparent"
+                                radius: editor.settings.bgRadius
+                                border.color: "#20ffffff"
+                                Row {
+                                    anchors.centerIn: parent
+                                    spacing: 12
+                                    Image {
+                                        width: 26
+                                        height: 26
+                                        source: Qt.resolvedUrl("../../icon.png")
+                                    }
+                                    Text {
+                                        text: qsTr("Generation 142")
+                                        color: editor.settings.useSystemTextColor ? editor.palette.text : editor.settings.customTextColor
+                                        font.family: tone.fontFamily
+                                        font.pixelSize: 13 * editor.settings.fontScale
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                    Rectangle {
+                                        width: 7
+                                        height: 7
+                                        radius: 4
+                                        color: editor.settings.accentColor
+                                        anchors.verticalCenter: parent.verticalCenter
                                     }
                                 }
                             }
                         }
-                    }
-                }
-                Text {
-                    visible: editor.currentTab !== 4 && editor.groups.length === 0
-                    text: qsTr("No matching settings")
-                    color: "#9da3a5"
-                    font.pixelSize: 12
-                }
-                Loader {
-                    objectName: "projectInfoLoader"
-                    width: parent.width
-                    active: editor.onScreen && editor.currentTab === 4
-                    sourceComponent: ProjectInfoPane {
-                        showBranding: false
-                        currentVersion: editor.currentVersion
-                        onlineEnabled: editor.infoOnlineEnabled
+                        Repeater {
+                            model: editor.groups
+                            Column {
+                                id: group
+                                required property string modelData
+                                readonly property var fields: editor.shownFields.filter(f => f.group === modelData)
+                                width: parent.width
+                                spacing: 9
+                                Text {
+                                    text: group.modelData.toUpperCase()
+                                    color: tone.sectionTitle
+                                    font.family: tone.fontFamily
+                                    font.pixelSize: 10
+                                    font.weight: Font.DemiBold
+                                    font.letterSpacing: 1.2
+                                    leftPadding: 2
+                                }
+                                Rectangle {
+                                    width: parent.width
+                                    height: rows.implicitHeight + 4
+                                    radius: 14
+                                    color: tone.card
+                                    border.color: tone.line
+                                    Column {
+                                        id: rows
+                                        x: 14
+                                        y: 2
+                                        width: parent.width - 28
+                                        Repeater {
+                                            model: group.fields
+                                            SettingsField {
+                                                required property var modelData
+                                                required property int index
+                                                width: rows.width
+                                                height: implicitHeight
+                                                field: modelData
+                                                settings: editor.settings
+                                                first: index === 0
+                                                enabled: editor.fieldEnabled(modelData)
+                                                opacity: enabled ? 1 : 0.4
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Text {
+                            visible: editor.currentTab !== 4 && editor.groups.length === 0
+                            text: qsTr("No matching settings. Try another search.")
+                            color: tone.muted
+                            font.family: tone.fontFamily
+                            font.pixelSize: 12
+                        }
+                        Loader {
+                            objectName: "projectInfoLoader"
+                            width: parent.width
+                            active: editor.onScreen && editor.currentTab === 4
+                            sourceComponent: ProjectInfoPane {
+                                tone: editor.tone
+                                showBranding: false
+                                currentVersion: editor.currentVersion
+                                onlineEnabled: editor.infoOnlineEnabled
+                            }
+                        }
                     }
                 }
             }

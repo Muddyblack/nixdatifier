@@ -361,7 +361,7 @@ ShellRoot {
         focusable: true
         exclusiveZone: 0
         aboveWindows: true
-        implicitWidth: Math.max(380, Math.min(cfg.popupWidth, screen ? screen.width - 24 : 600))
+        implicitWidth: Math.max(380, Math.min(root.settingsOpen ? Math.max(cfg.popupWidth, 900) : cfg.popupWidth, screen ? screen.width - 24 : 900))
         implicitHeight: Math.max(420, Math.min(cfg.popupHeight, screen ? screen.height - 64 : 740))
         anchors {
             top: root.topEdge
@@ -392,12 +392,12 @@ ShellRoot {
             Rectangle {
                 anchors.fill: parent
                 visible: root.settingsOpen
-                color: UI.Theme.backgroundColor
-                radius: 14
+                color: settingsEditor.tone.panel
+                radius: 18
                 border.color: UI.Theme.line
                 ColumnLayout {
                     anchors.fill: parent
-                    anchors.margins: 18
+                    anchors.margins: 8
                     spacing: 14
                     App.SettingsEditor {
                         id: settingsEditor
@@ -409,15 +409,18 @@ ShellRoot {
                     }
                     RowLayout {
                         Layout.alignment: Qt.AlignRight
-                        UI.ActionButton {
+                        App.SettingsButton {
+                            tone: settingsEditor.tone
                             text: qsTr("Cancel")
                             onClicked: root.settingsOpen = false
                         }
-                        UI.ActionButton {
+                        App.SettingsButton {
+                            tone: settingsEditor.tone
                             text: qsTr("Apply")
                             onClicked: root.applySettings()
                         }
-                        UI.ActionButton {
+                        App.SettingsButton {
+                            tone: settingsEditor.tone
                             text: qsTr("OK")
                             primary: true
                             onClicked: {

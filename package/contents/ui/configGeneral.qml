@@ -5,8 +5,8 @@ import org.kde.kirigami as Kirigami
 Kirigami.Page {
     padding: 0
     globalToolBarStyle: Kirigami.ApplicationHeaderStyle.None
-    implicitWidth: 620
-    implicitHeight: 620
+    implicitWidth: 900
+    implicitHeight: 740
     Settings {
         id: state
     }
