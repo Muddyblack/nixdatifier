@@ -506,6 +506,27 @@ Item {
             compare(search.text, "");
             tryCompare(timeline, "travelAvailable", true);
         }
+        function test_generation_opens_in_larger_window() {
+            const list = findChild(app, "generationList");
+            const row = list.itemAtIndex(0);
+            const button = findChild(row, "openGeneration-661");
+            verify(button);
+            const originalActivate = findChild(row, "activate-661");
+            const originalDate = findChild(row, "generationDate-661");
+            mouseClick(button);
+            const window = findChild(row, "generationWindow-661");
+            tryCompare(window, "visible", true);
+            compare(core.selectedGenNum, 661);
+            verify(window.detailItem.visible);
+            compare(findChild(window.detailItem, "activate-661"), originalActivate);
+            compare(findChild(window.detailItem, "generationDate-661"), originalDate);
+            compare(row.implicitHeight, row.headerH);
+            const originalWidth = row.width;
+            tryCompare(window.detailItem, "width", window.width - 32);
+            window.close();
+            tryCompare(window.detailItem, "parent", row);
+            compare(window.detailItem.width, originalWidth);
+        }
         function test_inline_generation_actions_keep_confirmations_and_guards() {
             core.generations = core.generations.concat([
                 {

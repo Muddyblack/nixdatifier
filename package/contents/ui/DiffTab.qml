@@ -32,19 +32,37 @@ Item {
     }
     anchors.fill: parent
     visible: activeViewMode === "diff"
+    UI.DetailWindow {
+        id: detailWindow
+        objectName: "compareWindow"
+        title: qsTr("Compare generations — Nixdatifier")
+        detailItem: compareContent
+    }
     UI.ScrollView {
         id: scroll
         anchors.fill: parent
         clip: true
         contentWidth: availableWidth
         ColumnLayout {
+            id: compareContent
             width: scroll.availableWidth
             spacing: 12
-            Text {
-                text: qsTr("Compare generations")
-                color: root.textColor
-                font.pixelSize: 12 * root.fs
-                font.weight: Font.Medium
+            RowLayout {
+                Layout.fillWidth: true
+                Text {
+                    Layout.fillWidth: true
+                    text: qsTr("Compare generations")
+                    color: root.textColor
+                    font.pixelSize: 12 * root.fs
+                    font.weight: Font.Medium
+                }
+                UI.ActionButton {
+                    objectName: "openCompare"
+                    visible: !detailWindow.visible
+                    glyph: Qt.resolvedUrl("assets/ic_external.svg")
+                    tip: qsTr("Open in larger window")
+                    onClicked: detailWindow.open()
+                }
             }
             RowLayout {
                 Layout.fillWidth: true
@@ -110,7 +128,7 @@ Item {
                 Layout.fillWidth: true
                 visible: root.genA === root.genB || !!root.result
                 packages: root.result && root.genA !== root.genB ? root.result.diff || [] : []
-                maximumHeight: Math.max(120, root.height - 160)
+                maximumHeight: Math.max(120, (detailWindow.visible ? detailWindow.height : root.height) - 160)
                 viewMode: root.diffViewMode
                 textColor: root.textColor
                 accentColor: root.accentColor
