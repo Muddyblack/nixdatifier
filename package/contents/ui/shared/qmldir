@@ -7,3 +7,4 @@ GenerationPicker 1.0 GenerationPicker.qml
 DisclosureButton 1.0 DisclosureButton.qml
 ScrollBar 1.0 ScrollBar.qml
 ScrollView 1.0 ScrollView.qml
+DetailWindow 1.0 DetailWindow.qml

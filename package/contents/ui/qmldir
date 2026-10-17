@@ -18,6 +18,7 @@ Settings 1.0 Settings.qml
 SettingsButton 1.0 SettingsButton.qml
 SettingsEditor 1.0 SettingsEditor.qml
 SettingsField 1.0 SettingsField.qml
+SettingsSwatches 1.0 SettingsSwatches.qml
 SettingsTextField 1.0 SettingsTextField.qml
 SoftwareCover 1.0 SoftwareCover.qml
 StoreUsageTab 1.0 StoreUsageTab.qml

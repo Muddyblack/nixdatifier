@@ -47,6 +47,30 @@ qml_lint() {
     return "$rc"
 }
 
+# Every component in a QML directory must be registered in its qmldir. A missing entry
+# loads fine in the widget but breaks Quickshell with "X is not a type" (issue #28).
+qmldir_complete() {
+    local dir=$1 f name rc=0
+    # Plasma entry points, loaded by path rather than by type name.
+    local skip=" main configGeneral "
+    for f in "$dir"/*.qml; do
+        name=$(basename "$f" .qml)
+        [[ "$skip" == *" $name "* ]] && continue
+        if ! grep -qE "^(singleton )?$name " "$dir/qmldir"; then
+            echo "not registered in $dir/qmldir: $name"
+            rc=1
+        fi
+    done
+    return "$rc"
+}
+qmldirs() {
+    local rc=0 dir
+    while read -r dir; do
+        qmldir_complete "$dir" || rc=1
+    done < <(find package -name qmldir -exec dirname {} \; | sort)
+    return "$rc"
+}
+
 # A well-formed manifest and config schema; a typo here breaks the widget at install time.
 manifests() {
     python3 -I - <<'EOF'
@@ -71,6 +95,7 @@ step "shellcheck: helper scripts" shell_lint
 step "qmlformat" qml_format
 step "qmllint" qml_lint
 step "unused QML properties, functions, signals, ids and locals" python3 -I scripts/check-unused.py
+step "qmldir registers every component" qmldirs
 step "manifests" manifests
 
 printf '\n'
