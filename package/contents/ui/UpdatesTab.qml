@@ -185,6 +185,14 @@ Item {
                                                 }
                                             }
                                             Text {
+                                                Layout.fillWidth: true
+                                                visible: !card.updating && (card.modelData.oldDate !== "" || card.modelData.newDateTs > 0)
+                                                text: card.modelData.oldDate + (card.modelData.oldDate !== "" ? " → " : "") + card.modelData.newDate
+                                                color: "#8293ab"
+                                                font.pixelSize: 9 * root.fs
+                                                elide: Text.ElideRight
+                                            }
+                                            Text {
                                                 visible: card.updating
                                                 text: qsTr("Updating input…")
                                                 color: UI.Theme.positive

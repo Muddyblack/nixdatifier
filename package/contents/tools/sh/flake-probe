@@ -106,7 +106,7 @@ probe_one() {
             # Cheap path: Nix locks the immutable URL a mutable one (a channel)
             # redirects to, so a HEAD request tells us if it moved - no download.
             if [[ -n "$locked_url" ]] && command -v curl >/dev/null 2>&1; then
-                local hdr="" immutable="" effective=""
+                local hdr="" immutable="" effective="" new_ts=""
                 # --fail: an HTTP error or a dead connection means "don't know", never "changed".
                 if hdr=$(curl --silent --fail --head --location --max-time 15 --connect-timeout 5 \
                     -o /dev/null -D - -w '\n__EFFECTIVE__%{url_effective}\n' "$url" 2>/dev/null); then
@@ -114,6 +114,9 @@ probe_one() {
                     # Only the server's own immutable marker (what Nix trusts) can prove an update.
                     immutable=$(sed -n 's/^[Ll]ink:[[:space:]]*<\([^>]*\)>;.*rel="\{0,1\}immutable.*/\1/p' <<< "$hdr" | tail -1)
                     effective=$(sed -n 's/^__EFFECTIVE__//p' <<< "$hdr" | tail -1)
+                    local lm
+                    lm=$(sed -n 's/^[Ll]ast-[Mm]odified:[[:space:]]*//p' <<< "$hdr" | tail -1)
+                    [[ -n "$lm" ]] && new_ts=$(date -d "$lm" +%s 2>/dev/null || true)
                     if [[ -z "$immutable" && "$(strip_nix_params "$effective")" == "$(strip_nix_params "$locked_url")" ]]; then
                         immutable=$effective # landed exactly on the locked archive
                     fi
@@ -122,8 +125,10 @@ probe_one() {
                     if [[ "$(strip_nix_params "$immutable")" == "$(strip_nix_params "$locked_url")" ]]; then
                         printf '%s\tunchanged\t%s\t%s\t%s\t%s\t\n' "$name" "$rev" "$rev" "$date" "$url"
                     else
+                        # Channel archives are named <channel>.<count>.<shortrev>; show the git short rev.
                         local short="${immutable%%[?#]*}"; short="${short%/*}"; short="${short##*/}"
-                        printf '%s\tok\t%s\t%s\t%s\t%s\t%s\n' "$name" "$rev" "$short" "$date" "$url" "$immutable"
+                        [[ "$short" =~ \.([[:xdigit:]]{7,})$ ]] && short="${BASH_REMATCH[1]}"
+                        printf '%s\tok\t%s\t%s\t%s\t%s\t%s\t\t%s\n' "$name" "$rev" "$short" "$date" "$url" "$immutable" "$new_ts"
                     fi
                     return
                 fi
