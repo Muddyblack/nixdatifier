@@ -1948,6 +1948,7 @@ Item {
                 continue;
 
             const overrideRef = parts.length > 6 ? parts[6] : "";
+            const newDateTs = parts.length > 8 ? (parseInt(parts[8]) || 0) : 0;
             updates.push({
                 input: name,
                 revisionKey: oldRev + "\n" + newRev,
@@ -1955,7 +1956,8 @@ Item {
                 newRev: newRev.substring(0, 7),
                 oldDateTs: oldDateTs,
                 oldDate: oldDateTs > 0 ? new Date(oldDateTs * 1000).toLocaleDateString() : "",
-                newDate: qsTr("latest"),
+                newDateTs: newDateTs,
+                newDate: newDateTs > 0 ? new Date(newDateTs * 1000).toLocaleDateString() : qsTr("latest"),
                 url: url.replace(/\.git$/, ""),
                 overrideRef: overrideRef
             });
