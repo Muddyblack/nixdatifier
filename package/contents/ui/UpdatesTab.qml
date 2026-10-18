@@ -35,7 +35,11 @@ Item {
     property string inputList: ""
     property string inputListMode: "ignore"
     signal inputListSaved(string text)
-    property bool showSkipped: false
+    // Inputs that are not checked stay in the list, in name order, so nothing jumps around.
+    readonly property var rows: root.flakeUpdates.concat(root.skippedInputs.map(n => ({
+                input: n,
+                skipped: true
+            }))).sort((a, b) => a.input < b.input ? -1 : a.input > b.input ? 1 : 0)
     signal checkRequested
     signal copyToClipboard(string text)
     visible: activeViewMode === "updates"
@@ -180,16 +184,55 @@ Item {
                 }
             }
             Repeater {
-                model: root.flakeUpdates
+                model: root.rows
                 Item {
                     id: card
                     required property var modelData
+                    readonly property bool skipped: !!modelData.skipped
                     readonly property var entry: root.dryRunCache[modelData.input] || null
-                    readonly property bool opened: !!root.openPreviews[modelData.input]
+                    readonly property bool opened: !skipped && !!root.openPreviews[modelData.input]
                     readonly property bool updating: root.updatingInput === modelData.input
                     Layout.fillWidth: true
                     Layout.bottomMargin: 9
-                    implicitHeight: detailWindow.visible ? 58 : contents.implicitHeight + 20
+                    implicitHeight: skipped ? skippedSurface.implicitHeight : detailWindow.visible ? 58 : contents.implicitHeight + 20
+                    Rectangle {
+                        id: skippedSurface
+                        objectName: "skipped-" + card.modelData.input
+                        visible: card.skipped
+                        width: card.width
+                        implicitHeight: 47
+                        radius: 9
+                        color: "#02ffffff"
+                        border.color: "#08ffffff"
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 10
+                            anchors.rightMargin: 10
+                            spacing: 8
+                            Text {
+                                Layout.fillWidth: true
+                                text: card.modelData.input
+                                color: "#91a4bd"
+                                opacity: 0.55
+                                font.pixelSize: 11 * root.fs
+                                font.strikeout: true
+                                elide: Text.ElideRight
+                            }
+                            Text {
+                                text: qsTr("not checked")
+                                color: "#91a4bd"
+                                opacity: 0.55
+                                font.pixelSize: 9 * root.fs
+                            }
+                            UI.ActionButton {
+                                objectName: "resume-" + card.modelData.input
+                                glyph: "view-visible"
+                                implicitHeight: 27
+                                tip: qsTr("Check %1 again").arg(card.modelData.input)
+                                onClicked: root.resumeInputRequested(card.modelData.input)
+                            }
+                        }
+                    }
                     UI.DetailWindow {
                         id: detailWindow
                         objectName: "updateWindow-" + card.modelData.input
@@ -198,6 +241,7 @@ Item {
                     }
                     Rectangle {
                         id: cardSurface
+                        visible: !card.skipped
                         width: card.width
                         implicitHeight: contents.implicitHeight + 20
                         height: implicitHeight
@@ -443,55 +487,6 @@ Item {
                                     flatStyle: true
                                     onClicked: root.togglePreview(card.modelData)
                                 }
-                            }
-                        }
-                    }
-                }
-            }
-            Rectangle {
-                visible: root.skippedInputs.length > 0
-                Layout.fillWidth: true
-                Layout.topMargin: 6
-                implicitHeight: skippedColumn.implicitHeight + 16
-                radius: 9
-                color: "#03ffffff"
-                border.color: "#0effffff"
-                ColumnLayout {
-                    id: skippedColumn
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.margins: 8
-                    spacing: 4
-                    UI.ActionButton {
-                        objectName: "skippedToggle"
-                        Layout.fillWidth: true
-                        flatStyle: true
-                        text: qsTr("Not checked (%1)").arg(root.skippedInputs.length)
-                        glyph: Qt.resolvedUrl(root.showSkipped ? "assets/ic_chevron_up.svg" : "assets/ic_chevron_down.svg")
-                        onClicked: root.showSkipped = !root.showSkipped
-                    }
-                    Repeater {
-                        model: root.showSkipped ? root.skippedInputs : []
-                        RowLayout {
-                            id: skippedRow
-                            required property string modelData
-                            Layout.fillWidth: true
-                            Layout.leftMargin: 6
-                            spacing: 8
-                            Text {
-                                Layout.fillWidth: true
-                                text: skippedRow.modelData
-                                color: "#91a4bd"
-                                font.pixelSize: 11 * root.fs
-                                elide: Text.ElideRight
-                            }
-                            UI.ActionButton {
-                                objectName: "resume-" + skippedRow.modelData
-                                glyph: "view-visible"
-                                text: qsTr("Check again")
-                                implicitHeight: 27
-                                onClicked: root.resumeInputRequested(skippedRow.modelData)
                             }
                         }
                     }
