@@ -168,6 +168,7 @@ FullView {
     onIgnoreInputRequested: inputName => engine.setInputChecked(inputName, false)
     onResumeInputRequested: inputName => engine.setInputChecked(inputName, true)
     skippedInputs: engine.skippedInputs
+    pendingInputs: engine.pendingInputs
     inputList: engine.settings.ignoredInputs
     inputListMode: engine.settings.inputListMode
     onInputListSaved: text => engine.settings.ignoredInputs = text

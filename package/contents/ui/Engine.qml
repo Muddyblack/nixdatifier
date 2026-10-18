@@ -206,7 +206,9 @@ Item {
     // Format: first line is a Unix timestamp (seconds); remaining lines are raw flake-probe TSV.
     // Written by whichever instance runs the probe first; others just read it.
     // Deliberately a shell expression, not a quoted path — evaluated inside sh() calls.
-    readonly property string probeSettingsKey: (root.settings.checkTarballs ? "tarballs-on" : "tarballs-off") + "-" + (root.settings.deepInputCheck ? "deep-on" : "deep-off") + "-" + Qt.md5((root.settings.inputListMode || "ignore") + ":" + (root.settings.ignoredInputs || ""))
+    // The probe flags decide what a result means; the input list only decides which inputs are in it.
+    readonly property string probeFlagsKey: (root.settings.checkTarballs ? "tarballs-on" : "tarballs-off") + "-" + (root.settings.deepInputCheck ? "deep-on" : "deep-off")
+    readonly property string probeSettingsKey: root.probeFlagsKey + "-" + Qt.md5((root.settings.inputListMode || "ignore") + ":" + (root.settings.ignoredInputs || ""))
     readonly property string flakeCacheName: "flake-v3-" + Qt.md5(root.flakePath) + "-" + (root.lockFingerprint || "none") + "-" + root.probeSettingsKey
     readonly property string cacheDirExpr: '"${XDG_CACHE_HOME:-$HOME/.cache}/nixdatifier"'
     readonly property string flakeCacheExpr: root.cacheDirExpr + "/" + root.flakeCacheName
@@ -1912,6 +1914,7 @@ Item {
                 return;
             if (code !== 0) {
                 const msg = (err || out || "").trim() || qsTr("flake-probe failed");
+                root.clearPendingInputs();
                 root.pushToast(msg, true);
                 return;
             }
@@ -1926,6 +1929,19 @@ Item {
     property string _probeRaw: ""
     // Set while the list is changed in a way that needs no new probe.
     property bool _keepProbe: false
+    // Inputs just put back on the list that are waiting for their first probe result.
+    property var pendingInputs: []
+    function clearPendingInputs() {
+        pendingInputsTimer.stop();
+        if (root.pendingInputs.length > 0)
+            root.pendingInputs = [];
+    }
+    // Failsafe: a probe that never answers must not leave a row loading forever.
+    Timer {
+        id: pendingInputsTimer
+        interval: 60000
+        onTriggered: root.clearPendingInputs()
+    }
     property var skippedInputs: []
     // A tarball without a Git revision is identified by its content hash.
     function shortRev(rev) {
@@ -1937,6 +1953,7 @@ Item {
     }
     function parseFlakeProbe(text, isRetry, quiet) {
         root._probeRaw = text;
+        root.clearPendingInputs();
         const lines = text.split("\n");
         const updates = [];
         const unreachable = [];
@@ -2067,8 +2084,9 @@ Item {
         root.settings.ignoredInputs = names.join(",");
         root._keepProbe = false;
         if (checked) {
-            // Move the card right away; the background probe confirms it.
-            root.skippedInputs = root.skippedInputs.filter(n => n !== inputName);
+            // Keep the row, now loading; the probe replaces it with a card.
+            root.pendingInputs = root.pendingInputs.concat([inputName]);
+            pendingInputsTimer.restart();
         } else {
             root.flakeUpdates = root.flakeUpdates.filter(u => u.input !== inputName);
             root.skippedInputs = root.skippedInputs.concat([inputName]).sort();
@@ -2783,12 +2801,18 @@ Item {
         });
     }
 
+    onProbeFlagsKeyChanged: {
+        if (!root.initialized)
+            return;
+        root.flakeUpdates = [];
+        root.dryRunCache = ({});
+    }
+
+    // A list change keeps the cards on screen; the next probe refreshes them.
     onProbeSettingsKeyChanged: {
         if (!root.initialized || root._keepProbe)
             return;
         root._lastFlakeCacheTs = 0;
-        root.flakeUpdates = [];
-        root.dryRunCache = ({});
         initialFlakeCheckTimer.stop();
         probeSettingsTimer.restart();
     }
@@ -2797,8 +2821,10 @@ Item {
         id: probeSettingsTimer
         interval: 600
         onTriggered: {
-            if (!root.autoStart || !root.isNixOS || root.flakePath === "")
+            if (!root.autoStart || !root.isNixOS || root.flakePath === "") {
+                root.clearPendingInputs();
                 return;
+            }
             if (root.isBusy || root.isCheckingFlake) {
                 restart();
                 return;

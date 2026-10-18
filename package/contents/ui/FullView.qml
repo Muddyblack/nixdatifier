@@ -206,6 +206,7 @@ Pane {
     signal ignoreInputRequested(string inputName)
     signal resumeInputRequested(string inputName)
     property var skippedInputs: []
+    property var pendingInputs: []
     property string inputList: ""
     property string inputListMode: "ignore"
     signal inputListSaved(string text)
@@ -726,6 +727,7 @@ Pane {
                 releaseNotesCache: fullView.releaseNotesCache
                 isDryRunning: fullView.isDryRunning
                 skippedInputs: fullView.skippedInputs
+                pendingInputs: fullView.pendingInputs
                 inputList: fullView.inputList
                 inputListMode: fullView.inputListMode
                 iconStyle: fullView.iconStyle

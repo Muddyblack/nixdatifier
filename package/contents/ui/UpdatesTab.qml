@@ -32,6 +32,7 @@ Item {
     signal ignoreInputRequested(string inputName)
     signal resumeInputRequested(string inputName)
     property var skippedInputs: []
+    property var pendingInputs: []
     property string inputList: ""
     property string inputListMode: "ignore"
     signal inputListSaved(string text)
@@ -189,6 +190,7 @@ Item {
                     id: card
                     required property var modelData
                     readonly property bool skipped: !!modelData.skipped
+                    readonly property bool pending: skipped && root.pendingInputs.indexOf(modelData.input) >= 0
                     readonly property var entry: root.dryRunCache[modelData.input] || null
                     readonly property bool opened: !skipped && !!root.openPreviews[modelData.input]
                     readonly property bool updating: root.updatingInput === modelData.input
@@ -213,19 +215,36 @@ Item {
                                 Layout.fillWidth: true
                                 text: card.modelData.input
                                 color: "#91a4bd"
-                                opacity: 0.55
+                                opacity: card.pending ? 1 : 0.55
                                 font.pixelSize: 11 * root.fs
-                                font.strikeout: true
+                                font.strikeout: !card.pending
                                 elide: Text.ElideRight
                             }
                             Text {
-                                text: qsTr("not checked")
-                                color: "#91a4bd"
+                                id: skippedState
+                                text: card.pending ? qsTr("checking…") : qsTr("not checked")
+                                color: card.pending ? root.accentColor : "#91a4bd"
                                 opacity: 0.55
                                 font.pixelSize: 9 * root.fs
+                                // Pulses only while pending, and the engine clears pending on any outcome or after 60 s.
+                                SequentialAnimation on opacity {
+                                    running: card.pending && root.uiActive
+                                    loops: Animation.Infinite
+                                    onRunningChanged: if (!running)
+                                        skippedState.opacity = 0.55
+                                    NumberAnimation {
+                                        to: 1
+                                        duration: 600
+                                    }
+                                    NumberAnimation {
+                                        to: 0.35
+                                        duration: 600
+                                    }
+                                }
                             }
                             UI.ActionButton {
                                 objectName: "resume-" + card.modelData.input
+                                visible: !card.pending
                                 glyph: "view-visible"
                                 implicitHeight: 27
                                 tip: qsTr("Check %1 again").arg(card.modelData.input)
