@@ -216,7 +216,8 @@ Item {
                                 spacing: 8
                                 Item {
                                     Layout.fillWidth: true
-                                    implicitHeight: 38
+                                    // Grow with the text (the date line, larger fonts) so nothing spills out of the card.
+                                    implicitHeight: Math.max(38, cardInfo.implicitHeight)
                                     RowLayout {
                                         anchors.fill: parent
                                         spacing: 10
@@ -236,8 +237,9 @@ Item {
                                             }
                                         }
                                         ColumnLayout {
+                                            id: cardInfo
                                             Layout.fillWidth: true
-                                            spacing: 5
+                                            spacing: 4
                                             Text {
                                                 Layout.fillWidth: true
                                                 text: card.modelData.input
@@ -268,6 +270,38 @@ Item {
                                                     text: card.modelData.newRev
                                                     color: root.accentColor
                                                     font.family: UI.Theme.fixedWidthFont.family
+                                                    font.pixelSize: 9 * root.fs
+                                                    elide: Text.ElideRight
+                                                }
+                                            }
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 5
+                                                visible: !card.updating && (card.modelData.oldDate !== "" || card.modelData.newDateTs > 0)
+                                                UI.Icon {
+                                                    source: Qt.resolvedUrl("assets/ic_calendar.svg")
+                                                    implicitWidth: 10 * root.fs
+                                                    implicitHeight: 10 * root.fs
+                                                    isMask: true
+                                                    color: "#62738b"
+                                                }
+                                                Text {
+                                                    visible: card.modelData.oldDate !== ""
+                                                    text: card.modelData.oldDate
+                                                    color: "#62738b"
+                                                    font.pixelSize: 9 * root.fs
+                                                }
+                                                Text {
+                                                    visible: card.modelData.oldDate !== ""
+                                                    text: "→"
+                                                    color: "#62738b"
+                                                    font.pixelSize: 9 * root.fs
+                                                }
+                                                Text {
+                                                    Layout.fillWidth: true
+                                                    text: card.modelData.newDate
+                                                    color: root.accentColor
+                                                    opacity: 0.75
                                                     font.pixelSize: 9 * root.fs
                                                     elide: Text.ElideRight
                                                 }

@@ -4,6 +4,7 @@
 # and emits one TSV line per input:
 #
 #   name<TAB>status<TAB>currentRev<TAB>remoteRev<TAB>currentDate<TAB>url
+#       [<TAB>overrideRef<TAB>failure<TAB>remoteDate]
 #
 # status:
 #   ok           — remoteRev differs from currentRev (update available)
@@ -96,6 +97,28 @@ strip_nix_params() {
     printf '%s%s' "$base" "${kept:+?$kept}"
 }
 
+# Value of one query parameter of a URL (empty when absent).
+url_param() {
+    local query="" p
+    [[ "$1" == *\?* ]] || return 0
+    query="${1#*\?}"; query="${query%%#*}"
+    local IFS='&'
+    for p in $query; do
+        [[ "$p" == "$2="* ]] && { printf '%s' "${p#*=}"; return 0; }
+    done
+}
+
+# Git revision of a channel archive: the rev= Nix and the channel server put on
+# the immutable URL, else the <channel>.<count>.<shortrev> directory name.
+channel_rev() {
+    local rev dir
+    rev=$(url_param "$1" rev)
+    [[ "$rev" =~ ^[[:xdigit:]]{7,40}$ ]] && { printf '%s' "$rev"; return 0; }
+    dir="${1%%[?#]*}"; dir="${dir%/*}"; dir="${dir##*/}"
+    [[ "$dir" =~ \.([[:xdigit:]]{7,40})$ ]] && printf '%s' "${BASH_REMATCH[1]}"
+    return 0
+}
+
 probe_one() {
     local name="$1" type="$2" owner="$3" repo="$4" url="$5" ref="$6" rev="$7" date="$8" nar_hash="$9" locked_url="${10}"
     local remote_url=""
@@ -105,7 +128,9 @@ probe_one() {
             # Tarball locks often have no Git revision. Let Nix resolve the
             # original URL (including redirects and compression) and compare
             # the unpacked content hash rather than guessing a Git remote.
-            local metadata="" latest_hash="" latest_rev="" latest_url="" status="unchanged" fields=""
+            local metadata="" latest_hash="" latest_rev="" latest_url="" latest_ts="" status="unchanged" fields=""
+            # Older locks of channel archives carry no rev; recover it from the URL.
+            [[ -n "$rev" ]] || rev=$(channel_rev "$locked_url")
             rev="${rev:-$nar_hash}"
             if [[ "$CHECK_TARBALLS" != 1 ]]; then
                 printf '%s\tpinned\t%s\t\t%s\t%s\n' "$name" "$rev" "$date" "$url"
@@ -114,7 +139,7 @@ probe_one() {
             # Cheap path: Nix locks the immutable URL a mutable one (a channel)
             # redirects to, so a HEAD request tells us if it moved - no download.
             if [[ -n "$locked_url" ]] && command -v curl >/dev/null 2>&1; then
-                local hdr="" immutable="" effective=""
+                local hdr="" immutable="" effective="" lm=""
                 # --fail: an HTTP error or a dead connection means "don't know", never "changed".
                 if hdr=$(curl --silent --fail --head --location --max-time 15 --connect-timeout 5 \
                     -o /dev/null -D - -w '\n__EFFECTIVE__%{url_effective}\n' "$url" 2>/dev/null); then
@@ -122,6 +147,7 @@ probe_one() {
                     # Only the server's own immutable marker (what Nix trusts) can prove an update.
                     immutable=$(sed -n 's/^[Ll]ink:[[:space:]]*<\([^>]*\)>;.*rel="\{0,1\}immutable.*/\1/p' <<< "$hdr" | tail -1)
                     effective=$(sed -n 's/^__EFFECTIVE__//p' <<< "$hdr" | tail -1)
+                    lm=$(sed -n 's/^[Ll]ast-[Mm]odified:[[:space:]]*//p' <<< "$hdr" | tail -1)
                     if [[ -z "$immutable" && "$(strip_nix_params "$effective")" == "$(strip_nix_params "$locked_url")" ]]; then
                         immutable=$effective # landed exactly on the locked archive
                     fi
@@ -130,8 +156,16 @@ probe_one() {
                     if [[ "$(strip_nix_params "$immutable")" == "$(strip_nix_params "$locked_url")" ]]; then
                         printf '%s\tunchanged\t%s\t%s\t%s\t%s\t\n' "$name" "$rev" "$rev" "$date" "$url"
                     else
-                        local short="${immutable%%[?#]*}"; short="${short%/*}"; short="${short##*/}"
-                        printf '%s\tok\t%s\t%s\t%s\t%s\t%s\n' "$name" "$rev" "$short" "$date" "$url" "$immutable"
+                        local new_rev new_ts
+                        new_rev=$(channel_rev "$immutable")
+                        if [[ -z "$new_rev" ]]; then # not a channel: name the archive
+                            new_rev="${immutable%%[?#]*}"; new_rev="${new_rev%/*}"; new_rev="${new_rev##*/}"
+                        fi
+                        # The lastModified Nix will lock; the archive's upload time otherwise.
+                        new_ts=$(url_param "$immutable" lastModified)
+                        [[ "$new_ts" =~ ^[0-9]+$ ]] || new_ts=""
+                        [[ -z "$new_ts" && -n "$lm" ]] && new_ts=$(date -d "$lm" +%s 2>/dev/null || true)
+                        printf '%s\tok\t%s\t%s\t%s\t%s\t%s\t\t%s\n' "$name" "$rev" "$new_rev" "$date" "$url" "$immutable" "$new_ts"
                     fi
                     return
                 fi
@@ -145,9 +179,9 @@ probe_one() {
                 # Parse once per archive, preserving empty fields.
                 fields=$(jq -er '
                     .locked | select(.narHash | type == "string" and length > 0)
-                    | [.narHash, (.rev // .narHash), (.url // "")] | join("|")
+                    | [.narHash, (.rev // .narHash), (.url // ""), (.lastModified // "" | tostring)] | join("|")
                 ' <<< "$metadata" 2>/dev/null) || fields=""
-                IFS='|' read -r latest_hash latest_rev latest_url <<< "$fields"
+                IFS='|' read -r latest_hash latest_rev latest_url latest_ts <<< "$fields"
             fi
             if [[ -z "$latest_hash" ]]; then
                 local why="Could not resolve tarball metadata with Nix (timeout, fetch failure or invalid metadata)"
@@ -156,8 +190,9 @@ probe_one() {
                     "$name" "$rev" "$date" "$url" "$why"
             else
                 [[ "$latest_hash" == "$nar_hash" ]] || status="ok"
-                printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-                    "$name" "$status" "$rev" "$latest_rev" "$date" "$url" "${latest_url:-$url}"
+                [[ "$latest_rev" == "$latest_hash" ]] && latest_rev=$(channel_rev "$latest_url")
+                printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t\t%s\n' \
+                    "$name" "$status" "$rev" "${latest_rev:-$latest_hash}" "$date" "$url" "${latest_url:-$url}" "$latest_ts"
             fi
             return
             ;;
@@ -188,16 +223,25 @@ probe_one() {
 
     local remote_rev="" remote_output="" failure="" result=0
     # Git's ref advertisement is expensive for repositories such as nixpkgs.
-    # Ask GitHub for just the target commit; retain Git for API rate limits,
-    # private repositories, and installations without curl.
-    if [[ "$type" == github ]] && command -v curl >/dev/null 2>&1; then
-        local encoded_ref
-        encoded_ref=$(jq -rn --arg ref "${ref:-HEAD}" '$ref | @uri')
-        remote_rev=$(curl --fail --silent --show-error --location \
+    # Ask GitHub for just the target commit (per_page=1 keeps out the file
+    # list a single-commit lookup carries); its sha and commit date come in one
+    # request. Retain Git for API rate limits, private repositories, and
+    # installations without curl - those updates simply have no date.
+    local remote_ts=""
+    if [[ "$type" == github ]] && command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+        local encoded_ref api_json
+        encoded_ref=$(jq -rn --arg ref "${ref:-}" '$ref | @uri')
+        api_json=$(curl --fail --silent --show-error --location \
             --connect-timeout 5 --max-time 15 \
-            -H 'Accept: application/vnd.github.sha' \
-            "https://api.github.com/repos/${owner}/${repo}/commits/${encoded_ref}" 2>/dev/null) || remote_rev=""
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${owner}/${repo}/commits?per_page=1${encoded_ref:+&sha=$encoded_ref}" 2>/dev/null) || api_json=""
+        remote_rev=$(jq -r '.[0].sha // empty' <<< "$api_json" 2>/dev/null) || remote_rev=""
         [[ "$remote_rev" =~ ^[[:xdigit:]]{40}$ ]] || remote_rev=""
+        if [[ -n "$remote_rev" ]]; then
+            # Same value Nix stores as lastModified: the commit date.
+            remote_ts=$(jq -r '.[0].commit.committer.date // empty | fromdateiso8601' <<< "$api_json" 2>/dev/null) || remote_ts=""
+            [[ "$remote_ts" =~ ^[0-9]+$ ]] || remote_ts=""
+        fi
     fi
     if [[ -z "$remote_rev" ]]; then
         remote_output=$(GIT_TERMINAL_PROMPT=0 timeout --kill-after=2s "$TIMEOUT" \
@@ -234,7 +278,7 @@ probe_one() {
     elif [ "$remote_rev" = "$rev" ]; then
         printf '%s\t%s\t%s\t%s\t%s\t%s\t\n' "$name" "unchanged" "$rev" "$remote_rev" "$date" "$remote_url"
     else
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "ok" "$rev" "$remote_rev" "$date" "$remote_url" "$override_ref"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t\t%s\n' "$name" "ok" "$rev" "$remote_rev" "$date" "$remote_url" "$override_ref" "$remote_ts"
     fi
 }
 
