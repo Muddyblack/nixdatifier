@@ -168,6 +168,9 @@ FullView {
     onIgnoreInputRequested: inputName => engine.setInputChecked(inputName, false)
     onResumeInputRequested: inputName => engine.setInputChecked(inputName, true)
     skippedInputs: engine.skippedInputs
+    inputList: engine.settings.ignoredInputs
+    inputListMode: engine.settings.inputListMode
+    onInputListSaved: text => engine.settings.ignoredInputs = text
     onPopOutRequested: engine.pinned = !engine.pinned
     onConfigureRequested: engine.configureRequested()
     isPopOutOpen: engine.pinned

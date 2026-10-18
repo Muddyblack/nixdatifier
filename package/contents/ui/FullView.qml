@@ -206,6 +206,9 @@ Pane {
     signal ignoreInputRequested(string inputName)
     signal resumeInputRequested(string inputName)
     property var skippedInputs: []
+    property string inputList: ""
+    property string inputListMode: "ignore"
+    signal inputListSaved(string text)
     signal popOutRequested
     signal configureRequested
 
@@ -723,6 +726,8 @@ Pane {
                 releaseNotesCache: fullView.releaseNotesCache
                 isDryRunning: fullView.isDryRunning
                 skippedInputs: fullView.skippedInputs
+                inputList: fullView.inputList
+                inputListMode: fullView.inputListMode
                 iconStyle: fullView.iconStyle
 
                 onDryRunRequested: (inputName, overrideRef) => fullView.dryRunRequested(inputName, overrideRef)
@@ -730,6 +735,7 @@ Pane {
                 onUpdateInputRequested: inputName => fullView.updateInputRequested(inputName)
                 onIgnoreInputRequested: inputName => fullView.ignoreInputRequested(inputName)
                 onResumeInputRequested: inputName => fullView.resumeInputRequested(inputName)
+                onInputListSaved: text => fullView.inputListSaved(text)
             }
 
             DiffTab {

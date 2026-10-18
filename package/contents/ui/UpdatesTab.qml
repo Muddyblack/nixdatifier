@@ -32,6 +32,9 @@ Item {
     signal ignoreInputRequested(string inputName)
     signal resumeInputRequested(string inputName)
     property var skippedInputs: []
+    property string inputList: ""
+    property string inputListMode: "ignore"
+    signal inputListSaved(string text)
     property bool showSkipped: false
     signal checkRequested
     signal copyToClipboard(string text)
@@ -85,6 +88,88 @@ Item {
                     }
                     ToolTip.visible: checkTimeHover.hovered
                     ToolTip.text: qsTr("Last checked at %1").arg(root.lastFlakeCheckTime)
+                }
+                UI.ActionButton {
+                    id: listButton
+                    objectName: "inputListButton"
+                    text: root.width >= 440 * root.fs ? qsTr("Input list") : ""
+                    glyph: "document-edit"
+                    tip: qsTr("Edit the list of inputs that are skipped or checked")
+                    implicitHeight: 29 * root.fs
+                    font.pixelSize: 10 * root.fs
+                    onClicked: listPopup.opened ? listPopup.close() : listPopup.open()
+                    Popup {
+                        id: listPopup
+                        objectName: "inputListPopup"
+                        parent: root
+                        width: Math.min(420, root.width - 24)
+                        x: Math.round((root.width - width) / 2)
+                        y: 40
+                        padding: 13
+                        modal: false
+                        focus: true
+                        closePolicy: Popup.CloseOnEscape
+                        onAboutToShow: listEdit.text = root.inputList.split(/[,\s]+/).filter(n => n !== "").join("\n")
+                        background: Rectangle {
+                            color: "#1b2330"
+                            border.color: "#29a3b9de"
+                            radius: 9
+                        }
+                        contentItem: ColumnLayout {
+                            spacing: 10
+                            Text {
+                                text: root.inputListMode === "only" ? qsTr("Allowlist: only these inputs are checked") : qsTr("Blocklist: these inputs are skipped")
+                                color: root.textColor
+                                font.pixelSize: 12 * root.fs
+                                font.weight: Font.Medium
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: qsTr("One name per line. Globs work, e.g. nur or my-private/*. Use wrapper/input for a wrapper flake's inputs. An empty list checks everything.")
+                                color: "#91a4bd"
+                                wrapMode: Text.WordWrap
+                                font.pixelSize: 10 * root.fs
+                            }
+                            ScrollView {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 150
+                                TextArea {
+                                    id: listEdit
+                                    objectName: "inputListEdit"
+                                    color: root.textColor
+                                    selectByMouse: true
+                                    wrapMode: TextEdit.NoWrap
+                                    font.pixelSize: 11 * root.fs
+                                    background: Rectangle {
+                                        radius: 6
+                                        color: "#04ffffff"
+                                        border.color: listEdit.activeFocus ? root.accentColor : "#16ffffff"
+                                    }
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+                                Item {
+                                    Layout.fillWidth: true
+                                }
+                                UI.ActionButton {
+                                    text: qsTr("Cancel")
+                                    flatStyle: true
+                                    onClicked: listPopup.close()
+                                }
+                                UI.ActionButton {
+                                    objectName: "inputListSave"
+                                    text: qsTr("Save")
+                                    primary: true
+                                    onClicked: {
+                                        root.inputListSaved(listEdit.text.split(/[,\s]+/).filter(n => n !== "").join(","));
+                                        listPopup.close();
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 UI.ActionButton {
                     text: qsTr("Check")
