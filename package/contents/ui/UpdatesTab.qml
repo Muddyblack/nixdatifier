@@ -208,7 +208,7 @@ Item {
                                     UI.ActionButton {
                                         objectName: "openUpdate-" + card.modelData.input
                                         visible: !detailWindow.visible
-                                        glyph: Qt.resolvedUrl("assets/ic_external.svg")
+                                        glyph: "view-fullscreen"
                                         implicitHeight: 27
                                         tip: qsTr("Open in larger window")
                                         onClicked: {
@@ -240,7 +240,7 @@ Item {
                                     UI.ActionButton {
                                         objectName: "ignore-" + card.modelData.input
                                         visible: root.canIgnoreInputs
-                                        glyph: "dialog-cancel"
+                                        glyph: "view-hidden"
                                         implicitHeight: 27
                                         tip: qsTr("Stop checking %1").arg(card.modelData.input)
                                         onClicked: root.ignoreInputRequested(card.modelData.input)
@@ -330,37 +330,51 @@ Item {
                     }
                 }
             }
-            ColumnLayout {
+            Rectangle {
                 visible: root.skippedInputs.length > 0
                 Layout.fillWidth: true
                 Layout.topMargin: 6
-                spacing: 4
-                UI.ActionButton {
-                    objectName: "skippedToggle"
-                    flatStyle: true
-                    text: qsTr("Not checked (%1)").arg(root.skippedInputs.length)
-                    glyph: Qt.resolvedUrl(root.showSkipped ? "assets/ic_chevron_up.svg" : "assets/ic_chevron_down.svg")
-                    onClicked: root.showSkipped = !root.showSkipped
-                }
-                Repeater {
-                    model: root.showSkipped ? root.skippedInputs : []
-                    RowLayout {
-                        id: skippedRow
-                        required property string modelData
+                implicitHeight: skippedColumn.implicitHeight + 16
+                radius: 9
+                color: "#03ffffff"
+                border.color: "#0effffff"
+                ColumnLayout {
+                    id: skippedColumn
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: 8
+                    spacing: 4
+                    UI.ActionButton {
+                        objectName: "skippedToggle"
                         Layout.fillWidth: true
-                        spacing: 8
-                        Text {
+                        flatStyle: true
+                        text: qsTr("Not checked (%1)").arg(root.skippedInputs.length)
+                        glyph: Qt.resolvedUrl(root.showSkipped ? "assets/ic_chevron_up.svg" : "assets/ic_chevron_down.svg")
+                        onClicked: root.showSkipped = !root.showSkipped
+                    }
+                    Repeater {
+                        model: root.showSkipped ? root.skippedInputs : []
+                        RowLayout {
+                            id: skippedRow
+                            required property string modelData
                             Layout.fillWidth: true
-                            text: skippedRow.modelData
-                            color: "#91a4bd"
-                            font.pixelSize: 11 * root.fs
-                            elide: Text.ElideRight
-                        }
-                        UI.ActionButton {
-                            objectName: "resume-" + skippedRow.modelData
-                            text: qsTr("Check again")
-                            implicitHeight: 27
-                            onClicked: root.resumeInputRequested(skippedRow.modelData)
+                            Layout.leftMargin: 6
+                            spacing: 8
+                            Text {
+                                Layout.fillWidth: true
+                                text: skippedRow.modelData
+                                color: "#91a4bd"
+                                font.pixelSize: 11 * root.fs
+                                elide: Text.ElideRight
+                            }
+                            UI.ActionButton {
+                                objectName: "resume-" + skippedRow.modelData
+                                glyph: "view-visible"
+                                text: qsTr("Check again")
+                                implicitHeight: 27
+                                onClicked: root.resumeInputRequested(skippedRow.modelData)
+                            }
                         }
                     }
                 }

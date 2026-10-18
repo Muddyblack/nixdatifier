@@ -2015,6 +2015,16 @@ Item {
     }
 
     property string updatingInput: ""
+    // The input list only changes which inputs are probed, so keep the cards
+    // that are showing and let the next probe refresh them in the background.
+    function recheckAfterListChange() {
+        if (!root.initialized)
+            return;
+        root._lastFlakeCacheTs = 0;
+        initialFlakeCheckTimer.stop();
+        probeSettingsTimer.restart();
+    }
+
     // One-click on the Updates tab: put an input on, or take it off, the input list.
     // A blocklist lists what is skipped, an allowlist lists what is checked.
     function setInputChecked(inputName, checked) {
@@ -2036,9 +2046,14 @@ Item {
             names.splice(at, 1);
         }
         root.settings.ignoredInputs = names.join(",");
+        // Move the card right away; the background probe confirms it.
+        if (checked) {
+            root.skippedInputs = root.skippedInputs.filter(n => n !== inputName);
+        } else {
+            root.flakeUpdates = root.flakeUpdates.filter(u => u.input !== inputName);
+            root.skippedInputs = root.skippedInputs.concat([inputName]).sort();
+        }
         root.pushToast(checked ? qsTr("%1 will be checked for updates.").arg(inputName) : qsTr("%1 is no longer checked for updates.").arg(inputName), false);
-        root.flakeEpoch++;
-        root.checkFlakeUpdates(false, true);
     }
 
     function runFlakeUpdateInput(inputName) {
@@ -2679,9 +2694,11 @@ Item {
         }
         function onIgnoredInputsChanged() {
             root.schedulePushSharedSettings();
+            root.recheckAfterListChange();
         }
         function onInputListModeChanged() {
             root.schedulePushSharedSettings();
+            root.recheckAfterListChange();
         }
     }
 
