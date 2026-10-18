@@ -115,9 +115,27 @@ var fields = [
     "key": "ignoredInputs",
     "tab": "General",
     "group": "NixOS & Flake",
-    "label": "Ignored inputs",
-    "help": "Inputs to skip when checking for updates, separated by commas. Globs work, e.g. nur, my-private/*. Use wrapper/input for inputs of a wrapper flake.",
+    "label": "Input list",
+    "help": "Input names separated by commas; globs work, e.g. nur, my-private/*. Use wrapper/input for inputs of a wrapper flake. Empty means every input is checked.",
     "type": "String"
+  },
+  {
+    "key": "inputListMode",
+    "tab": "General",
+    "group": "NixOS & Flake",
+    "label": "Input list works as",
+    "help": "Ignore: skip the listed inputs. Only: check nothing but the listed inputs.",
+    "type": "String",
+    "choices": [
+      {
+        "value": "ignore",
+        "label": "Ignore these"
+      },
+      {
+        "value": "only",
+        "label": "Check only these"
+      }
+    ]
   },
   {
     "key": "customCommands",

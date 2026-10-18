@@ -206,7 +206,7 @@ Item {
     // Format: first line is a Unix timestamp (seconds); remaining lines are raw flake-probe TSV.
     // Written by whichever instance runs the probe first; others just read it.
     // Deliberately a shell expression, not a quoted path — evaluated inside sh() calls.
-    readonly property string probeSettingsKey: (root.settings.checkTarballs ? "tarballs-on" : "tarballs-off") + "-" + (root.settings.deepInputCheck ? "deep-on" : "deep-off") + "-" + Qt.md5(root.settings.ignoredInputs || "")
+    readonly property string probeSettingsKey: (root.settings.checkTarballs ? "tarballs-on" : "tarballs-off") + "-" + (root.settings.deepInputCheck ? "deep-on" : "deep-off") + "-" + Qt.md5((root.settings.inputListMode || "ignore") + ":" + (root.settings.ignoredInputs || ""))
     readonly property string flakeCacheName: "flake-" + Qt.md5(root.flakePath) + "-" + (root.lockFingerprint || "none") + "-" + root.probeSettingsKey
     readonly property string cacheDirExpr: '"${XDG_CACHE_HOME:-$HOME/.cache}/nixdatifier"'
     readonly property string flakeCacheExpr: root.cacheDirExpr + "/" + root.flakeCacheName
@@ -1905,7 +1905,7 @@ Item {
         root.isCheckingFlake = true;
         const epoch = root.flakeEpoch;
         const settingsKey = root.probeSettingsKey;
-        const probeEnv = "NIXDATIFIER_CHECK_TARBALLS=" + (root.settings.checkTarballs ? "on " : "off ") + "NIXDATIFIER_DEEP_INPUTS=" + (root.settings.deepInputCheck ? "on " : "off ") + "NIXDATIFIER_IGNORE_INPUTS=" + shq(root.settings.ignoredInputs || "") + " ";
+        const probeEnv = "NIXDATIFIER_CHECK_TARBALLS=" + (root.settings.checkTarballs ? "on " : "off ") + "NIXDATIFIER_DEEP_INPUTS=" + (root.settings.deepInputCheck ? "on " : "off ") + "NIXDATIFIER_IGNORE_INPUTS=" + shq(root.settings.ignoredInputs || "") + " NIXDATIFIER_INPUT_LIST_MODE=" + (root.settings.inputListMode === "only" ? "only " : "ignore ");
         sh(probeEnv + shq(root.scriptDir + "run") + " cached " + shq("flake:" + root.flakePath + (probeEnv ? ":" + probeEnv.trim() : "")) + " 30 -- " + shq(root.scriptDir + "flake-probe") + " " + shq(root.flakePath), function (cmd, out, err, code) {
             root.isCheckingFlake = false;
             if (epoch !== root.flakeEpoch || settingsKey !== root.probeSettingsKey)
@@ -2006,6 +2006,17 @@ Item {
     }
 
     property string updatingInput: ""
+    // One-click "stop checking this input" from the Updates tab (ignore mode only).
+    function ignoreFlakeInput(inputName) {
+        const names = (root.settings.ignoredInputs || "").split(/[,\s]+/).filter(n => n !== "");
+        if (names.indexOf(inputName) === -1)
+            names.push(inputName);
+        root.settings.ignoredInputs = names.join(",");
+        root.pushToast(qsTr("%1 is no longer checked for updates. Undo it under Settings → Ignored inputs.").arg(inputName), false);
+        root.flakeEpoch++;
+        root.checkFlakeUpdates(false, true);
+    }
+
     function runFlakeUpdateInput(inputName) {
         if (!root.isNixOS)
             return;
@@ -2555,7 +2566,7 @@ Item {
     property bool syncSettings: false
     property bool _syncReady: false
     property bool _syncApplying: false
-    readonly property var _syncKeys: ["flakePath", "configRepoPath", "secretsPath", "secretsSourcePath", "githubTokenFile", "githubUseGh", "checkTarballs", "deepInputCheck", "ignoredInputs", "impermanencePaths", "checkInterval", "customCommands", "showNotifications"]
+    readonly property var _syncKeys: ["flakePath", "configRepoPath", "secretsPath", "secretsSourcePath", "githubTokenFile", "githubUseGh", "checkTarballs", "deepInputCheck", "ignoredInputs", "inputListMode", "impermanencePaths", "checkInterval", "customCommands", "showNotifications"]
     function _syncSnapshot() {
         const values = {};
         for (const key of root._syncKeys)
@@ -2643,6 +2654,9 @@ Item {
             root.schedulePushSharedSettings();
         }
         function onIgnoredInputsChanged() {
+            root.schedulePushSharedSettings();
+        }
+        function onInputListModeChanged() {
             root.schedulePushSharedSettings();
         }
     }

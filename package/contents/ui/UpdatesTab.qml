@@ -29,6 +29,8 @@ Item {
     signal dryRunRequested(string inputName, string overrideRef)
     signal releaseNotesRequested(string inputName, bool force)
     signal updateInputRequested(string inputName)
+    signal ignoreInputRequested(string inputName)
+    property bool canIgnoreInputs: false
     signal checkRequested
     signal copyToClipboard(string text)
     visible: activeViewMode === "updates"
@@ -232,6 +234,14 @@ Item {
                                         primary: true
                                         enabled: !root.isBusy
                                         onClicked: root.updateInputRequested(card.modelData.input)
+                                    }
+                                    UI.ActionButton {
+                                        objectName: "ignore-" + card.modelData.input
+                                        visible: root.canIgnoreInputs
+                                        glyph: "dialog-cancel"
+                                        implicitHeight: 27
+                                        tip: qsTr("Stop checking %1").arg(card.modelData.input)
+                                        onClicked: root.ignoreInputRequested(card.modelData.input)
                                     }
                                     UI.ActionButton {
                                         objectName: "source-" + card.modelData.input

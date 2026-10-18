@@ -203,6 +203,8 @@ Pane {
     signal dryRunRequested(string inputName, string overrideRef)
     signal releaseNotesRequested(string inputName, bool force)
     signal updateInputRequested(string inputName)
+    signal ignoreInputRequested(string inputName)
+    property bool canIgnoreInputs: false
     signal popOutRequested
     signal configureRequested
 
@@ -719,11 +721,13 @@ Pane {
                 dryRunCache: fullView.dryRunCache
                 releaseNotesCache: fullView.releaseNotesCache
                 isDryRunning: fullView.isDryRunning
+                canIgnoreInputs: fullView.canIgnoreInputs
                 iconStyle: fullView.iconStyle
 
                 onDryRunRequested: (inputName, overrideRef) => fullView.dryRunRequested(inputName, overrideRef)
                 onReleaseNotesRequested: (inputName, force) => fullView.releaseNotesRequested(inputName, force)
                 onUpdateInputRequested: inputName => fullView.updateInputRequested(inputName)
+                onIgnoreInputRequested: inputName => fullView.ignoreInputRequested(inputName)
             }
 
             DiffTab {

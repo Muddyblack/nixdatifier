@@ -36,6 +36,9 @@ DEEP="${FLAKE_PROBE_DEEP:-0}"
 IGNORE="${FLAKE_PROBE_IGNORE:-}"
 [ -n "${NIXDATIFIER_IGNORE_INPUTS:-}" ] && IGNORE="$NIXDATIFIER_IGNORE_INPUTS"
 IGNORE=${IGNORE//,/ }
+# "ignore" skips the listed inputs; "only" checks nothing but the listed ones.
+# An empty list never filters, so an unfinished setup can't silently check nothing.
+LIST_MODE="${NIXDATIFIER_INPUT_LIST_MODE:-ignore}"
 
 # Pull inputs as TSV: name type owner repo url ref rev lastModified narHash lockedUrl
 # Use '|' as field separator (tab is whitespace-class in IFS and collapses empty fields).
@@ -235,15 +238,17 @@ probe_one() {
     fi
 }
 
-is_ignored() {
-    local pat rc=1
+is_ignored() { # 0 = leave this input out
+    [[ -n "${IGNORE// /}" ]] || return 1
+    local pat listed=1
     set -f # patterns are globs for [[ ]], not for the shell
     for pat in $IGNORE; do
         # shellcheck disable=SC2053
-        if [[ "$1" == $pat ]]; then rc=0; break; fi
+        if [[ "$1" == $pat ]]; then listed=0; break; fi
     done
     set +f
-    return $rc
+    [[ "$LIST_MODE" == only ]] && return $((1 - listed))
+    return $listed
 }
 
 # Concurrency throttle via a job slot

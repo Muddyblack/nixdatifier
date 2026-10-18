@@ -18,7 +18,8 @@ stop when settings close; the Info pane is released when hidden or another tab o
 | **Detect hostname and flake configuration** | `true` | When off, previews need a flake with exactly one NixOS configuration. |
 | **Check tarball inputs** | `true` | Check inputs fetched as tarballs (channels, `.tar.zst`). A light HEAD request compares the immutable URL Nix locked; Nix only downloads the archive if the server gives no hint. |
 | **Check nested inputs** | `false` | Walk every transitive input instead of the root inputs (plus a wrapper flake's own inputs). One request per input. |
-| **Ignored inputs** | `""` | Inputs to skip when checking for updates, separated by commas; globs work (`nur, my-private/*`). Use `wrapper/input` for a wrapper flake's own inputs. |
+| **Input list** | `""` | Input names separated by commas; globs work (`nur, my-private/*`). Use `wrapper/input` for a wrapper flake's own inputs. Empty checks everything. |
+| **Input list works as** | `ignore` | `ignore` skips the listed inputs (a blocklist); `only` checks nothing but the listed ones (an allowlist). The Updates tab also has a button on each input to add it to the ignore list. |
 | **Open on** | `timeline` | Starting view: `timeline`, `updates`, `diff`, `tools`, `devenv`, `secrets`, `hash`, `history`, `storeusage`, or `impermanence`. |
 
 Update checks read the root inputs of the configured flake's `flake.lock`, independently

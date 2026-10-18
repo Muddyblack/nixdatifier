@@ -38,6 +38,10 @@
             <!-- input names to skip when checking for updates, comma separated, globs allowed -->
             <default></default>
         </entry>
+        <entry name="inputListMode" type="String">
+            <!-- "ignore": skip the listed inputs | "only": check just the listed inputs -->
+            <default>ignore</default>
+        </entry>
 
         <!-- Custom Commands -->
         <!-- JSON array: [{"label":"…","cmd":"…","color":"accent|green|red|default"},…] max 4 -->

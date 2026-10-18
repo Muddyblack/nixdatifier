@@ -64,6 +64,7 @@ ShellRoot {
             property bool checkTarballs: true
             property bool deepInputCheck: false
             property string ignoredInputs: ""
+            property string inputListMode: "ignore"
             property string customCommands: "[{\"label\":\"update\",\"cmd\":\"nix flake update\"},{\"label\":\"upnix\",\"cmd\":\"upnix\"}]"
             property bool showCommandButtons: true
             property string commandTerminal: ""
