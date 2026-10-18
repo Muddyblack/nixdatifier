@@ -371,6 +371,20 @@ fi
                 fields = self.run_helper("flake-probe", str(self.root)).stdout.strip().split("\t")
                 self.assertEqual(fields[1], status)
 
+    def test_tarball_channel_update_reports_git_rev_and_date(self):
+        self._tarball_lock()  # an older lock without "rev"
+        self.script(self.bin / "nix", "exit 99\n")
+        rev = "26f4107e47e3ad0ffd0db220469ba83b6f6d96e8"
+        link = f"https://r.example/nixos-2.26f4107e47e3/nixexprs.tar.zst?rev={rev}&lastModified=1792030654"
+        self.script(
+            self.bin / "curl",
+            f'printf \'HTTP/2 302\\nlink: <{link}>; rel="immutable"\\n\\nHTTP/2 200\\n'
+            "last-modified: Fri, 16 Oct 2026 05:20:25 GMT\\n\\n__EFFECTIVE__%s\\n' x\n",
+        )
+        fields = self.run_helper("flake-probe", str(self.root)).stdout.rstrip("\n").split("\t")
+        self.assertEqual(fields[1:4], ["ok", "abc1234", rev])
+        self.assertEqual(fields[8], "1792030654")  # what Nix will lock, not the upload time
+
     def test_tarball_cheap_check_falls_back_when_unsure(self):
         self._tarball_lock()
         self.script(self.bin / "nix", 'echo \'{"locked": {"narHash": "sha256-old"}}\'\n')
