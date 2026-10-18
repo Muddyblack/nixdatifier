@@ -90,7 +90,6 @@ Item {
                     ToolTip.text: qsTr("Last checked at %1").arg(root.lastFlakeCheckTime)
                 }
                 UI.ActionButton {
-                    id: listButton
                     objectName: "inputListButton"
                     text: root.width >= 440 * root.fs ? qsTr("Input list") : ""
                     glyph: "document-edit"
