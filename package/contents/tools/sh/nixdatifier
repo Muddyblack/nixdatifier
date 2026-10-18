@@ -711,7 +711,7 @@ cmd_update() {
     label=${label// /, }
     confirm "Update $label in $flake?"
     # shellcheck disable=SC2016
-    change flake-update "Updating $label…" -1 'cd "$1" && shift && $RUN nix flake update "$@"' "$flake" "${args[@]}"
+    change flake-update "Updating $label…" -1 'cd "$1" && shift && $RUN nix flake update "$@"' "$flake" ${args[@]+"${args[@]}"}
 }
 
 # Saved quick-run commands: the JSON list the window's Commands panel edits.

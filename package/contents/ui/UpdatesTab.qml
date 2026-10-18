@@ -37,6 +37,16 @@ Item {
     property var selected: ({})
     readonly property var selectedNames: flakeUpdates.map(u => u.input).filter(name => !!selected[name])
     readonly property bool allSelected: flakeUpdates.length > 0 && selectedNames.length === flakeUpdates.length
+    onFlakeUpdatesChanged: {
+        // drop ticks for inputs that are no longer pending
+        const names = new Set(flakeUpdates.map(u => u.input));
+        const stale = Object.keys(selected).filter(name => !names.has(name));
+        if (stale.length === 0)
+            return;
+        const next = Object.assign({}, selected);
+        stale.forEach(name => delete next[name]);
+        selected = next;
+    }
     function setSelected(name, on) {
         const next = Object.assign({}, selected);
         next[name] = on;
