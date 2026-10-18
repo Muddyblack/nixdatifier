@@ -148,7 +148,6 @@ There is no config file; it is flags and environment, so it works the same in a 
 | `NIXDATIFIER_CHECK_TARBALLS` | `off` skips tarball flake inputs when checking for updates (config key `check_tarballs`; on by default) |
 | `NIXDATIFIER_DEEP_INPUTS` | `on` checks every transitive flake input, not just the root (and wrapper) inputs (config key `deep_inputs`; off by default) |
 | `NIXDATIFIER_IGNORE_INPUTS` | comma-separated input names (globs allowed) to leave out of update checks (config key `ignored_inputs`; empty by default) |
-| `NIXDATIFIER_INPUT_LIST_MODE` | `ignore` (default) skips the inputs in the list above, `only` checks just those (config key `input_list_mode`) |
 | `NIXDATIFIER_GITHUB_USE_GH` | `on` borrows the login of a signed-in `gh` when there is no token (config key `github_use_gh`; off by default, its token often has wide scopes) |
 
 `diff --config` needs to know which config commit built each generation. `generations` and the window record it; run `nixdatifier snapshot` from a post-rebuild hook if you only rebuild from a terminal.

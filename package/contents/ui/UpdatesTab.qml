@@ -35,7 +35,6 @@ Item {
     property var pendingInputs: []
     property var failedInputs: []
     property string inputList: ""
-    property string inputListMode: "ignore"
     signal inputListSaved(string text)
     property var upToDateInputs: []
     signal checkRequested
@@ -113,7 +112,7 @@ Item {
                     objectName: "inputListButton"
                     text: root.width >= 440 * root.fs ? qsTr("Input list") : ""
                     glyph: "document-edit"
-                    tip: qsTr("Edit the list of inputs that are skipped or checked")
+                    tip: qsTr("Edit the list of ignored inputs")
                     implicitHeight: 29 * root.fs
                     font.pixelSize: 10 * root.fs
                     onClicked: listPopup.opened ? listPopup.close() : listPopup.open()
@@ -137,7 +136,7 @@ Item {
                         contentItem: ColumnLayout {
                             spacing: 10
                             Text {
-                                text: root.inputListMode === "only" ? qsTr("Allowlist: only these inputs are checked") : qsTr("Blocklist: these inputs are skipped")
+                                text: qsTr("Ignored inputs are not checked for updates")
                                 color: root.textColor
                                 font.pixelSize: 12 * root.fs
                                 font.weight: Font.Medium
@@ -510,7 +509,7 @@ Item {
             InputSection {
                 objectName: "hiddenSection"
                 mode: "resume"
-                title: root.inputListMode === "only" ? qsTr("Not on allowlist") : qsTr("Ignored")
+                title: qsTr("Ignored")
                 entries: root.skippedInputs.map(n => ({
                             input: n,
                             detail: qsTr("on your input list")

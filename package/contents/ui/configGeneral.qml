@@ -19,7 +19,6 @@ Kirigami.Page {
     property alias cfg_checkTarballs: state.checkTarballs
     property alias cfg_deepInputCheck: state.deepInputCheck
     property alias cfg_ignoredInputs: state.ignoredInputs
-    property alias cfg_inputListMode: state.inputListMode
     property alias cfg_customCommands: state.customCommands
     property alias cfg_showCommandButtons: state.showCommandButtons
     property alias cfg_commandTerminal: state.commandTerminal
@@ -71,7 +70,6 @@ Kirigami.Page {
     property alias cfg_checkTarballsDefault: defaults.checkTarballs
     property alias cfg_deepInputCheckDefault: defaults.deepInputCheck
     property alias cfg_ignoredInputsDefault: defaults.ignoredInputs
-    property alias cfg_inputListModeDefault: defaults.inputListMode
     property alias cfg_customCommandsDefault: defaults.customCommands
     property alias cfg_showCommandButtonsDefault: defaults.showCommandButtons
     property alias cfg_commandTerminalDefault: defaults.commandTerminal

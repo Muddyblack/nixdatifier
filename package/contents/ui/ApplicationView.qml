@@ -172,7 +172,6 @@ FullView {
     upToDateInputs: engine.upToDateInputs
     failedInputs: engine.failedInputs
     inputList: engine.settings.ignoredInputs
-    inputListMode: engine.settings.inputListMode
     onInputListSaved: text => engine.settings.ignoredInputs = text
     onPopOutRequested: engine.pinned = !engine.pinned
     onConfigureRequested: engine.configureRequested()

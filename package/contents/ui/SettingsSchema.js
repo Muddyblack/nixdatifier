@@ -120,24 +120,6 @@ var fields = [
     "type": "String"
   },
   {
-    "key": "inputListMode",
-    "tab": "General",
-    "group": "Update checks",
-    "label": "List type",
-    "help": "Blocklist: skip the listed inputs. Allowlist: check nothing but the listed inputs.",
-    "type": "String",
-    "choices": [
-      {
-        "value": "ignore",
-        "label": "Blocklist"
-      },
-      {
-        "value": "only",
-        "label": "Allowlist"
-      }
-    ]
-  },
-  {
     "key": "customCommands",
     "tab": "Commands",
     "group": "Quick-run commands",

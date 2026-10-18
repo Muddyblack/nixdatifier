@@ -210,7 +210,6 @@ Pane {
     property var upToDateInputs: []
     property var failedInputs: []
     property string inputList: ""
-    property string inputListMode: "ignore"
     signal inputListSaved(string text)
     signal popOutRequested
     signal configureRequested
@@ -733,7 +732,6 @@ Pane {
                 upToDateInputs: fullView.upToDateInputs
                 failedInputs: fullView.failedInputs
                 inputList: fullView.inputList
-                inputListMode: fullView.inputListMode
                 iconStyle: fullView.iconStyle
 
                 onDryRunRequested: (inputName, overrideRef) => fullView.dryRunRequested(inputName, overrideRef)

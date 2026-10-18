@@ -460,12 +460,6 @@ fi
         self.assertEqual(names({}), ["nixpkgs", "nur", "private-a", "private-b"])
         self.assertEqual(names({"NIXDATIFIER_IGNORE_INPUTS": "nur"}), ["nixpkgs", "private-a", "private-b"])
         self.assertEqual(names({"NIXDATIFIER_IGNORE_INPUTS": "nur, private-*"}), ["nixpkgs"])
-        only = {"NIXDATIFIER_INPUT_LIST_MODE": "only"}
-        self.assertEqual(
-            names({**only, "NIXDATIFIER_IGNORE_INPUTS": "nur, private-*"}),
-            ["nur", "private-a", "private-b"],
-        )
-        self.assertEqual(names(only), ["nixpkgs", "nur", "private-a", "private-b"])  # empty list never filters
 
     def test_deep_mode_has_no_depth_limit(self):
         nodes = {"root": {"inputs": {"n0": "n0"}}}
@@ -1388,11 +1382,6 @@ class Cli(HelperCase):
         self.assertEqual(self.cli_run("config", "get", "ignored_inputs").stdout.strip(), "nur,private-*")
         later = json.loads(self.cli_run("config", "sync", "pull", json.dumps(window)).stdout)
         self.assertEqual(later["ignoredInputs"], "nur,private-*")
-        self.assertEqual(later["inputListMode"], "ignore")
-        self.assertEqual(self.cli_run("config", "set", "input_list_mode", "maybe").returncode, 2)
-        self.cli_run("config", "set", "input_list_mode", "only")
-        later = json.loads(self.cli_run("config", "sync", "pull", json.dumps(window)).stdout)
-        self.assertEqual(later["inputListMode"], "only")
 
     def test_probe_settings_are_shared_through_the_config_file(self):
         window = {"checkTarballs": False, "deepInputCheck": True}
