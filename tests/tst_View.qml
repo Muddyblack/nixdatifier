@@ -355,9 +355,8 @@ Item {
                 }
             };
             wait(30);
-            const view = findChild(app, "updatesView"), button = findChild(view, "preview-nixpkgs");
+            const view = findChild(app, "updatesView"), button = findChild(view, "toggle-nixpkgs");
             verify(button);
-            verify(button.tip.length > 0);
             verify(findChild(view, "update-nixpkgs").tip.indexOf("nixpkgs") >= 0);
             verify(findChild(view, "source-nixpkgs").tip.length > 0);
             mouseClick(button);
@@ -414,7 +413,7 @@ Item {
             };
             wait(30);
             const view = findChild(app, "updatesView");
-            mouseClick(findChild(view, "preview-hyprland"));
+            mouseClick(findChild(view, "toggle-hyprland"));
             const notes = findChild(view, "notes-hyprland");
             verify(notes);
             tryVerify(() => notes.visible);

@@ -30,7 +30,35 @@ Item {
     signal releaseNotesRequested(string inputName, bool force)
     signal updateInputRequested(string inputName)
     signal updateInputsRequested(var inputNames)
+    signal ignoreInputRequested(string inputName)
+    signal resumeInputRequested(string inputName)
+    signal ignoreInputsRequested(var inputNames)
+    signal resumeInputsRequested(var inputNames)
+    property var skippedInputs: []
+    property var pendingInputs: []
+    property var failedInputs: []
+    property string inputList: ""
+    signal inputListSaved(string text)
+    property var upToDateInputs: []
     signal checkRequested
+    // One shared pulse for every card that is waiting on the running check; it only runs while checking.
+    property real pulse: 1
+    SequentialAnimation on pulse {
+        running: root.isCheckingFlake && root.uiActive && root.visible
+        loops: Animation.Infinite
+        onRunningChanged: if (!running)
+            root.pulse = 1
+        NumberAnimation {
+            to: 0.55
+            duration: 700
+            easing.type: Easing.InOutSine
+        }
+        NumberAnimation {
+            to: 1
+            duration: 700
+            easing.type: Easing.InOutSine
+        }
+    }
     signal copyToClipboard(string text)
     visible: activeViewMode === "updates"
     property var updatingInputs: []
@@ -133,6 +161,102 @@ Item {
                     }
                 }
                 UI.ActionButton {
+                    objectName: "hideSelected"
+                    visible: root.selectedNames.length > 0
+                    text: root.width >= 440 * root.fs ? qsTr("Hide selected (%1)").arg(root.selectedNames.length) : ""
+                    glyph: "view-hidden"
+                    tip: qsTr("Stop checking the selected inputs")
+                    implicitHeight: 29 * root.fs
+                    font.pixelSize: 10 * root.fs
+                    enabled: !root.isBusy
+                    onClicked: {
+                        const names = root.selectedNames;
+                        root.selected = ({});
+                        root.ignoreInputsRequested(names);
+                    }
+                }
+                UI.ActionButton {
+                    objectName: "inputListButton"
+                    text: root.width >= 440 * root.fs ? qsTr("Input list") : ""
+                    glyph: "document-edit"
+                    tip: qsTr("Edit the list of ignored inputs")
+                    implicitHeight: 29 * root.fs
+                    font.pixelSize: 10 * root.fs
+                    onClicked: listPopup.opened ? listPopup.close() : listPopup.open()
+                    Popup {
+                        id: listPopup
+                        objectName: "inputListPopup"
+                        parent: root
+                        width: Math.min(420, root.width - 24)
+                        x: Math.round((root.width - width) / 2)
+                        y: 40
+                        padding: 13
+                        modal: false
+                        focus: true
+                        closePolicy: Popup.CloseOnEscape
+                        onAboutToShow: listEdit.text = root.inputList.split(/[,\s]+/).filter(n => n !== "").join("\n")
+                        background: Rectangle {
+                            color: "#1b2330"
+                            border.color: "#29a3b9de"
+                            radius: 9
+                        }
+                        contentItem: ColumnLayout {
+                            spacing: 10
+                            Text {
+                                text: qsTr("Ignored inputs are not checked for updates")
+                                color: root.textColor
+                                font.pixelSize: 12 * root.fs
+                                font.weight: Font.Medium
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: qsTr("One name per line. Globs work, e.g. nur or my-private/*. Use wrapper/input for a wrapper flake's inputs. An empty list checks everything.")
+                                color: "#91a4bd"
+                                wrapMode: Text.WordWrap
+                                font.pixelSize: 10 * root.fs
+                            }
+                            ScrollView {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 150
+                                TextArea {
+                                    id: listEdit
+                                    objectName: "inputListEdit"
+                                    color: root.textColor
+                                    selectByMouse: true
+                                    wrapMode: TextEdit.NoWrap
+                                    font.pixelSize: 11 * root.fs
+                                    background: Rectangle {
+                                        radius: 6
+                                        color: "#04ffffff"
+                                        border.color: listEdit.activeFocus ? root.accentColor : "#16ffffff"
+                                    }
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+                                Item {
+                                    Layout.fillWidth: true
+                                }
+                                UI.ActionButton {
+                                    text: qsTr("Cancel")
+                                    flatStyle: true
+                                    onClicked: listPopup.close()
+                                }
+                                UI.ActionButton {
+                                    objectName: "inputListSave"
+                                    text: qsTr("Save")
+                                    primary: true
+                                    onClicked: {
+                                        root.inputListSaved(listEdit.text.split(/[,\s]+/).filter(n => n !== "").join(","));
+                                        listPopup.close();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                UI.ActionButton {
                     text: qsTr("Check")
                     glyph: "view-refresh"
                     implicitHeight: 29 * root.fs
@@ -160,12 +284,40 @@ Item {
                     }
                     Rectangle {
                         id: cardSurface
+                        opacity: root.isCheckingFlake ? root.pulse : 1
                         width: card.width
                         implicitHeight: contents.implicitHeight + 20
                         height: implicitHeight
                         radius: 9
                         color: "#03ffffff"
                         border.color: "#0effffff"
+                        // Corner toggle: sits in the card's padding, so nothing else moves.
+                        Item {
+                            objectName: "toggle-corner-" + card.modelData.input
+                            z: 5
+                            x: 2
+                            y: 2
+                            width: 16
+                            height: 16
+                            visible: !!card.modelData.overrideRef
+                            opacity: cornerHover.hovered ? 1 : 0.55
+                            UI.Icon {
+                                anchors.centerIn: parent
+                                source: Qt.resolvedUrl(card.opened ? "assets/ic_chevron_up.svg" : "assets/ic_chevron_down.svg")
+                                width: 10
+                                height: 10
+                                isMask: true
+                                color: root.accentColor
+                            }
+                            HoverHandler {
+                                id: cornerHover
+                            }
+                            TapHandler {
+                                onTapped: root.togglePreview(card.modelData)
+                            }
+                            ToolTip.visible: cornerHover.hovered
+                            ToolTip.text: card.opened ? qsTr("Collapse preview") : qsTr("Preview package changes")
+                        }
                         ColumnLayout {
                             id: contents
                             anchors.left: parent.left
@@ -178,7 +330,8 @@ Item {
                                 spacing: 8
                                 Item {
                                     Layout.fillWidth: true
-                                    implicitHeight: 38
+                                    // Grow with the text (the date line, larger fonts) so nothing spills out of the card.
+                                    implicitHeight: Math.max(38, cardInfo.implicitHeight)
                                     RowLayout {
                                         anchors.fill: parent
                                         spacing: 10
@@ -205,8 +358,9 @@ Item {
                                             }
                                         }
                                         ColumnLayout {
+                                            id: cardInfo
                                             Layout.fillWidth: true
-                                            spacing: 5
+                                            spacing: 4
                                             Text {
                                                 Layout.fillWidth: true
                                                 text: card.modelData.input
@@ -234,9 +388,41 @@ Item {
                                                 }
                                                 Text {
                                                     Layout.fillWidth: true
-                                                    text: card.modelData.newRev
+                                                    text: root.isCheckingFlake ? qsTr("checking latest…") : card.modelData.newRev
                                                     color: root.accentColor
                                                     font.family: UI.Theme.fixedWidthFont.family
+                                                    font.pixelSize: 9 * root.fs
+                                                    elide: Text.ElideRight
+                                                }
+                                            }
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 5
+                                                visible: !card.updating && (card.modelData.oldDate !== "" || card.modelData.newDateTs > 0)
+                                                UI.Icon {
+                                                    source: Qt.resolvedUrl("assets/ic_calendar.svg")
+                                                    implicitWidth: 10 * root.fs
+                                                    implicitHeight: 10 * root.fs
+                                                    isMask: true
+                                                    color: "#62738b"
+                                                }
+                                                Text {
+                                                    visible: card.modelData.oldDate !== ""
+                                                    text: card.modelData.oldDate
+                                                    color: "#62738b"
+                                                    font.pixelSize: 9 * root.fs
+                                                }
+                                                Text {
+                                                    visible: card.modelData.oldDate !== ""
+                                                    text: "→"
+                                                    color: "#62738b"
+                                                    font.pixelSize: 9 * root.fs
+                                                }
+                                                Text {
+                                                    Layout.fillWidth: true
+                                                    text: card.modelData.newDate
+                                                    color: root.accentColor
+                                                    opacity: 0.75
                                                     font.pixelSize: 9 * root.fs
                                                     elide: Text.ElideRight
                                                 }
@@ -250,6 +436,7 @@ Item {
                                         }
                                     }
                                     MouseArea {
+                                        objectName: "toggle-" + card.modelData.input
                                         anchors.fill: parent
                                         enabled: !!card.modelData.overrideRef
                                         cursorShape: Qt.PointingHandCursor
@@ -261,7 +448,7 @@ Item {
                                     UI.ActionButton {
                                         objectName: "openUpdate-" + card.modelData.input
                                         visible: !detailWindow.visible
-                                        glyph: Qt.resolvedUrl("assets/ic_external.svg")
+                                        glyph: "view-fullscreen"
                                         implicitHeight: 27
                                         tip: qsTr("Open in larger window")
                                         onClicked: {
@@ -269,16 +456,6 @@ Item {
                                                 root.togglePreview(card.modelData);
                                             detailWindow.open();
                                         }
-                                    }
-                                    UI.ActionButton {
-                                        objectName: "preview-" + card.modelData.input
-                                        glyph: Qt.resolvedUrl(card.opened ? "assets/ic_chevron_up.svg" : "assets/ic_outline_compare.svg")
-                                        implicitHeight: 27
-                                        primary: true
-                                        accent: "#b6a1e4"
-                                        tip: card.opened ? qsTr("Collapse preview") : card.entry ? qsTr("Show cached preview") : qsTr("Preview package changes")
-                                        enabled: !!card.modelData.overrideRef && (card.opened || !!card.entry || !root.isDryRunning)
-                                        onClicked: root.togglePreview(card.modelData)
                                     }
                                     UI.ActionButton {
                                         objectName: "update-" + card.modelData.input
@@ -289,6 +466,13 @@ Item {
                                         primary: true
                                         enabled: !root.isBusy
                                         onClicked: root.updateInputRequested(card.modelData.input)
+                                    }
+                                    UI.ActionButton {
+                                        objectName: "ignore-" + card.modelData.input
+                                        glyph: "view-hidden"
+                                        implicitHeight: 27
+                                        tip: qsTr("Stop checking %1").arg(card.modelData.input)
+                                        onClicked: root.ignoreInputRequested(card.modelData.input)
                                     }
                                     UI.ActionButton {
                                         objectName: "source-" + card.modelData.input
@@ -385,6 +569,33 @@ Item {
                 text: root.isCheckingFlake ? qsTr("Checking upstream inputs…") : root.lastFlakeCheckTime ? qsTr("No pending input updates.") : qsTr("Configure a flake directory or check for updates.")
                 color: "#91a4bd"
                 font.pixelSize: 11 * root.fs
+            }
+            InputSection {
+                objectName: "upToDateSection"
+                mode: "hide"
+                title: qsTr("No updates")
+                entries: root.upToDateInputs
+                fs: root.fs
+                accentColor: root.accentColor
+                uiActive: root.uiActive
+                onActionRequested: name => root.ignoreInputRequested(name)
+                onBulkActionRequested: names => root.ignoreInputsRequested(names)
+            }
+            InputSection {
+                objectName: "hiddenSection"
+                mode: "resume"
+                title: qsTr("Ignored")
+                entries: root.skippedInputs.map(n => ({
+                            input: n,
+                            detail: qsTr("on your input list")
+                        }))
+                pendingInputs: root.pendingInputs
+                failedInputs: root.failedInputs
+                fs: root.fs
+                accentColor: root.accentColor
+                uiActive: root.uiActive
+                onActionRequested: name => root.resumeInputRequested(name)
+                onBulkActionRequested: names => root.resumeInputsRequested(names)
             }
         }
     }

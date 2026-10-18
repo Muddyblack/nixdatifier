@@ -498,14 +498,18 @@ input_rows() { # input_rows [--refresh]: only the inputs with an update, like th
     [[ -e $NXD_STATE/showall ]] && all=1
     "$NXD_CLI" --json updates --all "$@" 2>/dev/null | jq -r --argjson all "$all" --arg O "$O" --arg G "$G" --arg R "$R" --arg D "$D" --arg B "$B" --arg X "$X" '
         def row:
+            def strike: "\u001b[9m";
             (if .status == "update" then "\($O)↑" elif .status == "unchanged" then "\($G)✓" elif .status == "unreachable" then "\($R)✗" else "\($D)·" end) as $icon
-            | "\(.input)\t\(.status)\t\($icon)\($X) \($B)\(.input)\($X)\(" " * ([28 - (.input | length), 1] | max))\($D)\(.status)\(" " * ([12 - (.status | length), 1] | max))\($X)\(if .status == "update" then "\(.from) → \($O)\(.to)\($X)" else "\($D)\(.from)\($X)" end)  \($D)\(.date)\($X)";
+            | if .status == "ignored" then "\(.input)\t\(.status)\t\($D)· \(strike)\(.input)\($X)\($D)\(" " * ([28 - (.input | length), 1] | max))not checked\($X)"
+              else "\(.input)\t\(.status)\t\($icon)\($X) \($B)\(.input)\($X)\(" " * ([28 - (.input | length), 1] | max))\($D)\(.status)\(" " * ([12 - (.status | length), 1] | max))\($X)\(if .status == "update" then "\(.from) → \($O)\(.to)\($X)" else "\($D)\(.from)\($X)" end)  \($D)\(.date)\($X)" end;
         (map(select(.status == "update")) | sort_by(.input)) as $up
         | (map(select(.status == "unreachable")) | length) as $bad
+        | (map(select(.status == "ignored")) | length) as $skip
         | if $all == 1 then (sort_by(if .status == "update" then 0 elif .status == "unreachable" then 1 else 2 end, .input)[] | row)
           else
             ($up[] | row),
             (if $bad > 0 then "@unreachable\tinfo\t\($R)✗\($X) \($B)\($bad) input\(if $bad > 1 then "s" else "" end) could not be checked\($X)  \($D)offline? Alt-A lists them\($X)" else empty end),
+            (if $skip > 0 then "@ignored\tinfo\t\($D)·\($X) \($B)\($skip) input\(if $skip > 1 then "s" else "" end) not checked\($X)  \($D)on your input list, Alt-A lists them\($X)" else empty end),
             (if ($up | length) == 0 and $bad == 0 then "@current\tinfo\t\($G)✓\($X) \($B)Every input is up to date\($X)" else empty end)
           end'
 }
@@ -518,6 +522,7 @@ input_preview() { # input_preview NAME STATUS
     elif [[ $2 == info ]]; then
         case $1 in
             @unreachable) printf 'Some inputs could not be reached, usually because the network is down.\n\nAlt-A shows every input with the reason. Ctrl-R checks again.\n' ;;
+            @ignored) printf 'Some inputs are on your input list, so they are not checked for updates.\n\nAlt-A shows them. Edit the list with: nixdatifier config set ignored_inputs ...\n' ;;
             *) printf 'Nothing to update.\n\nAlt-A shows every input anyway.\n' ;;
         esac
     else
@@ -730,6 +735,7 @@ settings_desc() { # settings_desc KEY: what it is
         github_use_gh) echo 'on: borrow the GitHub CLI login (gh auth token) for release notes when no token file is set. Its token often has wide scopes, so it is off unless you switch it on. Empty: off.' ;;
         check_tarballs) echo 'off: skip tarball flake inputs (channels, .tar.zst) when checking for updates, here and in the window. Empty: on.' ;;
         deep_inputs) echo 'on: check every transitive flake input, not just the root (and wrapper) inputs. Costs one request per input. Empty: off.' ;;
+        ignored_inputs) echo 'Flake inputs to skip when checking for updates: names separated by commas, globs allowed (nur, my-private/*). Empty: check them all.' ;;
         theme) echo 'Colour theme: deep, marina, midnight, full, plain or your own (see docs/cli.md). Enter cycles.' ;;
         layout) echo 'roomy: boxed sections with the logo. compact: no boxes. Enter switches.' ;;
     esac

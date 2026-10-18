@@ -166,6 +166,16 @@ FullView {
     onReleaseNotesRequested: (inputName, force) => engine.loadReleaseNotes(inputName, force)
     onUpdateInputRequested: inputName => engine.runFlakeUpdateInput(inputName)
     onUpdateInputsRequested: inputNames => engine.runFlakeUpdateInputs(inputNames)
+    onIgnoreInputRequested: inputName => engine.setInputChecked(inputName, false)
+    onResumeInputRequested: inputName => engine.setInputChecked(inputName, true)
+    onIgnoreInputsRequested: inputNames => engine.setInputsChecked(inputNames, false)
+    onResumeInputsRequested: inputNames => engine.setInputsChecked(inputNames, true)
+    skippedInputs: engine.skippedInputs
+    pendingInputs: engine.pendingInputs
+    upToDateInputs: engine.upToDateInputs
+    failedInputs: engine.failedInputs
+    inputList: engine.settings.ignoredInputs
+    onInputListSaved: text => engine.settings.ignoredInputs = text
     onPopOutRequested: engine.pinned = !engine.pinned
     onConfigureRequested: engine.configureRequested()
     isPopOutOpen: engine.pinned

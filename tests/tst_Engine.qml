@@ -572,6 +572,19 @@ Item {
             jobs[0].callback(jobs[0].cmd, "", "failure", 1);
             compare(core.updatingInputs.length, 0);
         }
+        function test_several_inputs_join_and_leave_the_ignore_list_in_one_write() {
+            cfg.ignoredInputs = "nur";
+            core.flakeUpdates = [fixtureInput(), Object.assign(fixtureInput(), {
+                    input: "home-manager"
+                })];
+            core.setInputsChecked(["nixpkgs", "home-manager"], false);
+            compare(cfg.ignoredInputs, "nur,nixpkgs,home-manager");
+            compare(core.flakeUpdates.length, 0);
+            compare(core.skippedInputs.length, 2);
+            compare(core.toasts.length, 1);
+            core.setInputsChecked(["nixpkgs", "home-manager"], true);
+            compare(cfg.ignoredInputs, "nur");
+        }
         function test_parse_generations_detects_unregistered_test_build() {
             const stat = n => "2026-10-11 12:39:05.133214540 -0400 '/nix/var/nix/profiles/system-" + n + "-link' -> '/nix/store/" + n + "-sys'";
             core.parseGenerations(["/nix/store/162-sys", "/nix/store/161-sys", stat(162), stat(161), "current /nix/store/x-test-sys"].join("\n"));

@@ -204,6 +204,16 @@ Pane {
     signal releaseNotesRequested(string inputName, bool force)
     signal updateInputRequested(string inputName)
     signal updateInputsRequested(var inputNames)
+    signal ignoreInputRequested(string inputName)
+    signal resumeInputRequested(string inputName)
+    signal ignoreInputsRequested(var inputNames)
+    signal resumeInputsRequested(var inputNames)
+    property var skippedInputs: []
+    property var pendingInputs: []
+    property var upToDateInputs: []
+    property var failedInputs: []
+    property string inputList: ""
+    signal inputListSaved(string text)
     signal popOutRequested
     signal configureRequested
 
@@ -720,12 +730,22 @@ Pane {
                 dryRunCache: fullView.dryRunCache
                 releaseNotesCache: fullView.releaseNotesCache
                 isDryRunning: fullView.isDryRunning
+                skippedInputs: fullView.skippedInputs
+                pendingInputs: fullView.pendingInputs
+                upToDateInputs: fullView.upToDateInputs
+                failedInputs: fullView.failedInputs
+                inputList: fullView.inputList
                 iconStyle: fullView.iconStyle
 
                 onDryRunRequested: (inputName, overrideRef) => fullView.dryRunRequested(inputName, overrideRef)
                 onReleaseNotesRequested: (inputName, force) => fullView.releaseNotesRequested(inputName, force)
                 onUpdateInputRequested: inputName => fullView.updateInputRequested(inputName)
                 onUpdateInputsRequested: inputNames => fullView.updateInputsRequested(inputNames)
+                onIgnoreInputRequested: inputName => fullView.ignoreInputRequested(inputName)
+                onResumeInputRequested: inputName => fullView.resumeInputRequested(inputName)
+                onIgnoreInputsRequested: inputNames => fullView.ignoreInputsRequested(inputNames)
+                onResumeInputsRequested: inputNames => fullView.resumeInputsRequested(inputNames)
+                onInputListSaved: text => fullView.inputListSaved(text)
             }
 
             DiffTab {

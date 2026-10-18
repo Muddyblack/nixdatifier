@@ -192,7 +192,11 @@ fi
         )
         args = self.root / "curl-args"
         git_called = self.root / "git-called"
-        self.script(self.bin / "curl", f"printf '%s\\n' \"$@\" > '{args}'\nprintf '{new}'\n")
+        self.script(
+            self.bin / "curl",
+            f"printf '%s\\n' \"$@\" > '{args}'\n"
+            f'printf \'[{{"sha":"{new}","commit":{{"committer":{{"date":"2026-10-15T02:17:34Z"}}}}}}]\'\n',
+        )
         self.script(
             self.bin / "git",
             f"touch '{git_called}'; printf '{new}\\trefs/heads/test\\n'\n",
@@ -200,7 +204,8 @@ fi
         result = self.run_helper("flake-probe", str(self.root))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"\tok\t{old}\t{new}\t", result.stdout)
-        self.assertIn("/commits/branch%2Fwith-slash", args.read_text())
+        self.assertIn("/commits?per_page=1&sha=branch%2Fwith-slash", args.read_text())
+        self.assertTrue(result.stdout.split("\n")[0].endswith("\t1792030654"), result.stdout)
         self.assertFalse(git_called.exists())
         self.script(self.bin / "curl", "exit 22\n")
         result = self.run_helper("flake-probe", str(self.root))
@@ -284,7 +289,7 @@ fi
                 }
             )
         )
-        self.script(self.bin / "curl", "echo " + "a" * 40 + "\n")
+        self.script(self.bin / "curl", f'echo \'[{{"sha":"{"a" * 40}"}}]\'\n')
         out = self.run_helper("flake-probe", str(self.root)).stdout
         names = sorted(line.split("\t")[0] for line in out.splitlines())
         self.assertEqual(names, ["nix-config", "nix-config/nixpkgs"])
@@ -320,7 +325,7 @@ fi
             )
         )
         calls = self.root / "requests"
-        self.script(self.bin / "curl", f"echo request >> '{calls}'; echo {new}\n")
+        self.script(self.bin / "curl", f"echo request >> '{calls}'; echo '[{{\"sha\":\"{new}\"}}]'\n")
         self.script(self.bin / "git", "exit 99\n")
         result = self.run_helper("flake-probe", str(self.root))
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -371,6 +376,20 @@ fi
                 fields = self.run_helper("flake-probe", str(self.root)).stdout.strip().split("\t")
                 self.assertEqual(fields[1], status)
 
+    def test_tarball_channel_update_reports_git_rev_and_date(self):
+        self._tarball_lock()  # an older lock without "rev"
+        self.script(self.bin / "nix", "exit 99\n")
+        rev = "26f4107e47e3ad0ffd0db220469ba83b6f6d96e8"
+        link = f"https://r.example/nixos-2.26f4107e47e3/nixexprs.tar.zst?rev={rev}&lastModified=1792030654"
+        self.script(
+            self.bin / "curl",
+            f'printf \'HTTP/2 302\\nlink: <{link}>; rel="immutable"\\n\\nHTTP/2 200\\n'
+            "last-modified: Fri, 16 Oct 2026 05:20:25 GMT\\n\\n__EFFECTIVE__%s\\n' x\n",
+        )
+        fields = self.run_helper("flake-probe", str(self.root)).stdout.rstrip("\n").split("\t")
+        self.assertEqual(fields[1:4], ["ok", "abc1234", rev])
+        self.assertEqual(fields[8], "1792030654")  # what Nix will lock, not the upload time
+
     def test_tarball_cheap_check_falls_back_when_unsure(self):
         self._tarball_lock()
         self.script(self.bin / "nix", 'echo \'{"locked": {"narHash": "sha256-old"}}\'\n')
@@ -418,6 +437,29 @@ fi
         )
         self.assertEqual(names({}), ["a", "b"])
         self.assertEqual(names({"FLAKE_PROBE_DEEP": "1"}), ["a", "a/c", "a/c/d", "b"])
+
+    def test_ignored_inputs_are_not_probed(self):
+        def node(repo):
+            return {
+                "original": {"type": "github", "owner": "o", "repo": repo},
+                "locked": {"type": "github", "owner": "o", "repo": repo, "rev": "a" * 40, "lastModified": 1},
+            }
+
+        names_in = ["nur", "nixpkgs", "private-a", "private-b"]
+        nodes = {"root": {"inputs": {n: n for n in names_in}}, **{n: node(n) for n in names_in}}
+        (self.root / "flake.lock").write_text(json.dumps({"root": "root", "nodes": nodes}))
+        self.script(self.bin / "curl", "echo " + "a" * 40 + "\n")
+
+        def lines(env):
+            out = self.run_helper("flake-probe", str(self.root), env=env).stdout
+            return [ln.split("\t") for ln in out.splitlines()]
+
+        names = lambda env: sorted(f[0] for f in lines(env) if f[1] != "ignored")  # noqa: E731
+        skipped = lambda env: sorted(f[0] for f in lines(env) if f[1] == "ignored")  # noqa: E731
+        self.assertEqual(skipped({"NIXDATIFIER_IGNORE_INPUTS": "nur"}), ["nur"])
+        self.assertEqual(names({}), ["nixpkgs", "nur", "private-a", "private-b"])
+        self.assertEqual(names({"NIXDATIFIER_IGNORE_INPUTS": "nur"}), ["nixpkgs", "private-a", "private-b"])
+        self.assertEqual(names({"NIXDATIFIER_IGNORE_INPUTS": "nur, private-*"}), ["nixpkgs"])
 
     def test_deep_mode_has_no_depth_limit(self):
         nodes = {"root": {"inputs": {"n0": "n0"}}}
@@ -1333,6 +1375,13 @@ class Cli(HelperCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("takes on or off", result.stderr)
             self.assertEqual(self.cli_run("config", "get", key).stdout.strip(), "off")
+
+    def test_ignored_inputs_are_shared_through_the_config_file(self):
+        window = {"ignoredInputs": "nur,private-*"}
+        self.cli_run("config", "sync", "pull", json.dumps(window))
+        self.assertEqual(self.cli_run("config", "get", "ignored_inputs").stdout.strip(), "nur,private-*")
+        later = json.loads(self.cli_run("config", "sync", "pull", json.dumps(window)).stdout)
+        self.assertEqual(later["ignoredInputs"], "nur,private-*")
 
     def test_probe_settings_are_shared_through_the_config_file(self):
         window = {"checkTarballs": False, "deepInputCheck": True}
