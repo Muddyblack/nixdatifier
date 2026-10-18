@@ -2005,8 +2005,13 @@ Item {
         onTriggered: root.checkFlakeUpdates(true)
     }
 
-    property string updatingInput: ""
+    property var updatingInputs: []
     function runFlakeUpdateInput(inputName) {
+        runFlakeUpdateInputs([inputName]);
+    }
+    function runFlakeUpdateInputs(inputNames) {
+        if (!inputNames || inputNames.length === 0)
+            return;
         if (!root.isNixOS)
             return;
         if (root.flakePath === "") {
@@ -2018,18 +2023,19 @@ Item {
             return;
         }
         root.isBusy = true;
-        root.updatingInput = inputName;
-        root.currentActionType = qsTr("Updating %1…").arg(inputName);
-        const cmd = cli("update " + shq(inputName), root.flakePath);
+        const label = inputNames.length === 1 ? inputNames[0] : qsTr("%1 inputs").arg(inputNames.length);
+        root.updatingInputs = inputNames;
+        root.currentActionType = qsTr("Updating %1…").arg(label);
+        const cmd = cli("update " + inputNames.map(shq).join(" "), root.flakePath);
         sh(cmd, function (c, out, err, code) {
             root.isBusy = false;
-            root.updatingInput = "";
+            root.updatingInputs = [];
             root.loadHistory();
             if (code !== 0) {
                 root.pushToast(qsTr("Update failed: ") + (err || out || "").trim(), true);
                 return;
             }
-            root.pushToast(qsTr("'%1' updated in lock file.").arg(inputName), false);
+            root.pushToast(inputNames.length === 1 ? qsTr("'%1' updated in lock file.").arg(inputNames[0]) : qsTr("%1 inputs updated in lock file.").arg(inputNames.length), false);
 
             root.refreshFlakeContext(function () {
                 root.checkFlakeUpdates(false, true);

@@ -29,10 +29,25 @@ Item {
     signal dryRunRequested(string inputName, string overrideRef)
     signal releaseNotesRequested(string inputName, bool force)
     signal updateInputRequested(string inputName)
+    signal updateInputsRequested(var inputNames)
     signal checkRequested
     signal copyToClipboard(string text)
     visible: activeViewMode === "updates"
-    property string updatingInput: ""
+    property var updatingInputs: []
+    property var selected: ({})
+    readonly property var selectedNames: flakeUpdates.map(u => u.input).filter(name => !!selected[name])
+    readonly property bool allSelected: flakeUpdates.length > 0 && selectedNames.length === flakeUpdates.length
+    function setSelected(name, on) {
+        const next = Object.assign({}, selected);
+        next[name] = on;
+        selected = next;
+    }
+    function toggleAll() {
+        const next = {};
+        if (!allSelected)
+            flakeUpdates.forEach(u => next[u.input] = true);
+        selected = next;
+    }
     function togglePreview(input) {
         if (!openPreviews[input.input] && !dryRunCache[input.input] && isDryRunning)
             return;
@@ -83,6 +98,31 @@ Item {
                     ToolTip.text: qsTr("Last checked at %1").arg(root.lastFlakeCheckTime)
                 }
                 UI.ActionButton {
+                    objectName: "selectAllUpdates"
+                    visible: root.flakeUpdates.length > 1
+                    text: root.allSelected ? qsTr("Clear") : qsTr("Select all")
+                    implicitHeight: 29 * root.fs
+                    font.pixelSize: 10 * root.fs
+                    enabled: !root.isBusy
+                    onClicked: root.toggleAll()
+                }
+                UI.ActionButton {
+                    objectName: "updateSelected"
+                    visible: root.selectedNames.length > 0
+                    text: qsTr("Update selected (%1)").arg(root.selectedNames.length)
+                    glyph: "view-refresh"
+                    primary: true
+                    accent: UI.Theme.positive
+                    implicitHeight: 29 * root.fs
+                    font.pixelSize: 10 * root.fs
+                    enabled: !root.isBusy
+                    onClicked: {
+                        const names = root.selectedNames;
+                        root.selected = ({});
+                        root.updateInputsRequested(names);
+                    }
+                }
+                UI.ActionButton {
                     text: qsTr("Check")
                     glyph: "view-refresh"
                     implicitHeight: 29 * root.fs
@@ -98,7 +138,7 @@ Item {
                     required property var modelData
                     readonly property var entry: root.dryRunCache[modelData.input] || null
                     readonly property bool opened: !!root.openPreviews[modelData.input]
-                    readonly property bool updating: root.updatingInput === modelData.input
+                    readonly property bool updating: root.updatingInputs.indexOf(modelData.input) >= 0
                     Layout.fillWidth: true
                     Layout.bottomMargin: 9
                     implicitHeight: detailWindow.visible ? 58 : contents.implicitHeight + 20
@@ -132,6 +172,13 @@ Item {
                                     RowLayout {
                                         anchors.fill: parent
                                         spacing: 10
+                                        CheckBox {
+                                            objectName: "select-" + card.modelData.input
+                                            checked: !!root.selected[card.modelData.input]
+                                            enabled: !root.isBusy
+                                            onToggled: root.setSelected(card.modelData.input, checked)
+                                            Accessible.name: qsTr("Select %1 for update").arg(card.modelData.input)
+                                        }
                                         Rectangle {
                                             implicitWidth: 31
                                             implicitHeight: 31
