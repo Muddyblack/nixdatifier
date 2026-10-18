@@ -33,6 +33,7 @@ Item {
     signal resumeInputRequested(string inputName)
     property var skippedInputs: []
     property var pendingInputs: []
+    property var failedInputs: []
     property string inputList: ""
     property string inputListMode: "ignore"
     signal inputListSaved(string text)
@@ -191,6 +192,7 @@ Item {
                     required property var modelData
                     readonly property bool skipped: !!modelData.skipped
                     readonly property bool pending: skipped && root.pendingInputs.indexOf(modelData.input) >= 0
+                    readonly property bool failed: skipped && root.failedInputs.indexOf(modelData.input) >= 0
                     readonly property var entry: root.dryRunCache[modelData.input] || null
                     readonly property bool opened: !skipped && !!root.openPreviews[modelData.input]
                     readonly property bool updating: root.updatingInput === modelData.input
@@ -215,15 +217,15 @@ Item {
                                 Layout.fillWidth: true
                                 text: card.modelData.input
                                 color: "#91a4bd"
-                                opacity: card.pending ? 1 : 0.55
+                                opacity: card.pending || card.failed ? 1 : 0.55
                                 font.pixelSize: 11 * root.fs
-                                font.strikeout: !card.pending
+                                font.strikeout: !card.pending && !card.failed
                                 elide: Text.ElideRight
                             }
                             Text {
                                 id: skippedState
-                                text: card.pending ? qsTr("checking…") : qsTr("not checked")
-                                color: card.pending ? root.accentColor : "#91a4bd"
+                                text: card.pending ? qsTr("checking…") : card.failed ? qsTr("could not check") : qsTr("not checked")
+                                color: card.pending ? root.accentColor : card.failed ? UI.Theme.negative : "#91a4bd"
                                 opacity: 0.55
                                 font.pixelSize: 9 * root.fs
                                 // Pulses only while pending, and the engine clears pending on any outcome or after 60 s.
@@ -245,9 +247,9 @@ Item {
                             UI.ActionButton {
                                 objectName: "resume-" + card.modelData.input
                                 visible: !card.pending
-                                glyph: "view-visible"
+                                glyph: card.failed ? "view-refresh" : "view-visible"
                                 implicitHeight: 27
-                                tip: qsTr("Check %1 again").arg(card.modelData.input)
+                                tip: card.failed ? qsTr("Retry checking %1").arg(card.modelData.input) : qsTr("Check %1 again").arg(card.modelData.input)
                                 onClicked: root.resumeInputRequested(card.modelData.input)
                             }
                         }

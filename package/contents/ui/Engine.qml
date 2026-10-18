@@ -1914,7 +1914,7 @@ Item {
                 return;
             if (code !== 0) {
                 const msg = (err || out || "").trim() || qsTr("flake-probe failed");
-                root.clearPendingInputs();
+                root.failPendingInputs();
                 root.pushToast(msg, true);
                 return;
             }
@@ -1931,6 +1931,12 @@ Item {
     property bool _keepProbe: false
     // Inputs just put back on the list that are waiting for their first probe result.
     property var pendingInputs: []
+    // Inputs whose probe failed or never answered; their row offers a retry.
+    property var failedInputs: []
+    function failPendingInputs() {
+        root.failedInputs = root.pendingInputs;
+        root.clearPendingInputs();
+    }
     function clearPendingInputs() {
         pendingInputsTimer.stop();
         if (root.pendingInputs.length > 0)
@@ -1940,7 +1946,7 @@ Item {
     Timer {
         id: pendingInputsTimer
         interval: 60000
-        onTriggered: root.clearPendingInputs()
+        onTriggered: root.failPendingInputs()
     }
     property var skippedInputs: []
     // A tarball without a Git revision is identified by its content hash.
@@ -1953,6 +1959,7 @@ Item {
     }
     function parseFlakeProbe(text, isRetry, quiet) {
         root._probeRaw = text;
+        root.failedInputs = [];
         root.clearPendingInputs();
         const lines = text.split("\n");
         const updates = [];
@@ -2049,9 +2056,25 @@ Item {
     property string updatingInput: ""
     // The input list only changes which inputs are probed, so keep the cards
     // that are showing and let the next probe refresh them in the background.
+    // Mirrors flake-probe: a glob list, an allowlist or blocklist, and an empty list checks everything.
+    function inputIsIgnored(name) {
+        const patterns = (root.settings.ignoredInputs || "").split(/[,\s]+/).filter(p => p !== "");
+        if (patterns.length === 0)
+            return false;
+        const listed = patterns.some(p => new RegExp("^" + p.replace(/[.+^${}()|\\\[\]]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$").test(name));
+        return root.settings.inputListMode === "only" ? !listed : listed;
+    }
     function recheckAfterListChange() {
         if (!root.initialized || root._keepProbe)
             return;
+        // Inputs that are listed as skipped but no longer match show a loading row until the probe answers.
+        const waiting = root.skippedInputs.filter(n => !root.inputIsIgnored(n));
+        root.failedInputs = [];
+        root.pendingInputs = waiting;
+        if (waiting.length > 0)
+            pendingInputsTimer.restart();
+        else
+            pendingInputsTimer.stop();
         root._lastFlakeCacheTs = 0;
         initialFlakeCheckTimer.stop();
         probeSettingsTimer.restart();
@@ -2060,6 +2083,13 @@ Item {
     // One-click on the Updates tab: put an input on, or take it off, the input list.
     // A blocklist lists what is skipped, an allowlist lists what is checked.
     function setInputChecked(inputName, checked) {
+        if (checked && root.failedInputs.indexOf(inputName) >= 0) {
+            root.failedInputs = root.failedInputs.filter(n => n !== inputName);
+            root.pendingInputs = root.pendingInputs.concat([inputName]);
+            pendingInputsTimer.restart();
+            root.checkFlakeUpdates();
+            return;
+        }
         const only = root.settings.inputListMode === "only";
         const names = (root.settings.ignoredInputs || "").split(/[,\s]+/).filter(n => n !== "");
         const at = names.indexOf(inputName);
@@ -2084,9 +2114,7 @@ Item {
         root.settings.ignoredInputs = names.join(",");
         root._keepProbe = false;
         if (checked) {
-            // Keep the row, now loading; the probe replaces it with a card.
-            root.pendingInputs = root.pendingInputs.concat([inputName]);
-            pendingInputsTimer.restart();
+            // The row stays and shows as loading (see recheckAfterListChange); the probe replaces it with a card.
         } else {
             root.flakeUpdates = root.flakeUpdates.filter(u => u.input !== inputName);
             root.skippedInputs = root.skippedInputs.concat([inputName]).sort();
