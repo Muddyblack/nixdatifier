@@ -123,17 +123,17 @@ var fields = [
     "key": "inputListMode",
     "tab": "General",
     "group": "NixOS & Flake",
-    "label": "Input list works as",
-    "help": "Ignore: skip the listed inputs. Only: check nothing but the listed inputs.",
+    "label": "List type",
+    "help": "Blocklist: skip the listed inputs. Allowlist: check nothing but the listed inputs.",
     "type": "String",
     "choices": [
       {
         "value": "ignore",
-        "label": "Ignore these"
+        "label": "Blocklist"
       },
       {
         "value": "only",
-        "label": "Check only these"
+        "label": "Allowlist"
       }
     ]
   },
