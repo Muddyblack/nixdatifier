@@ -438,6 +438,29 @@ fi
         self.assertEqual(names({}), ["a", "b"])
         self.assertEqual(names({"FLAKE_PROBE_DEEP": "1"}), ["a", "a/c", "a/c/d", "b"])
 
+    def test_ignored_inputs_are_not_probed(self):
+        def node(repo):
+            return {
+                "original": {"type": "github", "owner": "o", "repo": repo},
+                "locked": {"type": "github", "owner": "o", "repo": repo, "rev": "a" * 40, "lastModified": 1},
+            }
+
+        names_in = ["nur", "nixpkgs", "private-a", "private-b"]
+        nodes = {"root": {"inputs": {n: n for n in names_in}}, **{n: node(n) for n in names_in}}
+        (self.root / "flake.lock").write_text(json.dumps({"root": "root", "nodes": nodes}))
+        self.script(self.bin / "curl", "echo " + "a" * 40 + "\n")
+
+        def lines(env):
+            out = self.run_helper("flake-probe", str(self.root), env=env).stdout
+            return [ln.split("\t") for ln in out.splitlines()]
+
+        names = lambda env: sorted(f[0] for f in lines(env) if f[1] != "ignored")  # noqa: E731
+        skipped = lambda env: sorted(f[0] for f in lines(env) if f[1] == "ignored")  # noqa: E731
+        self.assertEqual(skipped({"NIXDATIFIER_IGNORE_INPUTS": "nur"}), ["nur"])
+        self.assertEqual(names({}), ["nixpkgs", "nur", "private-a", "private-b"])
+        self.assertEqual(names({"NIXDATIFIER_IGNORE_INPUTS": "nur"}), ["nixpkgs", "private-a", "private-b"])
+        self.assertEqual(names({"NIXDATIFIER_IGNORE_INPUTS": "nur, private-*"}), ["nixpkgs"])
+
     def test_deep_mode_has_no_depth_limit(self):
         nodes = {"root": {"inputs": {"n0": "n0"}}}
         for i in range(12):
@@ -1352,6 +1375,13 @@ class Cli(HelperCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("takes on or off", result.stderr)
             self.assertEqual(self.cli_run("config", "get", key).stdout.strip(), "off")
+
+    def test_ignored_inputs_are_shared_through_the_config_file(self):
+        window = {"ignoredInputs": "nur,private-*"}
+        self.cli_run("config", "sync", "pull", json.dumps(window))
+        self.assertEqual(self.cli_run("config", "get", "ignored_inputs").stdout.strip(), "nur,private-*")
+        later = json.loads(self.cli_run("config", "sync", "pull", json.dumps(window)).stdout)
+        self.assertEqual(later["ignoredInputs"], "nur,private-*")
 
     def test_probe_settings_are_shared_through_the_config_file(self):
         window = {"checkTarballs": False, "deepInputCheck": True}

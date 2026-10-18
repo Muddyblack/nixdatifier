@@ -206,7 +206,9 @@ Item {
     // Format: first line is a Unix timestamp (seconds); remaining lines are raw flake-probe TSV.
     // Written by whichever instance runs the probe first; others just read it.
     // Deliberately a shell expression, not a quoted path — evaluated inside sh() calls.
-    readonly property string probeSettingsKey: (root.settings.checkTarballs ? "tarballs-on" : "tarballs-off") + "-" + (root.settings.deepInputCheck ? "deep-on" : "deep-off")
+    // The probe flags decide what a result means; the input list only decides which inputs are in it.
+    readonly property string probeFlagsKey: (root.settings.checkTarballs ? "tarballs-on" : "tarballs-off") + "-" + (root.settings.deepInputCheck ? "deep-on" : "deep-off")
+    readonly property string probeSettingsKey: root.probeFlagsKey + "-" + Qt.md5(root.settings.ignoredInputs || "")
     readonly property string flakeCacheName: "flake-v3-" + Qt.md5(root.flakePath) + "-" + (root.lockFingerprint || "none") + "-" + root.probeSettingsKey
     readonly property string cacheDirExpr: '"${XDG_CACHE_HOME:-$HOME/.cache}/nixdatifier"'
     readonly property string flakeCacheExpr: root.cacheDirExpr + "/" + root.flakeCacheName
@@ -1862,8 +1864,8 @@ Item {
     }
 
     // Write the raw flake-probe output + a timestamp to the shared cache file.
-    function writeFlakeCache(rawOutput) {
-        const ts = Math.floor(Date.now() / 1000);
+    function writeFlakeCache(rawOutput, keepTs) {
+        const ts = keepTs || Math.floor(Date.now() / 1000);
         root._lastFlakeCacheTs = ts;
         const content = ts + "\n" + rawOutput;
         sh("mkdir -p " + root.cacheDirExpr + "; t=$(mktemp " + root.cacheDirExpr + "/.state.XXXXXXXX) && printf %s " + shq(content) + " > \"$t\" && mv \"$t\" " + root.flakeCacheExpr, null);
@@ -1905,13 +1907,14 @@ Item {
         root.isCheckingFlake = true;
         const epoch = root.flakeEpoch;
         const settingsKey = root.probeSettingsKey;
-        const probeEnv = "NIXDATIFIER_CHECK_TARBALLS=" + (root.settings.checkTarballs ? "on " : "off ") + "NIXDATIFIER_DEEP_INPUTS=" + (root.settings.deepInputCheck ? "on " : "off ");
+        const probeEnv = "NIXDATIFIER_CHECK_TARBALLS=" + (root.settings.checkTarballs ? "on " : "off ") + "NIXDATIFIER_DEEP_INPUTS=" + (root.settings.deepInputCheck ? "on " : "off ") + "NIXDATIFIER_IGNORE_INPUTS=" + shq(root.settings.ignoredInputs || "");
         sh(probeEnv + shq(root.scriptDir + "run") + " cached " + shq("flake:" + root.flakePath + (probeEnv ? ":" + probeEnv.trim() : "")) + " 30 -- " + shq(root.scriptDir + "flake-probe") + " " + shq(root.flakePath), function (cmd, out, err, code) {
             root.isCheckingFlake = false;
             if (epoch !== root.flakeEpoch || settingsKey !== root.probeSettingsKey)
                 return;
             if (code !== 0) {
                 const msg = (err || out || "").trim() || qsTr("flake-probe failed");
+                root.failPendingInputs();
                 root.pushToast(msg, true);
                 return;
             }
@@ -1922,6 +1925,32 @@ Item {
     }
 
     property string _notifiedUpdates: ""
+    // Last probe output applied, so hiding an input can patch it without probing again.
+    property string _probeRaw: ""
+    // Set while the list is changed in a way that needs no new probe.
+    property bool _keepProbe: false
+    // Inputs just put back on the list that are waiting for their first probe result.
+    property var pendingInputs: []
+    // Inputs whose probe failed or never answered; their row offers a retry.
+    property var failedInputs: []
+    function failPendingInputs() {
+        root.failedInputs = root.pendingInputs;
+        root.clearPendingInputs();
+    }
+    function clearPendingInputs() {
+        pendingInputsTimer.stop();
+        if (root.pendingInputs.length > 0)
+            root.pendingInputs = [];
+    }
+    // Failsafe: a probe that never answers must not leave a row loading forever.
+    Timer {
+        id: pendingInputsTimer
+        interval: 60000
+        onTriggered: root.failPendingInputs()
+    }
+    property var skippedInputs: []
+    // Inputs that were checked and have nothing new, for the Updates tab to list below the cards.
+    property var upToDateInputs: []
     // A tarball without a Git revision is identified by its content hash.
     function shortRev(rev) {
         return String(rev || "").replace(/^sha256-/, "").substring(0, 7);
@@ -1931,9 +1960,14 @@ Item {
         return new Date(ts * 1000).toLocaleDateString(Qt.locale(), Locale.ShortFormat);
     }
     function parseFlakeProbe(text, isRetry, quiet) {
+        root._probeRaw = text;
+        root.failedInputs = [];
+        root.clearPendingInputs();
         const lines = text.split("\n");
         const updates = [];
         const unreachable = [];
+        const skipped = [];
+        const current = [];
 
         for (let i = 0; i < lines.length; i++) {
             const parts = lines[i].split("\t");
@@ -1948,8 +1982,19 @@ Item {
             if (!name)
                 continue;
 
+            if (status === "ignored") {
+                skipped.push(name);
+                continue;
+            }
             if (status === "unreachable") {
                 unreachable.push(parts.length > 7 && parts[7] ? name + " (" + parts[7] + ")" : name);
+                continue;
+            }
+            if (status === "unchanged") {
+                current.push({
+                    input: name,
+                    detail: root.shortRev(oldRev) + (oldDateTs > 0 ? " · " + root.shortDate(oldDateTs) : "")
+                });
                 continue;
             }
             if (status !== "ok")
@@ -1987,6 +2032,12 @@ Item {
         root.releaseNotesCache = validNotes;
         if (JSON.stringify(root.flakeUpdates) !== JSON.stringify(updates))
             root.flakeUpdates = updates;
+        current.sort((a, b) => a.input < b.input ? -1 : a.input > b.input ? 1 : 0);
+        if (JSON.stringify(root.upToDateInputs) !== JSON.stringify(current))
+            root.upToDateInputs = current;
+        skipped.sort();
+        if (JSON.stringify(root.skippedInputs) !== JSON.stringify(skipped))
+            root.skippedInputs = skipped;
         root.lastFlakeCheckTime = Qt.formatTime(new Date(), "hh:mm");
 
         // Transient network blips (network not up yet, GitHub anon rate-limit, brief DNS hiccup)
@@ -2016,6 +2067,74 @@ Item {
     }
 
     property string updatingInput: ""
+    // The input list only changes which inputs are probed, so keep the cards
+    // that are showing and let the next probe refresh them in the background.
+    // Mirrors flake-probe: the input list is a list of globs to skip.
+    function inputIsIgnored(name) {
+        const patterns = (root.settings.ignoredInputs || "").split(/[,\s]+/).filter(p => p !== "");
+        if (patterns.length === 0)
+            return false;
+        const listed = patterns.some(p => new RegExp("^" + p.replace(/[.+^${}()|\\\[\]]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$").test(name));
+        return listed;
+    }
+    function recheckAfterListChange() {
+        if (!root.initialized || root._keepProbe)
+            return;
+        // Inputs that are listed as skipped but no longer match show a loading row until the probe answers.
+        const waiting = root.skippedInputs.filter(n => !root.inputIsIgnored(n));
+        root.failedInputs = [];
+        root.pendingInputs = waiting;
+        if (waiting.length > 0)
+            pendingInputsTimer.restart();
+        else
+            pendingInputsTimer.stop();
+        root._lastFlakeCacheTs = 0;
+        initialFlakeCheckTimer.stop();
+        probeSettingsTimer.restart();
+    }
+
+    // One-click on the Updates tab: put an input on, or take it off, the input list.
+    function setInputChecked(inputName, checked) {
+        if (checked && root.failedInputs.indexOf(inputName) >= 0) {
+            root.failedInputs = root.failedInputs.filter(n => n !== inputName);
+            root.pendingInputs = root.pendingInputs.concat([inputName]);
+            pendingInputsTimer.restart();
+            root.checkFlakeUpdates();
+            return;
+        }
+        const names = (root.settings.ignoredInputs || "").split(/[,\s]+/).filter(n => n !== "");
+        const at = names.indexOf(inputName);
+        if (!checked) {
+            if (at === -1)
+                names.push(inputName);
+        } else {
+            if (at === -1) {
+                root.pushToast(qsTr("%1 is matched by a pattern. Edit the input list on the Updates tab.").arg(inputName), true);
+                return;
+            }
+            names.splice(at, 1);
+        }
+        // Hiding needs no new probe: the other inputs are unchanged, so patch the
+        // result we already have and store it under the new list's cache key.
+        const patchInPlace = !checked && root._probeRaw !== "";
+        root._keepProbe = patchInPlace;
+        root.settings.ignoredInputs = names.join(",");
+        root._keepProbe = false;
+        if (checked) {
+            // The row stays and shows as loading (see recheckAfterListChange); the probe replaces it with a card.
+        } else {
+            root.flakeUpdates = root.flakeUpdates.filter(u => u.input !== inputName);
+            root.upToDateInputs = root.upToDateInputs.filter(u => u.input !== inputName);
+            root.skippedInputs = root.skippedInputs.concat([inputName]).sort();
+        }
+        if (patchInPlace) {
+            const patched = root._probeRaw.split("\n").map(line => line.split("\t")[0] === inputName && line.split("\t").length >= 6 ? inputName + "\tignored\t\t\t\t\t" : line).join("\n");
+            root._probeRaw = patched;
+            root.writeFlakeCache(patched, root._lastFlakeCacheTs);
+        }
+        root.pushToast(checked ? qsTr("%1 will be checked for updates.").arg(inputName) : qsTr("%1 is no longer checked for updates.").arg(inputName), false);
+    }
+
     function runFlakeUpdateInput(inputName) {
         if (!root.isNixOS)
             return;
@@ -2565,7 +2684,7 @@ Item {
     property bool syncSettings: false
     property bool _syncReady: false
     property bool _syncApplying: false
-    readonly property var _syncKeys: ["flakePath", "configRepoPath", "secretsPath", "secretsSourcePath", "githubTokenFile", "githubUseGh", "checkTarballs", "deepInputCheck", "impermanencePaths", "checkInterval", "customCommands", "showNotifications"]
+    readonly property var _syncKeys: ["flakePath", "configRepoPath", "secretsPath", "secretsSourcePath", "githubTokenFile", "githubUseGh", "checkTarballs", "deepInputCheck", "ignoredInputs", "impermanencePaths", "checkInterval", "customCommands", "showNotifications"]
     function _syncSnapshot() {
         const values = {};
         for (const key of root._syncKeys)
@@ -2652,6 +2771,10 @@ Item {
         function onDeepInputCheckChanged() {
             root.schedulePushSharedSettings();
         }
+        function onIgnoredInputsChanged() {
+            root.schedulePushSharedSettings();
+            root.recheckAfterListChange();
+        }
     }
 
     // ── Init & timers ─────────────────────────────────────────────────────────
@@ -2710,12 +2833,18 @@ Item {
         });
     }
 
-    onProbeSettingsKeyChanged: {
+    onProbeFlagsKeyChanged: {
         if (!root.initialized)
             return;
-        root._lastFlakeCacheTs = 0;
         root.flakeUpdates = [];
         root.dryRunCache = ({});
+    }
+
+    // A list change keeps the cards on screen; the next probe refreshes them.
+    onProbeSettingsKeyChanged: {
+        if (!root.initialized || root._keepProbe)
+            return;
+        root._lastFlakeCacheTs = 0;
         initialFlakeCheckTimer.stop();
         probeSettingsTimer.restart();
     }
@@ -2724,8 +2853,10 @@ Item {
         id: probeSettingsTimer
         interval: 600
         onTriggered: {
-            if (!root.autoStart || !root.isNixOS || root.flakePath === "")
+            if (!root.autoStart || !root.isNixOS || root.flakePath === "") {
+                root.clearPendingInputs();
                 return;
+            }
             if (root.isBusy || root.isCheckingFlake) {
                 restart();
                 return;
