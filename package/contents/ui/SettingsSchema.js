@@ -203,8 +203,8 @@ var fields = [
   },
   {
     "key": "showNotifications",
-    "tab": "Behavior",
-    "group": "Updates & detection",
+    "tab": "General",
+    "group": "Update checks",
     "label": "Show update notifications",
     "help": "",
     "type": "Bool"
@@ -212,15 +212,15 @@ var fields = [
   {
     "key": "autoRefreshOnOpen",
     "tab": "Behavior",
-    "group": "Updates & detection",
+    "group": "Generation actions",
     "label": "Refresh generations when the popup opens",
     "help": "",
     "type": "Bool"
   },
   {
     "key": "showFlakeSection",
-    "tab": "Behavior",
-    "group": "Updates & detection",
+    "tab": "General",
+    "group": "Update checks",
     "label": "Check flake inputs in the background",
     "help": "",
     "type": "Bool"
