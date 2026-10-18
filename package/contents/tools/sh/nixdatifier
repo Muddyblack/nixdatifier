@@ -512,7 +512,7 @@ hash_kind() { # hash_kind INPUT: what the input is, judged from its shape
     return 1
 }
 cmd_hash() {
-    local out kind input
+    local out kind
     if ((${#args[@]} == 1)); then
         kind=$(hash_kind "${args[0]}") || usage_error "cannot tell what '${args[0]}' is: give a URL, a file, a store path or owner/repo/rev (or name it: nixdatifier hash <url|zip|github|file|store> <input>)"
         args=("$kind" "${args[0]#github:}")

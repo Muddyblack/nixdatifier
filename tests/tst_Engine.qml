@@ -558,11 +558,19 @@ Item {
             verify(jobs[0].cmd.indexOf("nixdatifier' ") >= 0);
             verify(jobs[0].cmd.indexOf(" update 'input'\\''s name'") >= 0);
             verify(core.isBusy);
-            compare(core.updatingInput, "input's name");
+            compare(core.updatingInputs, ["input's name"]);
             jobs[0].callback(jobs[0].cmd, "", "failure", 1);
             verify(!core.isBusy);
-            compare(core.updatingInput, "");
+            compare(core.updatingInputs.length, 0);
             verify(core.toasts[0].err);
+        }
+        function test_several_inputs_update_in_one_command() {
+            core.runFlakeUpdateInputs(["nixpkgs", "home-manager"]);
+            compare(jobs.length, 1);
+            verify(jobs[0].cmd.indexOf(" update 'nixpkgs' 'home-manager'") >= 0);
+            compare(core.updatingInputs, ["nixpkgs", "home-manager"]);
+            jobs[0].callback(jobs[0].cmd, "", "failure", 1);
+            compare(core.updatingInputs.length, 0);
         }
         function test_parse_generations_detects_unregistered_test_build() {
             const stat = n => "2026-10-11 12:39:05.133214540 -0400 '/nix/var/nix/profiles/system-" + n + "-link' -> '/nix/store/" + n + "-sys'";
