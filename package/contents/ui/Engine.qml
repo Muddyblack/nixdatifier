@@ -1862,8 +1862,8 @@ Item {
     }
 
     // Write the raw flake-probe output + a timestamp to the shared cache file.
-    function writeFlakeCache(rawOutput) {
-        const ts = Math.floor(Date.now() / 1000);
+    function writeFlakeCache(rawOutput, keepTs) {
+        const ts = keepTs || Math.floor(Date.now() / 1000);
         root._lastFlakeCacheTs = ts;
         const content = ts + "\n" + rawOutput;
         sh("mkdir -p " + root.cacheDirExpr + "; t=$(mktemp " + root.cacheDirExpr + "/.state.XXXXXXXX) && printf %s " + shq(content) + " > \"$t\" && mv \"$t\" " + root.flakeCacheExpr, null);
@@ -1922,6 +1922,10 @@ Item {
     }
 
     property string _notifiedUpdates: ""
+    // Last probe output applied, so hiding an input can patch it without probing again.
+    property string _probeRaw: ""
+    // Set while the list is changed in a way that needs no new probe.
+    property bool _keepProbe: false
     property var skippedInputs: []
     // A tarball without a Git revision is identified by its content hash.
     function shortRev(rev) {
@@ -1932,6 +1936,7 @@ Item {
         return new Date(ts * 1000).toLocaleDateString(Qt.locale(), Locale.ShortFormat);
     }
     function parseFlakeProbe(text, isRetry, quiet) {
+        root._probeRaw = text;
         const lines = text.split("\n");
         const updates = [];
         const unreachable = [];
@@ -2028,7 +2033,7 @@ Item {
     // The input list only changes which inputs are probed, so keep the cards
     // that are showing and let the next probe refresh them in the background.
     function recheckAfterListChange() {
-        if (!root.initialized)
+        if (!root.initialized || root._keepProbe)
             return;
         root._lastFlakeCacheTs = 0;
         initialFlakeCheckTimer.stop();
@@ -2055,13 +2060,23 @@ Item {
             }
             names.splice(at, 1);
         }
+        // Hiding needs no new probe: the other inputs are unchanged, so patch the
+        // result we already have and store it under the new list's cache key.
+        const patchInPlace = !checked && root._probeRaw !== "";
+        root._keepProbe = patchInPlace;
         root.settings.ignoredInputs = names.join(",");
-        // Move the card right away; the background probe confirms it.
+        root._keepProbe = false;
         if (checked) {
+            // Move the card right away; the background probe confirms it.
             root.skippedInputs = root.skippedInputs.filter(n => n !== inputName);
         } else {
             root.flakeUpdates = root.flakeUpdates.filter(u => u.input !== inputName);
             root.skippedInputs = root.skippedInputs.concat([inputName]).sort();
+        }
+        if (patchInPlace) {
+            const patched = root._probeRaw.split("\n").map(line => line.split("\t")[0] === inputName && line.split("\t").length >= 6 ? inputName + "\tignored\t\t\t\t\t" : line).join("\n");
+            root._probeRaw = patched;
+            root.writeFlakeCache(patched, root._lastFlakeCacheTs);
         }
         root.pushToast(checked ? qsTr("%1 will be checked for updates.").arg(inputName) : qsTr("%1 is no longer checked for updates.").arg(inputName), false);
     }
@@ -2769,7 +2784,7 @@ Item {
     }
 
     onProbeSettingsKeyChanged: {
-        if (!root.initialized)
+        if (!root.initialized || root._keepProbe)
             return;
         root._lastFlakeCacheTs = 0;
         root.flakeUpdates = [];
