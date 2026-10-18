@@ -37,18 +37,7 @@ Item {
     property string inputList: ""
     property string inputListMode: "ignore"
     signal inputListSaved(string text)
-    // Inputs that are not checked stay in the list, in name order, so nothing jumps around.
-    readonly property var rows: root.flakeUpdates.concat(root.skippedInputs.map(n => ({
-                input: n,
-                skipped: true,
-                oldRev: "",
-                newRev: "",
-                oldDate: "",
-                newDate: "",
-                newDateTs: 0,
-                overrideRef: "",
-                url: ""
-            }))).sort((a, b) => a.input < b.input ? -1 : a.input > b.input ? 1 : 0)
+    property var upToDateInputs: []
     signal checkRequested
     // One shared pulse for every card that is waiting on the running check; it only runs while checking.
     property real pulse: 1
@@ -211,74 +200,16 @@ Item {
                 }
             }
             Repeater {
-                model: root.rows
+                model: root.flakeUpdates
                 Item {
                     id: card
                     required property var modelData
-                    readonly property bool skipped: !!modelData.skipped
-                    readonly property bool pending: skipped && root.pendingInputs.indexOf(modelData.input) >= 0
-                    readonly property bool failed: skipped && root.failedInputs.indexOf(modelData.input) >= 0
                     readonly property var entry: root.dryRunCache[modelData.input] || null
-                    readonly property bool opened: !skipped && !!root.openPreviews[modelData.input]
+                    readonly property bool opened: !!root.openPreviews[modelData.input]
                     readonly property bool updating: root.updatingInput === modelData.input
                     Layout.fillWidth: true
                     Layout.bottomMargin: 9
-                    implicitHeight: skipped ? skippedSurface.implicitHeight : detailWindow.visible ? 58 : contents.implicitHeight + 20
-                    Rectangle {
-                        id: skippedSurface
-                        objectName: "skipped-" + card.modelData.input
-                        visible: card.skipped
-                        width: card.width
-                        implicitHeight: 47
-                        radius: 9
-                        color: "#02ffffff"
-                        border.color: "#08ffffff"
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 10
-                            anchors.rightMargin: 10
-                            spacing: 8
-                            Text {
-                                Layout.fillWidth: true
-                                text: card.modelData.input
-                                color: "#91a4bd"
-                                opacity: card.pending || card.failed ? 1 : 0.55
-                                font.pixelSize: 11 * root.fs
-                                font.strikeout: !card.pending && !card.failed
-                                elide: Text.ElideRight
-                            }
-                            Text {
-                                id: skippedState
-                                text: card.pending ? qsTr("checking…") : card.failed ? qsTr("could not check") : qsTr("not checked")
-                                color: card.pending ? root.accentColor : card.failed ? UI.Theme.negative : "#91a4bd"
-                                opacity: 0.55
-                                font.pixelSize: 9 * root.fs
-                                // Pulses only while pending, and the engine clears pending on any outcome or after 60 s.
-                                SequentialAnimation on opacity {
-                                    running: card.pending && root.uiActive
-                                    loops: Animation.Infinite
-                                    onRunningChanged: if (!running)
-                                        skippedState.opacity = 0.55
-                                    NumberAnimation {
-                                        to: 1
-                                        duration: 600
-                                    }
-                                    NumberAnimation {
-                                        to: 0.35
-                                        duration: 600
-                                    }
-                                }
-                            }
-                            UI.ActionButton {
-                                objectName: "resume-" + card.modelData.input
-                                visible: !card.pending
-                                glyph: card.failed ? "view-refresh" : "view-visible"
-                                implicitHeight: 27
-                                tip: card.failed ? qsTr("Retry checking %1").arg(card.modelData.input) : qsTr("Check %1 again").arg(card.modelData.input)
-                                onClicked: root.resumeInputRequested(card.modelData.input)
-                            }
-                        }
-                    }
+                    implicitHeight: detailWindow.visible ? 58 : contents.implicitHeight + 20
                     UI.DetailWindow {
                         id: detailWindow
                         objectName: "updateWindow-" + card.modelData.input
@@ -287,7 +218,6 @@ Item {
                     }
                     Rectangle {
                         id: cardSurface
-                        visible: !card.skipped
                         opacity: root.isCheckingFlake ? root.pulse : 1
                         width: card.width
                         implicitHeight: contents.implicitHeight + 20
@@ -539,6 +469,31 @@ Item {
                 text: root.isCheckingFlake ? qsTr("Checking upstream inputs…") : root.lastFlakeCheckTime ? qsTr("No pending input updates.") : qsTr("Configure a flake directory or check for updates.")
                 color: "#91a4bd"
                 font.pixelSize: 11 * root.fs
+            }
+            InputSection {
+                objectName: "upToDateSection"
+                mode: "hide"
+                title: qsTr("No updates")
+                entries: root.upToDateInputs
+                fs: root.fs
+                accentColor: root.accentColor
+                uiActive: root.uiActive
+                onActionRequested: name => root.ignoreInputRequested(name)
+            }
+            InputSection {
+                objectName: "hiddenSection"
+                mode: "resume"
+                title: qsTr("Not checked")
+                entries: root.skippedInputs.map(n => ({
+                            input: n,
+                            detail: qsTr("on your input list")
+                        }))
+                pendingInputs: root.pendingInputs
+                failedInputs: root.failedInputs
+                fs: root.fs
+                accentColor: root.accentColor
+                uiActive: root.uiActive
+                onActionRequested: name => root.resumeInputRequested(name)
             }
         }
     }

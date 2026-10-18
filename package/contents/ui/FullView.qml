@@ -207,6 +207,7 @@ Pane {
     signal resumeInputRequested(string inputName)
     property var skippedInputs: []
     property var pendingInputs: []
+    property var upToDateInputs: []
     property var failedInputs: []
     property string inputList: ""
     property string inputListMode: "ignore"
@@ -729,6 +730,7 @@ Pane {
                 isDryRunning: fullView.isDryRunning
                 skippedInputs: fullView.skippedInputs
                 pendingInputs: fullView.pendingInputs
+                upToDateInputs: fullView.upToDateInputs
                 failedInputs: fullView.failedInputs
                 inputList: fullView.inputList
                 inputListMode: fullView.inputListMode

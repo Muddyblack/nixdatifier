@@ -1949,6 +1949,8 @@ Item {
         onTriggered: root.failPendingInputs()
     }
     property var skippedInputs: []
+    // Inputs that were checked and have nothing new, for the Updates tab to list below the cards.
+    property var upToDateInputs: []
     // A tarball without a Git revision is identified by its content hash.
     function shortRev(rev) {
         return String(rev || "").replace(/^sha256-/, "").substring(0, 7);
@@ -1965,6 +1967,7 @@ Item {
         const updates = [];
         const unreachable = [];
         const skipped = [];
+        const current = [];
 
         for (let i = 0; i < lines.length; i++) {
             const parts = lines[i].split("\t");
@@ -1985,6 +1988,13 @@ Item {
             }
             if (status === "unreachable") {
                 unreachable.push(parts.length > 7 && parts[7] ? name + " (" + parts[7] + ")" : name);
+                continue;
+            }
+            if (status === "unchanged") {
+                current.push({
+                    input: name,
+                    detail: root.shortRev(oldRev) + (oldDateTs > 0 ? " · " + root.shortDate(oldDateTs) : "")
+                });
                 continue;
             }
             if (status !== "ok")
@@ -2022,6 +2032,9 @@ Item {
         root.releaseNotesCache = validNotes;
         if (JSON.stringify(root.flakeUpdates) !== JSON.stringify(updates))
             root.flakeUpdates = updates;
+        current.sort((a, b) => a.input < b.input ? -1 : a.input > b.input ? 1 : 0);
+        if (JSON.stringify(root.upToDateInputs) !== JSON.stringify(current))
+            root.upToDateInputs = current;
         skipped.sort();
         if (JSON.stringify(root.skippedInputs) !== JSON.stringify(skipped))
             root.skippedInputs = skipped;
@@ -2117,6 +2130,7 @@ Item {
             // The row stays and shows as loading (see recheckAfterListChange); the probe replaces it with a card.
         } else {
             root.flakeUpdates = root.flakeUpdates.filter(u => u.input !== inputName);
+            root.upToDateInputs = root.upToDateInputs.filter(u => u.input !== inputName);
             root.skippedInputs = root.skippedInputs.concat([inputName]).sort();
         }
         if (patchInPlace) {
