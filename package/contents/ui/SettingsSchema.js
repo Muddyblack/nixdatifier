@@ -20,7 +20,7 @@ var fields = [
   {
     "key": "checkInterval",
     "tab": "General",
-    "group": "NixOS & Flake",
+    "group": "Update checks",
     "label": "Check updates every (seconds)",
     "help": "",
     "type": "Int",
@@ -98,7 +98,7 @@ var fields = [
   {
     "key": "checkTarballs",
     "tab": "General",
-    "group": "NixOS & Flake",
+    "group": "Update checks",
     "label": "Check tarball inputs",
     "help": "Check inputs fetched as tarballs (channels, .tar.zst) with a light request. Falls back to a full Nix download only when the server gives no hint.",
     "type": "Bool"
@@ -106,7 +106,7 @@ var fields = [
   {
     "key": "deepInputCheck",
     "tab": "General",
-    "group": "NixOS & Flake",
+    "group": "Update checks",
     "label": "Check nested inputs",
     "help": "Also check the inputs of your inputs, however deep. By default only the root inputs (and those of a wrapper flake) are checked. Costs one request per input.",
     "type": "Bool"
@@ -114,7 +114,7 @@ var fields = [
   {
     "key": "ignoredInputs",
     "tab": "General",
-    "group": "NixOS & Flake",
+    "group": "Update checks",
     "label": "Input list",
     "help": "Input names separated by commas; globs work, e.g. nur, my-private/*. Use wrapper/input for inputs of a wrapper flake. Empty means every input is checked.",
     "type": "String"
@@ -122,7 +122,7 @@ var fields = [
   {
     "key": "inputListMode",
     "tab": "General",
-    "group": "NixOS & Flake",
+    "group": "Update checks",
     "label": "List type",
     "help": "Blocklist: skip the listed inputs. Allowlist: check nothing but the listed inputs.",
     "type": "String",
