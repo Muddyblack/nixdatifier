@@ -207,7 +207,7 @@ Item {
     // Written by whichever instance runs the probe first; others just read it.
     // Deliberately a shell expression, not a quoted path — evaluated inside sh() calls.
     readonly property string probeSettingsKey: (root.settings.checkTarballs ? "tarballs-on" : "tarballs-off") + "-" + (root.settings.deepInputCheck ? "deep-on" : "deep-off")
-    readonly property string flakeCacheName: "flake-" + Qt.md5(root.flakePath) + "-" + (root.lockFingerprint || "none") + "-" + root.probeSettingsKey
+    readonly property string flakeCacheName: "flake-v3-" + Qt.md5(root.flakePath) + "-" + (root.lockFingerprint || "none") + "-" + root.probeSettingsKey
     readonly property string cacheDirExpr: '"${XDG_CACHE_HOME:-$HOME/.cache}/nixdatifier"'
     readonly property string flakeCacheExpr: root.cacheDirExpr + "/" + root.flakeCacheName
 
@@ -1922,6 +1922,14 @@ Item {
     }
 
     property string _notifiedUpdates: ""
+    // A tarball without a Git revision is identified by its content hash.
+    function shortRev(rev) {
+        return String(rev || "").replace(/^sha256-/, "").substring(0, 7);
+    }
+    // Numeric date in the user's locale, e.g. 16.10.26 or 10/16/26.
+    function shortDate(ts) {
+        return new Date(ts * 1000).toLocaleDateString(Qt.locale(), Locale.ShortFormat);
+    }
     function parseFlakeProbe(text, isRetry, quiet) {
         const lines = text.split("\n");
         const updates = [];
@@ -1948,14 +1956,16 @@ Item {
                 continue;
 
             const overrideRef = parts.length > 6 ? parts[6] : "";
+            const newDateTs = parts.length > 8 ? (parseInt(parts[8]) || 0) : 0;
             updates.push({
                 input: name,
                 revisionKey: oldRev + "\n" + newRev,
-                oldRev: oldRev.substring(0, 7),
-                newRev: newRev.substring(0, 7),
+                oldRev: root.shortRev(oldRev),
+                newRev: root.shortRev(newRev),
                 oldDateTs: oldDateTs,
-                oldDate: oldDateTs > 0 ? new Date(oldDateTs * 1000).toLocaleDateString() : "",
-                newDate: qsTr("latest"),
+                oldDate: oldDateTs > 0 ? root.shortDate(oldDateTs) : "",
+                newDateTs: newDateTs,
+                newDate: newDateTs > 0 ? root.shortDate(newDateTs) : qsTr("latest"),
                 url: url.replace(/\.git$/, ""),
                 overrideRef: overrideRef
             });

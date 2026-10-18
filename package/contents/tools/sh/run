@@ -40,6 +40,8 @@ case "$mode" in
             disk | disk:* | storeusage:*) fingerprint+="$(cat "$cache_root/store.epoch" 2>/dev/null || true)" ;;
             impermanence) fingerprint+="$(cat "$cache_root/impermanence.epoch" 2>/dev/null || true)" ;;
         esac
+        # A changed helper (widget upgrade) must not serve the old one's results.
+        [[ -f "${1:-}" ]] && fingerprint+=$(cksum < "$1")
         key=$(printf '%s\0' v1 "$scope" "$fingerprint" "${1##*/}" "${@:2}" | sha256sum | cut -d' ' -f1)
         prefix=probe
         [[ "$scope" == disk || "$scope" == disk:* ]] && prefix=disk
