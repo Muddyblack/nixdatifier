@@ -34,6 +34,10 @@
             <!-- check every transitive input, not just the root (and wrapper) inputs -->
             <default>false</default>
         </entry>
+        <entry name="ignoredInputs" type="String">
+            <!-- input names to skip when checking for updates, comma separated, globs allowed -->
+            <default></default>
+        </entry>
 
         <!-- Custom Commands -->
         <!-- JSON array: [{"label":"…","cmd":"…","color":"accent|green|red|default"},…] max 4 -->

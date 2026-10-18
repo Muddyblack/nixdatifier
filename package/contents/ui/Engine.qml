@@ -206,7 +206,7 @@ Item {
     // Format: first line is a Unix timestamp (seconds); remaining lines are raw flake-probe TSV.
     // Written by whichever instance runs the probe first; others just read it.
     // Deliberately a shell expression, not a quoted path — evaluated inside sh() calls.
-    readonly property string probeSettingsKey: (root.settings.checkTarballs ? "tarballs-on" : "tarballs-off") + "-" + (root.settings.deepInputCheck ? "deep-on" : "deep-off")
+    readonly property string probeSettingsKey: (root.settings.checkTarballs ? "tarballs-on" : "tarballs-off") + "-" + (root.settings.deepInputCheck ? "deep-on" : "deep-off") + "-" + Qt.md5(root.settings.ignoredInputs || "")
     readonly property string flakeCacheName: "flake-" + Qt.md5(root.flakePath) + "-" + (root.lockFingerprint || "none") + "-" + root.probeSettingsKey
     readonly property string cacheDirExpr: '"${XDG_CACHE_HOME:-$HOME/.cache}/nixdatifier"'
     readonly property string flakeCacheExpr: root.cacheDirExpr + "/" + root.flakeCacheName
@@ -1905,7 +1905,7 @@ Item {
         root.isCheckingFlake = true;
         const epoch = root.flakeEpoch;
         const settingsKey = root.probeSettingsKey;
-        const probeEnv = "NIXDATIFIER_CHECK_TARBALLS=" + (root.settings.checkTarballs ? "on " : "off ") + "NIXDATIFIER_DEEP_INPUTS=" + (root.settings.deepInputCheck ? "on " : "off ");
+        const probeEnv = "NIXDATIFIER_CHECK_TARBALLS=" + (root.settings.checkTarballs ? "on " : "off ") + "NIXDATIFIER_DEEP_INPUTS=" + (root.settings.deepInputCheck ? "on " : "off ") + "NIXDATIFIER_IGNORE_INPUTS=" + shq(root.settings.ignoredInputs || "") + " ";
         sh(probeEnv + shq(root.scriptDir + "run") + " cached " + shq("flake:" + root.flakePath + (probeEnv ? ":" + probeEnv.trim() : "")) + " 30 -- " + shq(root.scriptDir + "flake-probe") + " " + shq(root.flakePath), function (cmd, out, err, code) {
             root.isCheckingFlake = false;
             if (epoch !== root.flakeEpoch || settingsKey !== root.probeSettingsKey)
@@ -2555,7 +2555,7 @@ Item {
     property bool syncSettings: false
     property bool _syncReady: false
     property bool _syncApplying: false
-    readonly property var _syncKeys: ["flakePath", "configRepoPath", "secretsPath", "secretsSourcePath", "githubTokenFile", "githubUseGh", "checkTarballs", "deepInputCheck", "impermanencePaths", "checkInterval", "customCommands", "showNotifications"]
+    readonly property var _syncKeys: ["flakePath", "configRepoPath", "secretsPath", "secretsSourcePath", "githubTokenFile", "githubUseGh", "checkTarballs", "deepInputCheck", "ignoredInputs", "impermanencePaths", "checkInterval", "customCommands", "showNotifications"]
     function _syncSnapshot() {
         const values = {};
         for (const key of root._syncKeys)
@@ -2640,6 +2640,9 @@ Item {
             root.schedulePushSharedSettings();
         }
         function onDeepInputCheckChanged() {
+            root.schedulePushSharedSettings();
+        }
+        function onIgnoredInputsChanged() {
             root.schedulePushSharedSettings();
         }
     }

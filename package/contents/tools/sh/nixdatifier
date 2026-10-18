@@ -126,13 +126,14 @@ unknown_name() {
 # Saved settings (nixdatifier config): they fill in what the environment leaves
 # empty, so a variable or option on the command line still wins.
 CONFIG_FILE=${NIXDATIFIER_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/nixdatifier/config}
-CONFIG_KEYS="flake config_repo secrets secrets_source persist priv commands check_interval notifications github_token_file github_use_gh check_tarballs deep_inputs"
+CONFIG_KEYS="flake config_repo secrets secrets_source persist priv commands check_interval notifications github_token_file github_use_gh check_tarballs deep_inputs ignored_inputs"
 config_var() { # config_var KEY: the environment variable a key stands for
     case $1 in flake) echo NIXDATIFIER_FLAKE ;; config_repo) echo NIXDATIFIER_CONFIG_REPO ;; secrets) echo NIXDATIFIER_SECRETS ;;
         secrets_source) echo NIXDATIFIER_SECRETS_SOURCE ;; persist) echo NIXDATIFIER_PERSIST ;; priv) echo NIXDATIFIER_PRIV ;;
         commands) echo NIXDATIFIER_COMMANDS ;; check_interval) echo NIXDATIFIER_CHECK_INTERVAL ;; notifications) echo NIXDATIFIER_NOTIFICATIONS ;;
         github_token_file) echo NIXDATIFIER_GITHUB_TOKEN_FILE ;; github_use_gh) echo NIXDATIFIER_GITHUB_USE_GH ;;
-        check_tarballs) echo NIXDATIFIER_CHECK_TARBALLS ;; deep_inputs) echo NIXDATIFIER_DEEP_INPUTS ;; esac
+        check_tarballs) echo NIXDATIFIER_CHECK_TARBALLS ;; deep_inputs) echo NIXDATIFIER_DEEP_INPUTS ;;
+        ignored_inputs) echo NIXDATIFIER_IGNORE_INPUTS ;; esac
 }
 config_file_get() { [[ -f $CONFIG_FILE ]] && sed -n "s/^$1=//p" "$CONFIG_FILE" | tail -1; return 0; }
 COMMANDS_FROM_ENV=${NIXDATIFIER_COMMANDS:+1}
@@ -338,7 +339,7 @@ check_ttl() {
 }
 updates_json() { # updates_json <all 0|1>
     resolve_flake
-    NOTE='Checking upstream…' cached "flake:$flake:${NIXDATIFIER_CHECK_TARBALLS:-}${NIXDATIFIER_DEEP_INPUTS:-}" "$(check_ttl)" -- "$here/flake-probe" "$flake" | jq -Rn --argjson all "$1" '
+    NOTE='Checking upstream…' cached "flake:$flake:${NIXDATIFIER_CHECK_TARBALLS:-}${NIXDATIFIER_DEEP_INPUTS:-}${NIXDATIFIER_IGNORE_INPUTS:-}" "$(check_ttl)" -- "$here/flake-probe" "$flake" | jq -Rn --argjson all "$1" '
         [inputs | split("\t") | select(length > 1)
          | {input: .[0], status: (if .[1] == "ok" then "update" else .[1] end), current: .[2], latest: .[3],
             from: .[2][:7], to: .[3][:7], modified: ((.[4] // "0") | tonumber? // 0),
@@ -965,7 +966,7 @@ cmd_persist() {
 # The window keeps these settings in its own store (KDE config, a JSON file),
 # so it mirrors them into the config file through `config sync`: the terminal
 # view and the window then show and change the same values. GUI name:file key.
-GUI_MAP="flakePath:flake configRepoPath:config_repo secretsPath:secrets secretsSourcePath:secrets_source impermanencePaths:persist checkInterval:check_interval customCommands:commands showNotifications:notifications githubTokenFile:github_token_file githubUseGh:github_use_gh checkTarballs:check_tarballs deepInputCheck:deep_inputs"
+GUI_MAP="flakePath:flake configRepoPath:config_repo secretsPath:secrets secretsSourcePath:secrets_source impermanencePaths:persist checkInterval:check_interval customCommands:commands showNotifications:notifications githubTokenFile:github_token_file githubUseGh:github_use_gh checkTarballs:check_tarballs deepInputCheck:deep_inputs ignoredInputs:ignored_inputs"
 config_file_put() { # config_file_put KEY VALUE: set it, or remove it when empty
     mkdir -p "$(dirname "$CONFIG_FILE")" || die "cannot create $(dirname "$CONFIG_FILE")"
     { grep -v "^$1=" "$CONFIG_FILE" 2>/dev/null; [[ -z $2 ]] || echo "$1=$2"; } >"$CONFIG_FILE.new" && mv "$CONFIG_FILE.new" "$CONFIG_FILE"

@@ -112,6 +112,14 @@ var fields = [
     "type": "Bool"
   },
   {
+    "key": "ignoredInputs",
+    "tab": "General",
+    "group": "NixOS & Flake",
+    "label": "Ignored inputs",
+    "help": "Inputs to skip when checking for updates, separated by commas. Globs work, e.g. nur, my-private/*. Use wrapper/input for inputs of a wrapper flake.",
+    "type": "String"
+  },
+  {
     "key": "customCommands",
     "tab": "Commands",
     "group": "Quick-run commands",
