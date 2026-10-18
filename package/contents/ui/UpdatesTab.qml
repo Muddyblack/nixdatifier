@@ -225,6 +225,33 @@ Item {
                         radius: 9
                         color: "#03ffffff"
                         border.color: "#0effffff"
+                        // Corner toggle: sits in the card's padding, so nothing else moves.
+                        Item {
+                            objectName: "toggle-corner-" + card.modelData.input
+                            z: 5
+                            x: 2
+                            y: 2
+                            width: 16
+                            height: 16
+                            visible: !!card.modelData.overrideRef
+                            opacity: cornerHover.hovered ? 1 : 0.55
+                            UI.Icon {
+                                anchors.centerIn: parent
+                                source: Qt.resolvedUrl(card.opened ? "assets/ic_chevron_up.svg" : "assets/ic_chevron_down.svg")
+                                width: 10
+                                height: 10
+                                isMask: true
+                                color: root.accentColor
+                            }
+                            HoverHandler {
+                                id: cornerHover
+                            }
+                            TapHandler {
+                                onTapped: root.togglePreview(card.modelData)
+                            }
+                            ToolTip.visible: cornerHover.hovered
+                            ToolTip.text: card.opened ? qsTr("Collapse preview") : qsTr("Preview package changes")
+                        }
                         ColumnLayout {
                             id: contents
                             anchors.left: parent.left
@@ -483,7 +510,7 @@ Item {
             InputSection {
                 objectName: "hiddenSection"
                 mode: "resume"
-                title: qsTr("Not checked")
+                title: root.inputListMode === "only" ? qsTr("Not on allowlist") : qsTr("Ignored")
                 entries: root.skippedInputs.map(n => ({
                             input: n,
                             detail: qsTr("on your input list")
