@@ -255,7 +255,10 @@ is_ignored() { # 0 = leave this input out
 running=0
 while IFS='|' read -r name type owner repo url ref rev date nar_hash locked_url; do
     [ -z "$name" ] && continue
-    is_ignored "$name" && continue
+    if is_ignored "$name"; then
+        printf '%s\tignored\t\t\t\t\t\n' "$name"
+        continue
+    fi
     probe_one "$name" "$type" "$owner" "$repo" "$url" "$ref" "$rev" "$date" "$nar_hash" "$locked_url" &
     running=$((running + 1))
     if [ "$running" -ge "$MAX_PARALLEL" ]; then

@@ -30,7 +30,9 @@ Item {
     signal releaseNotesRequested(string inputName, bool force)
     signal updateInputRequested(string inputName)
     signal ignoreInputRequested(string inputName)
-    property bool canIgnoreInputs: false
+    signal resumeInputRequested(string inputName)
+    property var skippedInputs: []
+    property bool showSkipped: false
     signal checkRequested
     signal copyToClipboard(string text)
     visible: activeViewMode === "updates"
@@ -324,6 +326,41 @@ Item {
                                     onClicked: root.togglePreview(card.modelData)
                                 }
                             }
+                        }
+                    }
+                }
+            }
+            ColumnLayout {
+                visible: root.skippedInputs.length > 0
+                Layout.fillWidth: true
+                Layout.topMargin: 6
+                spacing: 4
+                UI.ActionButton {
+                    objectName: "skippedToggle"
+                    flatStyle: true
+                    text: qsTr("Not checked (%1)").arg(root.skippedInputs.length)
+                    glyph: Qt.resolvedUrl(root.showSkipped ? "assets/ic_chevron_up.svg" : "assets/ic_chevron_down.svg")
+                    onClicked: root.showSkipped = !root.showSkipped
+                }
+                Repeater {
+                    model: root.showSkipped ? root.skippedInputs : []
+                    RowLayout {
+                        id: skippedRow
+                        required property string modelData
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Text {
+                            Layout.fillWidth: true
+                            text: skippedRow.modelData
+                            color: "#91a4bd"
+                            font.pixelSize: 11 * root.fs
+                            elide: Text.ElideRight
+                        }
+                        UI.ActionButton {
+                            objectName: "resume-" + skippedRow.modelData
+                            text: qsTr("Check again")
+                            implicitHeight: 27
+                            onClicked: root.resumeInputRequested(skippedRow.modelData)
                         }
                     }
                 }

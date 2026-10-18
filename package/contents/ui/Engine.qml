@@ -1922,10 +1922,12 @@ Item {
     }
 
     property string _notifiedUpdates: ""
+    property var skippedInputs: []
     function parseFlakeProbe(text, isRetry, quiet) {
         const lines = text.split("\n");
         const updates = [];
         const unreachable = [];
+        const skipped = [];
 
         for (let i = 0; i < lines.length; i++) {
             const parts = lines[i].split("\t");
@@ -1940,6 +1942,10 @@ Item {
             if (!name)
                 continue;
 
+            if (status === "ignored") {
+                skipped.push(name);
+                continue;
+            }
             if (status === "unreachable") {
                 unreachable.push(parts.length > 7 && parts[7] ? name + " (" + parts[7] + ")" : name);
                 continue;
@@ -1977,6 +1983,9 @@ Item {
         root.releaseNotesCache = validNotes;
         if (JSON.stringify(root.flakeUpdates) !== JSON.stringify(updates))
             root.flakeUpdates = updates;
+        skipped.sort();
+        if (JSON.stringify(root.skippedInputs) !== JSON.stringify(skipped))
+            root.skippedInputs = skipped;
         root.lastFlakeCheckTime = Qt.formatTime(new Date(), "hh:mm");
 
         // Transient network blips (network not up yet, GitHub anon rate-limit, brief DNS hiccup)
@@ -2006,13 +2015,28 @@ Item {
     }
 
     property string updatingInput: ""
-    // One-click "stop checking this input" from the Updates tab (ignore mode only).
-    function ignoreFlakeInput(inputName) {
+    // One-click on the Updates tab: put an input on, or take it off, the input list.
+    // A blocklist lists what is skipped, an allowlist lists what is checked.
+    function setInputChecked(inputName, checked) {
+        const only = root.settings.inputListMode === "only";
         const names = (root.settings.ignoredInputs || "").split(/[,\s]+/).filter(n => n !== "");
-        if (names.indexOf(inputName) === -1)
-            names.push(inputName);
+        const at = names.indexOf(inputName);
+        if (only === checked) {
+            if (at === -1)
+                names.push(inputName);
+        } else {
+            if (at === -1) {
+                root.pushToast(qsTr("%1 is matched by a pattern or an empty list. Edit the input list in Settings.").arg(inputName), true);
+                return;
+            }
+            if (only && names.length === 1) {
+                root.pushToast(qsTr("An empty allowlist checks everything. Add another input first, or switch to Blocklist."), true);
+                return;
+            }
+            names.splice(at, 1);
+        }
         root.settings.ignoredInputs = names.join(",");
-        root.pushToast(qsTr("%1 is no longer checked for updates. Undo it under Settings → Ignored inputs.").arg(inputName), false);
+        root.pushToast(checked ? qsTr("%1 will be checked for updates.").arg(inputName) : qsTr("%1 is no longer checked for updates.").arg(inputName), false);
         root.flakeEpoch++;
         root.checkFlakeUpdates(false, true);
     }

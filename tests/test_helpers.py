@@ -430,9 +430,14 @@ fi
         nodes = {"root": {"inputs": {n: n for n in names_in}}, **{n: node(n) for n in names_in}}
         (self.root / "flake.lock").write_text(json.dumps({"root": "root", "nodes": nodes}))
         self.script(self.bin / "curl", "echo " + "a" * 40 + "\n")
-        names = lambda env: sorted(  # noqa: E731
-            line.split("\t")[0] for line in self.run_helper("flake-probe", str(self.root), env=env).stdout.splitlines()
-        )
+
+        def lines(env):
+            out = self.run_helper("flake-probe", str(self.root), env=env).stdout
+            return [ln.split("\t") for ln in out.splitlines()]
+
+        names = lambda env: sorted(f[0] for f in lines(env) if f[1] != "ignored")  # noqa: E731
+        skipped = lambda env: sorted(f[0] for f in lines(env) if f[1] == "ignored")  # noqa: E731
+        self.assertEqual(skipped({"NIXDATIFIER_IGNORE_INPUTS": "nur"}), ["nur"])
         self.assertEqual(names({}), ["nixpkgs", "nur", "private-a", "private-b"])
         self.assertEqual(names({"NIXDATIFIER_IGNORE_INPUTS": "nur"}), ["nixpkgs", "private-a", "private-b"])
         self.assertEqual(names({"NIXDATIFIER_IGNORE_INPUTS": "nur, private-*"}), ["nixpkgs"])
