@@ -40,9 +40,34 @@ Item {
     // Inputs that are not checked stay in the list, in name order, so nothing jumps around.
     readonly property var rows: root.flakeUpdates.concat(root.skippedInputs.map(n => ({
                 input: n,
-                skipped: true
+                skipped: true,
+                oldRev: "",
+                newRev: "",
+                oldDate: "",
+                newDate: "",
+                newDateTs: 0,
+                overrideRef: "",
+                url: ""
             }))).sort((a, b) => a.input < b.input ? -1 : a.input > b.input ? 1 : 0)
     signal checkRequested
+    // One shared pulse for every card that is waiting on the running check; it only runs while checking.
+    property real pulse: 1
+    SequentialAnimation on pulse {
+        running: root.isCheckingFlake && root.uiActive && root.visible
+        loops: Animation.Infinite
+        onRunningChanged: if (!running)
+            root.pulse = 1
+        NumberAnimation {
+            to: 0.55
+            duration: 700
+            easing.type: Easing.InOutSine
+        }
+        NumberAnimation {
+            to: 1
+            duration: 700
+            easing.type: Easing.InOutSine
+        }
+    }
     signal copyToClipboard(string text)
     visible: activeViewMode === "updates"
     property string updatingInput: ""
@@ -263,6 +288,7 @@ Item {
                     Rectangle {
                         id: cardSurface
                         visible: !card.skipped
+                        opacity: root.isCheckingFlake ? root.pulse : 1
                         width: card.width
                         implicitHeight: contents.implicitHeight + 20
                         height: implicitHeight
@@ -332,7 +358,7 @@ Item {
                                                 }
                                                 Text {
                                                     Layout.fillWidth: true
-                                                    text: card.modelData.newRev
+                                                    text: root.isCheckingFlake ? qsTr("checking latest…") : card.modelData.newRev
                                                     color: root.accentColor
                                                     font.family: UI.Theme.fixedWidthFont.family
                                                     font.pixelSize: 9 * root.fs
@@ -380,6 +406,7 @@ Item {
                                         }
                                     }
                                     MouseArea {
+                                        objectName: "toggle-" + card.modelData.input
                                         anchors.fill: parent
                                         enabled: !!card.modelData.overrideRef
                                         cursorShape: Qt.PointingHandCursor
@@ -401,16 +428,6 @@ Item {
                                         }
                                     }
                                     UI.ActionButton {
-                                        objectName: "preview-" + card.modelData.input
-                                        glyph: Qt.resolvedUrl(card.opened ? "assets/ic_chevron_up.svg" : "assets/ic_outline_compare.svg")
-                                        implicitHeight: 27
-                                        primary: true
-                                        accent: "#b6a1e4"
-                                        tip: card.opened ? qsTr("Collapse preview") : card.entry ? qsTr("Show cached preview") : qsTr("Preview package changes")
-                                        enabled: !!card.modelData.overrideRef && (card.opened || !!card.entry || !root.isDryRunning)
-                                        onClicked: root.togglePreview(card.modelData)
-                                    }
-                                    UI.ActionButton {
                                         objectName: "update-" + card.modelData.input
                                         glyph: "view-refresh"
                                         implicitHeight: 27
@@ -422,7 +439,6 @@ Item {
                                     }
                                     UI.ActionButton {
                                         objectName: "ignore-" + card.modelData.input
-                                        visible: root.canIgnoreInputs
                                         glyph: "view-hidden"
                                         implicitHeight: 27
                                         tip: qsTr("Stop checking %1").arg(card.modelData.input)
