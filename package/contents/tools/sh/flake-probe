@@ -215,16 +215,25 @@ probe_one() {
 
     local remote_rev="" remote_output="" failure="" result=0
     # Git's ref advertisement is expensive for repositories such as nixpkgs.
-    # Ask GitHub for just the target commit; retain Git for API rate limits,
-    # private repositories, and installations without curl.
-    if [[ "$type" == github ]] && command -v curl >/dev/null 2>&1; then
-        local encoded_ref
-        encoded_ref=$(jq -rn --arg ref "${ref:-HEAD}" '$ref | @uri')
-        remote_rev=$(curl --fail --silent --show-error --location \
+    # Ask GitHub for just the target commit (per_page=1 keeps out the file
+    # list a single-commit lookup carries); its sha and commit date come in one
+    # request. Retain Git for API rate limits, private repositories, and
+    # installations without curl - those updates simply have no date.
+    local remote_ts=""
+    if [[ "$type" == github ]] && command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+        local encoded_ref api_json
+        encoded_ref=$(jq -rn --arg ref "${ref:-}" '$ref | @uri')
+        api_json=$(curl --fail --silent --show-error --location \
             --connect-timeout 5 --max-time 15 \
-            -H 'Accept: application/vnd.github.sha' \
-            "https://api.github.com/repos/${owner}/${repo}/commits/${encoded_ref}" 2>/dev/null) || remote_rev=""
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${owner}/${repo}/commits?per_page=1${encoded_ref:+&sha=$encoded_ref}" 2>/dev/null) || api_json=""
+        remote_rev=$(jq -r '.[0].sha // empty' <<< "$api_json" 2>/dev/null) || remote_rev=""
         [[ "$remote_rev" =~ ^[[:xdigit:]]{40}$ ]] || remote_rev=""
+        if [[ -n "$remote_rev" ]]; then
+            # Same value Nix stores as lastModified: the commit date.
+            remote_ts=$(jq -r '.[0].commit.committer.date // empty | fromdateiso8601' <<< "$api_json" 2>/dev/null) || remote_ts=""
+            [[ "$remote_ts" =~ ^[0-9]+$ ]] || remote_ts=""
+        fi
     fi
     if [[ -z "$remote_rev" ]]; then
         remote_output=$(GIT_TERMINAL_PROMPT=0 timeout --kill-after=2s "$TIMEOUT" \
@@ -261,7 +270,7 @@ probe_one() {
     elif [ "$remote_rev" = "$rev" ]; then
         printf '%s\t%s\t%s\t%s\t%s\t%s\t\n' "$name" "unchanged" "$rev" "$remote_rev" "$date" "$remote_url"
     else
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "ok" "$rev" "$remote_rev" "$date" "$remote_url" "$override_ref"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t\t%s\n' "$name" "ok" "$rev" "$remote_rev" "$date" "$remote_url" "$override_ref" "$remote_ts"
     fi
 }
 

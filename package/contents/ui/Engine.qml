@@ -207,7 +207,7 @@ Item {
     // Written by whichever instance runs the probe first; others just read it.
     // Deliberately a shell expression, not a quoted path — evaluated inside sh() calls.
     readonly property string probeSettingsKey: (root.settings.checkTarballs ? "tarballs-on" : "tarballs-off") + "-" + (root.settings.deepInputCheck ? "deep-on" : "deep-off")
-    readonly property string flakeCacheName: "flake-v2-" + Qt.md5(root.flakePath) + "-" + (root.lockFingerprint || "none") + "-" + root.probeSettingsKey
+    readonly property string flakeCacheName: "flake-v3-" + Qt.md5(root.flakePath) + "-" + (root.lockFingerprint || "none") + "-" + root.probeSettingsKey
     readonly property string cacheDirExpr: '"${XDG_CACHE_HOME:-$HOME/.cache}/nixdatifier"'
     readonly property string flakeCacheExpr: root.cacheDirExpr + "/" + root.flakeCacheName
 

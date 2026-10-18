@@ -192,7 +192,11 @@ fi
         )
         args = self.root / "curl-args"
         git_called = self.root / "git-called"
-        self.script(self.bin / "curl", f"printf '%s\\n' \"$@\" > '{args}'\nprintf '{new}'\n")
+        self.script(
+            self.bin / "curl",
+            f"printf '%s\\n' \"$@\" > '{args}'\n"
+            f'printf \'[{{"sha":"{new}","commit":{{"committer":{{"date":"2026-10-15T02:17:34Z"}}}}}}]\'\n',
+        )
         self.script(
             self.bin / "git",
             f"touch '{git_called}'; printf '{new}\\trefs/heads/test\\n'\n",
@@ -200,7 +204,8 @@ fi
         result = self.run_helper("flake-probe", str(self.root))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"\tok\t{old}\t{new}\t", result.stdout)
-        self.assertIn("/commits/branch%2Fwith-slash", args.read_text())
+        self.assertIn("/commits?per_page=1&sha=branch%2Fwith-slash", args.read_text())
+        self.assertTrue(result.stdout.split("\n")[0].endswith("\t1792030654"), result.stdout)
         self.assertFalse(git_called.exists())
         self.script(self.bin / "curl", "exit 22\n")
         result = self.run_helper("flake-probe", str(self.root))
@@ -284,7 +289,7 @@ fi
                 }
             )
         )
-        self.script(self.bin / "curl", "echo " + "a" * 40 + "\n")
+        self.script(self.bin / "curl", f'echo \'[{{"sha":"{"a" * 40}"}}]\'\n')
         out = self.run_helper("flake-probe", str(self.root)).stdout
         names = sorted(line.split("\t")[0] for line in out.splitlines())
         self.assertEqual(names, ["nix-config", "nix-config/nixpkgs"])
@@ -320,7 +325,7 @@ fi
             )
         )
         calls = self.root / "requests"
-        self.script(self.bin / "curl", f"echo request >> '{calls}'; echo {new}\n")
+        self.script(self.bin / "curl", f"echo request >> '{calls}'; echo '[{{\"sha\":\"{new}\"}}]'\n")
         self.script(self.bin / "git", "exit 99\n")
         result = self.run_helper("flake-probe", str(self.root))
         self.assertEqual(result.returncode, 0, result.stderr)
