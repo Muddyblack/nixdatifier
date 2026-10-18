@@ -731,7 +731,7 @@ settings_desc() { # settings_desc KEY: what it is
         check_tarballs) echo 'off: skip tarball flake inputs (channels, .tar.zst) when checking for updates, here and in the window. Empty: on.' ;;
         deep_inputs) echo 'on: check every transitive flake input, not just the root (and wrapper) inputs. Costs one request per input. Empty: off.' ;;
         ignored_inputs) echo 'Flake inputs to skip when checking for updates: names separated by commas, globs allowed (nur, my-private/*). Empty: check them all. See input_list_mode.' ;;
-        input_list_mode) echo 'ignore = blocklist: skip the listed inputs. only = allowlist: check just the listed inputs. An empty list checks everything either way. Empty: ignore.' ;;
+        input_list_mode) echo 'ignore = blocklist: skip the listed inputs. only = allowlist: check just the listed inputs. An empty list checks everything either way. Enter switches. Empty: ignore.' ;;
         theme) echo 'Colour theme: deep, marina, midnight, full, plain or your own (see docs/cli.md). Enter cycles.' ;;
         layout) echo 'roomy: boxed sections with the logo. compact: no boxes. Enter switches.' ;;
     esac
@@ -768,6 +768,10 @@ settings_edit() { # settings_edit KEY: change one setting
         @commands) commands_screen; return 0 ;;
         @checks) watch_screen; return 0 ;;
         theme | layout) cycle_conf "$1"; return 0 ;;
+        input_list_mode)
+            [[ $("$NXD_CLI" config get input_list_mode 2>/dev/null) == only ]] && new=ignore || new=only
+            "$NXD_CLI" config set input_list_mode "$new" >/dev/null 2>&1
+            return 0 ;;
     esac
     clear
     cur=$("$NXD_CLI" config get "$1" 2>/dev/null)
