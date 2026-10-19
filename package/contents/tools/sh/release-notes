@@ -83,7 +83,14 @@ fetch() {
         200) return 0 ;;
         403|429)
             if grep -qi '^x-ratelimit-remaining: *0' "$tmp/$1.h"; then
-                echo "GitHub API rate limit reached. Try again later, or set a GitHub token (GITHUB_TOKEN or a token file)." >&2
+                local reset
+                reset=$(sed -n 's/^[Xx]-[Rr]ate[Ll]imit-[Rr]eset: *\([0-9]*\).*/\1/p' "$tmp/$1.h" | head -n1)
+                reset=$(date -d "@${reset:-0}" +%H:%M 2>/dev/null) || reset=""
+                if [ -n "$token" ]; then
+                    echo "GitHub API rate limit reached${reset:+ (resets around $reset)}. Try again later." >&2
+                else
+                    echo "GitHub API rate limit reached${reset:+ (resets around $reset)}: without a login GitHub allows only 60 requests per hour. Add a GitHub token (GITHUB_TOKEN or a token file in the settings) or install the GitHub CLI (gh), run 'gh auth login' and enable 'Use the GitHub CLI login'." >&2
+                fi
             else
                 echo "GitHub refused the request (HTTP $code)" >&2
             fi

@@ -378,7 +378,7 @@ cmd_notes() {
     row=$(update_row) || exit $?
     out=$(NOTE='Fetching release notes…' cached notes 86400 -- timeout --kill-after=5s 60s "$here/release-notes" \
         "$(jq -r .url <<<"$row")" "$(jq -r .current <<<"$row")" "$(jq -r .latest <<<"$row")" "$(jq -r .modified <<<"$row")") ||
-        die 'could not fetch release notes (rate limit? set GITHUB_TOKEN or github_token_file)'
+        die 'could not fetch release notes (rate limit? GitHub allows 60 requests per hour without a login: set GITHUB_TOKEN or github_token_file, or install gh, run gh auth login and set github_use_gh on)'
     if [[ $fmt == json ]]; then jq . <<<"$out"; return; fi
     jq -r '
         (if .compareUrl != "" then "Compare: \(.compareUrl)\n" else empty end),
