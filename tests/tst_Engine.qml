@@ -1044,6 +1044,25 @@ Item {
             core.probeDiskUsage(false);
             compare(jobs.length, 2);
         }
+        function test_store_measurement_can_be_switched_off() {
+            core._diskProbeRunning = false;
+            const original = cfg.measureStore;
+            cfg.measureStore = false;
+            jobs = [];
+            core.probeDiskUsage(true);
+            compare(jobs.length, 1);
+            verify(jobs[0].cmd.indexOf("diskusage") > 0 && jobs[0].cmd.indexOf(" --free") > 0, jobs[0].cmd);
+            verify(jobs[0].cmd.indexOf("disk:nar-v1") < 0, jobs[0].cmd);
+            // The Measure button still walks the store once.
+            jobs = [];
+            core._lastDiskRequestMs = 0;
+            core.probeDiskUsage(true, true);
+            compare(jobs.length, 1);
+            verify(jobs[0].cmd.indexOf("cached disk:nar-v1 0") > 0, jobs[0].cmd);
+            jobs[0].callback(jobs[0].cmd, "100\x1e20\x1e500\x1e" + Math.floor(Date.now() / 1000), "", 0);
+            compare(core.diskStoreBytes, 100);
+            cfg.measureStore = original;
+        }
         function test_disk_errors_preserve_last_measurement_and_allow_retry() {
             core.diskStoreBytes = 100;
             core.diskReclaimableBytes = 25;

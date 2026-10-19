@@ -18,6 +18,7 @@ Kirigami.Page {
     property alias cfg_enableHostDetect: state.enableHostDetect
     property alias cfg_checkTarballs: state.checkTarballs
     property alias cfg_deepInputCheck: state.deepInputCheck
+    property alias cfg_measureStore: state.measureStore
     property alias cfg_ignoredInputs: state.ignoredInputs
     property alias cfg_customCommands: state.customCommands
     property alias cfg_showCommandButtons: state.showCommandButtons
@@ -69,6 +70,7 @@ Kirigami.Page {
     property alias cfg_enableHostDetectDefault: defaults.enableHostDetect
     property alias cfg_checkTarballsDefault: defaults.checkTarballs
     property alias cfg_deepInputCheckDefault: defaults.deepInputCheck
+    property alias cfg_measureStoreDefault: defaults.measureStore
     property alias cfg_ignoredInputsDefault: defaults.ignoredInputs
     property alias cfg_customCommandsDefault: defaults.customCommands
     property alias cfg_showCommandButtonsDefault: defaults.showCommandButtons

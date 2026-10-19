@@ -489,7 +489,16 @@ Item {
     property bool _diskProbeDirty: false
     property string diskUsageError: ""
 
-    function probeDiskUsage(force) {
+    // `manual`: the person asked for it (the Measure button). With measuring
+    // switched off, only that walks the store; everything else reads free space.
+    property bool _diskProbeManual: false
+    function probeDiskUsage(force, manual) {
+        if (!root.settings.measureStore && !manual && !root._diskProbeManual) {
+            root.probeFreeDiskSpace();
+            return;
+        }
+        if (manual)
+            root._diskProbeManual = true;
         if (force)
             root._diskProbeDirty = true;
         if (root._diskProbeRunning)
@@ -498,9 +507,11 @@ Item {
         if (root.autoStart && !root.expanded)
             return;
         const refresh = root._diskProbeDirty;
+        const manualRun = root._diskProbeManual;
         if (!refresh && root._lastDiskRequestMs > 0 && Date.now() - root._lastDiskRequestMs < 5000)
             return;
         root._diskProbeDirty = false;
+        root._diskProbeManual = false;
         root._diskProbeRunning = true;
         root._lastDiskRequestMs = Date.now();
         sh(shq(root.scriptDir + "run") + " cached disk:nar-v1 " + (refresh ? 0 : Math.round(root.diskProbeTtlMs / 1000)) + " -- " + shq(root.scriptDir + "diskusage"), function (cmd, out, err, code) {
@@ -508,7 +519,7 @@ Item {
             // A mutation/forced refresh arrived during this snapshot. Do not
             // display it or lose the request; run one fresh probe afterward.
             if (root._diskProbeDirty) {
-                root.probeDiskUsage(true);
+                root.probeDiskUsage(true, manualRun);
                 return;
             }
             const p = (out || "").trim().split("\x1e");
@@ -2767,7 +2778,7 @@ Item {
     property bool syncSettings: false
     property bool _syncReady: false
     property bool _syncApplying: false
-    readonly property var _syncKeys: ["flakePath", "configRepoPath", "secretsPath", "secretsSourcePath", "githubTokenFile", "githubUseGh", "checkTarballs", "deepInputCheck", "ignoredInputs", "impermanencePaths", "checkInterval", "customCommands", "showNotifications"]
+    readonly property var _syncKeys: ["flakePath", "configRepoPath", "secretsPath", "secretsSourcePath", "githubTokenFile", "githubUseGh", "checkTarballs", "deepInputCheck", "measureStore", "ignoredInputs", "impermanencePaths", "checkInterval", "customCommands", "showNotifications"]
     function _syncSnapshot() {
         const values = {};
         for (const key of root._syncKeys)
@@ -2853,6 +2864,13 @@ Item {
         }
         function onDeepInputCheckChanged() {
             root.schedulePushSharedSettings();
+        }
+        function onMeasureStoreChanged() {
+            root.schedulePushSharedSettings();
+            if (root.settings.measureStore)
+                root.probeDiskUsage(true);
+            else
+                root.probeFreeDiskSpace();
         }
         function onIgnoredInputsChanged() {
             root.schedulePushSharedSettings();

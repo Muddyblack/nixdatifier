@@ -22,7 +22,7 @@ help_entry() {
         generations) echo "generations [--limit N]#system generations, newest first#Marks the running (ACTIVE) and booted generation. JSON has storePath, nixosVersion and kernel." ;;
         updates) echo "updates [--all] [--check]#flake inputs behind upstream#Probes each input's remote (cached for the check interval, 1h by default, and shared with the window; --refresh checks again). --all also lists up-to-date and pinned inputs. --check exits 2 when an update exists, for cron and CI." ;;
         diff) echo "diff [--config] [A [B]]#what changed between generations (default: newest vs previous)#Package changes with sizes. --config shows the changes in your .nix files instead (needs recorded snapshots, see: help snapshot)." ;;
-        disk) echo "disk [STORE-PATH]#store size and what GC could free; or why a path is kept#With a store path: its GC roots, referrers and closure size." ;;
+        disk) echo "disk [STORE-PATH]#store size and what GC could free; or why a path is kept#With a store path: its GC roots, referrers and closure size. With measure_store off, only free space is shown; --refresh measures once." ;;
         health) echo "health#release/EOL, reboot needed, failed units, binary caches#Read only. Works on any distro with Nix; NixOS-only checks are left out elsewhere." ;;
         status) echo "status [--updates]#one-line summary for prompts and status bars#Running generation, reboot needed, failed units. --updates adds a (cached) upstream check. --json for scripts." ;;
         history) echo "history [list|clear]#what earlier switches, cleanups and updates did#Shared with the window: the last 50 runs, including their output (--json). clear forgets them (asks first)." ;;
@@ -126,14 +126,14 @@ unknown_name() {
 # Saved settings (nixdatifier config): they fill in what the environment leaves
 # empty, so a variable or option on the command line still wins.
 CONFIG_FILE=${NIXDATIFIER_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/nixdatifier/config}
-CONFIG_KEYS="flake config_repo secrets secrets_source persist priv commands check_interval notifications github_token_file github_use_gh check_tarballs deep_inputs ignored_inputs"
+CONFIG_KEYS="flake config_repo secrets secrets_source persist priv commands check_interval notifications github_token_file github_use_gh check_tarballs deep_inputs ignored_inputs measure_store"
 config_var() { # config_var KEY: the environment variable a key stands for
     case $1 in flake) echo NIXDATIFIER_FLAKE ;; config_repo) echo NIXDATIFIER_CONFIG_REPO ;; secrets) echo NIXDATIFIER_SECRETS ;;
         secrets_source) echo NIXDATIFIER_SECRETS_SOURCE ;; persist) echo NIXDATIFIER_PERSIST ;; priv) echo NIXDATIFIER_PRIV ;;
         commands) echo NIXDATIFIER_COMMANDS ;; check_interval) echo NIXDATIFIER_CHECK_INTERVAL ;; notifications) echo NIXDATIFIER_NOTIFICATIONS ;;
         github_token_file) echo NIXDATIFIER_GITHUB_TOKEN_FILE ;; github_use_gh) echo NIXDATIFIER_GITHUB_USE_GH ;;
         check_tarballs) echo NIXDATIFIER_CHECK_TARBALLS ;; deep_inputs) echo NIXDATIFIER_DEEP_INPUTS ;;
-        ignored_inputs) echo NIXDATIFIER_IGNORE_INPUTS ;; esac
+        ignored_inputs) echo NIXDATIFIER_IGNORE_INPUTS ;; measure_store) echo NIXDATIFIER_MEASURE_STORE ;; esac
 }
 config_file_get() { [[ -f $CONFIG_FILE ]] && sed -n "s/^$1=//p" "$CONFIG_FILE" | tail -1; return 0; }
 COMMANDS_FROM_ENV=${NIXDATIFIER_COMMANDS:+1}
@@ -452,6 +452,11 @@ cmd_disk() {
             {path: $path, exists: ($present | gsub("\\s"; "") == "1"), closureBytes: ($size | gsub("\\s"; "") | tonumber? // 0),
              roots: ($roots | lines), referrers: ($refs | lines)}' |
             kv '"path\t\(.path)", "exists\t\(.exists)", "closure\t\(.closureBytes | hb)", (.roots[] | "root\t\(.)"), (.referrers[] | "referrer\t\(.)")'
+        return
+    fi
+    if [[ ${NIXDATIFIER_MEASURE_STORE:-} == off ]] && ((!refresh)); then # the slow walk is off unless asked for (--refresh): only the free space
+        free=$("$here/diskusage" --free) || die 'could not read the free space'
+        jq -n --argjson f "$free" '{freeBytes: $f}' | kv '"free\t\(.freeBytes | hb)", "note\tstore measurement is off; disk --refresh measures once"'
         return
     fi
     IFS=$'\x1e' read -r total reclaimable free stamp < <(NOTE='Measuring the store…' cached disk:nar-v1 1800 -- "$here/diskusage") || die 'could not measure the store'
@@ -967,7 +972,7 @@ cmd_persist() {
 # The window keeps these settings in its own store (KDE config, a JSON file),
 # so it mirrors them into the config file through `config sync`: the terminal
 # view and the window then show and change the same values. GUI name:file key.
-GUI_MAP="flakePath:flake configRepoPath:config_repo secretsPath:secrets secretsSourcePath:secrets_source impermanencePaths:persist checkInterval:check_interval customCommands:commands showNotifications:notifications githubTokenFile:github_token_file githubUseGh:github_use_gh checkTarballs:check_tarballs deepInputCheck:deep_inputs ignoredInputs:ignored_inputs"
+GUI_MAP="flakePath:flake configRepoPath:config_repo secretsPath:secrets secretsSourcePath:secrets_source impermanencePaths:persist checkInterval:check_interval customCommands:commands showNotifications:notifications githubTokenFile:github_token_file githubUseGh:github_use_gh checkTarballs:check_tarballs deepInputCheck:deep_inputs ignoredInputs:ignored_inputs measureStore:measure_store"
 config_file_put() { # config_file_put KEY VALUE: set it, or remove it when empty
     mkdir -p "$(dirname "$CONFIG_FILE")" || die "cannot create $(dirname "$CONFIG_FILE")"
     { grep -v "^$1=" "$CONFIG_FILE" 2>/dev/null; [[ -z $2 ]] || echo "$1=$2"; } >"$CONFIG_FILE.new" && mv "$CONFIG_FILE.new" "$CONFIG_FILE"
@@ -1000,7 +1005,7 @@ gui_sync() { # gui_sync pull|push JSON: JSON holds the window's current values
                 showNotifications) case $v in true) v=on ;; false) v=off ;; *) v='' ;; esac
                     [[ $mode == pull && $v == on ]] && v='' ;; # on is the default everywhere
                 githubUseGh | deepInputCheck) case $v in true) v=on ;; *) v='' ;; esac ;; # off is the default
-                checkTarballs) case $v in false) v=off ;; *) v='' ;; esac ;; # on is the default
+                checkTarballs | measureStore) case $v in false) v=off ;; *) v='' ;; esac ;; # on is the default
                 customCommands) v=$(commands_normalize "$v") || v=''
                     [[ $mode == pull && $v == '[]' ]] && v='' ;;
             esac
@@ -1020,7 +1025,7 @@ gui_sync() { # gui_sync pull|push JSON: JSON holds the window's current values
             showNotifications) [[ $v == on || $v == off ]] || continue; out=$(jq -c --arg g "$g" --argjson v "$([[ $v == on ]] && echo true || echo false)" '.[$g] = $v' <<<"$out") ;;
             # Always answer these, so clearing the file's value restores the default in the window.
             githubUseGh | deepInputCheck) out=$(jq -c --arg g "$g" --argjson v "$([[ $v == on ]] && echo true || echo false)" '.[$g] = $v' <<<"$out") ;;
-            checkTarballs) out=$(jq -c --arg g "$g" --argjson v "$([[ $v == off ]] && echo false || echo true)" '.[$g] = $v' <<<"$out") ;;
+            checkTarballs | measureStore) out=$(jq -c --arg g "$g" --argjson v "$([[ $v == off ]] && echo false || echo true)" '.[$g] = $v' <<<"$out") ;;
             customCommands) [[ -n $v ]] || continue; out=$(jq -c --arg g "$g" --arg v "$v" '.[$g] = $v' <<<"$out") ;;
             *) out=$(jq -c --arg g "$g" --arg v "$v" '.[$g] = $v' <<<"$out") ;;
         esac
@@ -1046,7 +1051,7 @@ cmd_config() {
             [[ $key != commands ]] || v=$(commands_normalize "$v") || usage_error 'commands is a JSON list: [{"label":"update","cmd":"nix flake update"}]'
             [[ $key != notifications || -z $v || $v =~ ^(on|off)$ ]] || usage_error 'notifications takes on or off'
             [[ $key != github_use_gh || -z $v || $v =~ ^(on|off)$ ]] || usage_error 'github_use_gh takes on or off'
-            [[ $key != check_tarballs && $key != deep_inputs || -z $v || $v =~ ^(on|off)$ ]] || usage_error "$key takes on or off"
+            [[ $key != check_tarballs && $key != deep_inputs && $key != measure_store || -z $v || $v =~ ^(on|off)$ ]] || usage_error "$key takes on or off"
             [[ $key != check_interval || -z $v || $v =~ ^[1-9][0-9]*[mhd]$ ]] || usage_error 'check_interval takes minutes, hours or days: 30m, 6h, 1d'
             mkdir -p "$(dirname "$CONFIG_FILE")" || die "cannot create $(dirname "$CONFIG_FILE")"
             { grep -v "^$key=" "$CONFIG_FILE" 2>/dev/null; [[ -z $v ]] || echo "$key=$v"; } >"$CONFIG_FILE.new" && mv "$CONFIG_FILE.new" "$CONFIG_FILE"
