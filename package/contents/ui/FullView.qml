@@ -203,8 +203,11 @@ Pane {
     signal dryRunRequested(string inputName, string overrideRef)
     signal releaseNotesRequested(string inputName, bool force)
     signal updateInputRequested(string inputName)
+    signal updateInputsRequested(var inputNames)
     signal ignoreInputRequested(string inputName)
     signal resumeInputRequested(string inputName)
+    signal ignoreInputsRequested(var inputNames)
+    signal resumeInputsRequested(var inputNames)
     property var skippedInputs: []
     property var pendingInputs: []
     property var upToDateInputs: []
@@ -227,7 +230,7 @@ Pane {
         commandsOpen = false
 
     property bool isPopOutOpen: false
-    property string updatingInput: ""
+    property var updatingInputs: []
     property bool isSpinning: false
     property string busyLabel: ""
     property bool enableGlow: true
@@ -708,7 +711,7 @@ Pane {
                 objectName: "updatesView"
                 storePathCache: fullView.storePathCache
                 onStorePathRequested: pkg => fullView.storePathRequested(pkg)
-                updatingInput: fullView.updatingInput
+                updatingInputs: fullView.updatingInputs
                 anchors.fill: parent
                 isBusy: fullView.isBusy
                 iconCache: fullView.iconCache
@@ -737,8 +740,11 @@ Pane {
                 onDryRunRequested: (inputName, overrideRef) => fullView.dryRunRequested(inputName, overrideRef)
                 onReleaseNotesRequested: (inputName, force) => fullView.releaseNotesRequested(inputName, force)
                 onUpdateInputRequested: inputName => fullView.updateInputRequested(inputName)
+                onUpdateInputsRequested: inputNames => fullView.updateInputsRequested(inputNames)
                 onIgnoreInputRequested: inputName => fullView.ignoreInputRequested(inputName)
                 onResumeInputRequested: inputName => fullView.resumeInputRequested(inputName)
+                onIgnoreInputsRequested: inputNames => fullView.ignoreInputsRequested(inputNames)
+                onResumeInputsRequested: inputNames => fullView.resumeInputsRequested(inputNames)
                 onInputListSaved: text => fullView.inputListSaved(text)
             }
 

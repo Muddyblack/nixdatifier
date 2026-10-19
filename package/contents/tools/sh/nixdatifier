@@ -37,7 +37,7 @@ help_entry() {
         preview) echo "preview INPUT#which packages would change if INPUT were updated#Dry-run build with the input overridden; downloads only the flake source. --host NAME picks the configuration (default: this host)." ;;
         notes) echo "notes INPUT#upstream releases and commits between your lock and latest#GitHub only; set GITHUB_TOKEN or github_token_file to lift the rate limit." ;;
         snapshot) echo "snapshot [REPO]#remember which config commit built the running generation#Run it after a rebuild (the window does it automatically) so 'diff --config' can compare your .nix files. 'generations' records it too when a flake is found." ;;
-        update) echo "update [INPUT]#nix flake update (all inputs, or one) in the flake directory#Asks first; recorded in history." ;;
+        update) echo "update [INPUT...]#nix flake update (all inputs, or only the named ones) in the flake directory#Asks first; recorded in history." ;;
         rebuild) echo "rebuild#rebuild and switch the system#Runs your command labelled 'rebuild' (see: help commands) from the flake directory. Without one it runs: nixos-rebuild switch --flake DIR, as root (see --priv). Asks first; recorded in history." ;;
         run) echo "run [LABEL|N]#run one of your saved commands#The same quick-run commands the window's Commands panel shows (shared: nixdatifier commands). Runs from the flake directory, as you typed it (add sudo yourself). Without a label it lists them, or lets you pick in a terminal. Asks first; recorded in history." ;;
         commands) echo "commands [list|add LABEL CMD|rm LABEL]#your saved quick-run commands, shared with the window#Up to four, kept in the config file (key: commands, a JSON list of {label, cmd}) and kept in step with the window's Commands setting. Run them with: nixdatifier run LABEL." ;;
@@ -513,7 +513,7 @@ hash_kind() { # hash_kind INPUT: what the input is, judged from its shape
     return 1
 }
 cmd_hash() {
-    local out kind input
+    local out kind
     if ((${#args[@]} == 1)); then
         kind=$(hash_kind "${args[0]}") || usage_error "cannot tell what '${args[0]}' is: give a URL, a file, a store path or owner/repo/rev (or name it: nixdatifier hash <url|zip|github|file|store> <input>)"
         args=("$kind" "${args[0]#github:}")
@@ -708,10 +708,11 @@ cmd_gc() {
 
 cmd_update() {
     resolve_flake
-    local input=${args[0]:-}
-    confirm "Update ${input:-all inputs} in $flake?"
+    local label=${args[*]:-all inputs}
+    label=${label// /, }
+    confirm "Update $label in $flake?"
     # shellcheck disable=SC2016
-    change flake-update "Updating ${input:-all inputs}…" -1 'cd "$1" && shift && $RUN nix flake update "$@"' "$flake" ${input:+"$input"}
+    change flake-update "Updating $label…" -1 'cd "$1" && shift && $RUN nix flake update "$@"' "$flake" ${args[@]+"${args[@]}"}
 }
 
 # Saved quick-run commands: the JSON list the window's Commands panel edits.

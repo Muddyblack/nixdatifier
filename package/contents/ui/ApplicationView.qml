@@ -11,7 +11,7 @@ FullView {
             engine.requestGenerationCounts(genNum);
     }
     onStorePathRequested: pkg => engine.resolveStorePath(pkg)
-    updatingInput: engine.updatingInput
+    updatingInputs: engine.updatingInputs
     isSpinning: engine.isSpinning
     busyLabel: engine.busyLabel
     enableGlow: engine.settings.enableGlow
@@ -165,8 +165,11 @@ FullView {
     onDryRunRequested: (inputName, overrideRef) => engine.runDryPreview(inputName, overrideRef)
     onReleaseNotesRequested: (inputName, force) => engine.loadReleaseNotes(inputName, force)
     onUpdateInputRequested: inputName => engine.runFlakeUpdateInput(inputName)
+    onUpdateInputsRequested: inputNames => engine.runFlakeUpdateInputs(inputNames)
     onIgnoreInputRequested: inputName => engine.setInputChecked(inputName, false)
     onResumeInputRequested: inputName => engine.setInputChecked(inputName, true)
+    onIgnoreInputsRequested: inputNames => engine.setInputsChecked(inputNames, false)
+    onResumeInputsRequested: inputNames => engine.setInputsChecked(inputNames, true)
     skippedInputs: engine.skippedInputs
     pendingInputs: engine.pendingInputs
     upToDateInputs: engine.upToDateInputs

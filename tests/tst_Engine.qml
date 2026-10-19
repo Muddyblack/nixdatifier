@@ -52,6 +52,8 @@ Item {
             core.isNixOS = true;
             core.systemDetected = true;
             jobs = [];
+            core.isCheckingFlake = false;
+            core._probeRaw = "";
             core.autoStart = false;
             core._diskProbeRunning = false;
             core._diskFreeProbeRunning = false;
@@ -558,11 +560,56 @@ Item {
             verify(jobs[0].cmd.indexOf("nixdatifier' ") >= 0);
             verify(jobs[0].cmd.indexOf(" update 'input'\\''s name'") >= 0);
             verify(core.isBusy);
-            compare(core.updatingInput, "input's name");
+            compare(core.updatingInputs, ["input's name"]);
             jobs[0].callback(jobs[0].cmd, "", "failure", 1);
             verify(!core.isBusy);
-            compare(core.updatingInput, "");
+            compare(core.updatingInputs.length, 0);
             verify(core.toasts[0].err);
+        }
+        function test_several_inputs_update_in_one_command() {
+            core.runFlakeUpdateInputs(["nixpkgs", "home-manager"]);
+            compare(jobs.length, 1);
+            verify(jobs[0].cmd.indexOf(" update 'nixpkgs' 'home-manager'") >= 0);
+            compare(core.updatingInputs, ["nixpkgs", "home-manager"]);
+            jobs[0].callback(jobs[0].cmd, "", "failure", 1);
+            compare(core.updatingInputs.length, 0);
+        }
+        function test_several_inputs_join_and_leave_the_ignore_list_in_one_write() {
+            cfg.ignoredInputs = "nur";
+            core.flakeUpdates = [fixtureInput(), Object.assign(fixtureInput(), {
+                    input: "home-manager"
+                })];
+            core.setInputsChecked(["nixpkgs", "home-manager"], false);
+            compare(cfg.ignoredInputs, "nur,nixpkgs,home-manager");
+            compare(core.flakeUpdates.length, 0);
+            compare(core.skippedInputs.length, 2);
+            compare(core.toasts.length, 1);
+            core.setInputsChecked(["nixpkgs", "home-manager"], true);
+            compare(cfg.ignoredInputs, "nur");
+        }
+        function test_partial_probe_replaces_only_the_rechecked_lines() {
+            const raw = "nixpkgs\tunchanged\ta\ta\t1\tu\t\nnur\tignored\t\t\t\t\t\nhm\tok\tb\tc\t1\tu\t\t\t";
+            const merged = core.mergeProbeLines(raw, "nur\tunchanged\td\td\t1\tu\t\nextra\tunchanged\te\te\t1\tu\t\n");
+            const lines = merged.split("\n");
+            compare(lines.length, 4);
+            compare(lines[0], "nixpkgs\tunchanged\ta\ta\t1\tu\t");
+            compare(lines[1].split("\t")[1], "unchanged");
+            compare(lines[2].split("\t")[0], "hm");
+            compare(lines[3].split("\t")[0], "extra");
+        }
+        function test_putting_inputs_back_probes_only_those() {
+            cfg.ignoredInputs = "nur,hm";
+            core.initialized = true;
+            cfg.flakePath = "/flake";
+            core._probeRaw = "nixpkgs\tunchanged\ta\ta\t1\tu\t\nnur\tignored\t\t\t\t\t\nhm\tignored\t\t\t\t\t";
+            core.setInputsChecked(["nur", "hm"], true);
+            compare(cfg.ignoredInputs, "");
+            compare(core.pendingInputs, ["nur", "hm"]);
+            compare(jobs.length, 1);
+            verify(jobs[0].cmd.indexOf("NIXDATIFIER_ONLY_INPUTS='nur hm'") >= 0);
+            jobs[0].callback(jobs[0].cmd, "nur\tunchanged\td\td\t1\tu\t\nhm\tunchanged\te\te\t1\tu\t\n", "", 0);
+            compare(core.pendingInputs.length, 0);
+            compare(core.skippedInputs.length, 0);
         }
         function test_parse_generations_detects_unregistered_test_build() {
             const stat = n => "2026-10-11 12:39:05.133214540 -0400 '/nix/var/nix/profiles/system-" + n + "-link' -> '/nix/store/" + n + "-sys'";

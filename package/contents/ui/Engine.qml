@@ -2066,7 +2066,7 @@ Item {
         onTriggered: root.checkFlakeUpdates(true)
     }
 
-    property string updatingInput: ""
+    property var updatingInputs: []
     // The input list only changes which inputs are probed, so keep the cards
     // that are showing and let the next probe refresh them in the background.
     // Mirrors flake-probe: the input list is a list of globs to skip.
@@ -2093,49 +2093,131 @@ Item {
         probeSettingsTimer.restart();
     }
 
-    // One-click on the Updates tab: put an input on, or take it off, the input list.
-    function setInputChecked(inputName, checked) {
-        if (checked && root.failedInputs.indexOf(inputName) >= 0) {
-            root.failedInputs = root.failedInputs.filter(n => n !== inputName);
-            root.pendingInputs = root.pendingInputs.concat([inputName]);
-            pendingInputsTimer.restart();
-            root.checkFlakeUpdates();
-            return;
-        }
-        const names = (root.settings.ignoredInputs || "").split(/[,\s]+/).filter(n => n !== "");
-        const at = names.indexOf(inputName);
-        if (!checked) {
-            if (at === -1)
-                names.push(inputName);
-        } else {
-            if (at === -1) {
-                root.pushToast(qsTr("%1 is matched by a pattern. Edit the input list on the Updates tab.").arg(inputName), true);
+    // Probe only some inputs and merge their lines into the result we already have.
+    function mergeProbeLines(raw, partial) {
+        const fresh = {};
+        partial.split("\n").forEach(line => {
+            const name = line.split("\t")[0];
+            if (name && line.split("\t").length >= 6)
+                fresh[name] = line;
+        });
+        const seen = {};
+        const merged = raw.split("\n").map(line => {
+            const name = line.split("\t")[0];
+            if (fresh[name] === undefined)
+                return line;
+            seen[name] = true;
+            return fresh[name];
+        });
+        Object.keys(fresh).forEach(name => {
+            if (!seen[name])
+                merged.push(fresh[name]);
+        });
+        return merged.join("\n");
+    }
+    function checkInputs(inputNames) {
+        const epoch = root.flakeEpoch;
+        const settingsKey = root.probeSettingsKey;
+        const probeEnv = "NIXDATIFIER_CHECK_TARBALLS=" + (root.settings.checkTarballs ? "on " : "off ") + "NIXDATIFIER_DEEP_INPUTS=" + (root.settings.deepInputCheck ? "on " : "off ") + "NIXDATIFIER_IGNORE_INPUTS=" + shq(root.settings.ignoredInputs || "") + " NIXDATIFIER_ONLY_INPUTS=" + shq(inputNames.join(" ")) + " ";
+        root.isCheckingFlake = true;
+        sh("timeout 60s env " + probeEnv + shq(root.scriptDir + "flake-probe") + " " + shq(root.flakePath), function (cmd, out, err, code) {
+            root.isCheckingFlake = false;
+            if (epoch !== root.flakeEpoch || settingsKey !== root.probeSettingsKey)
+                return;
+            if (code !== 0) {
+                root.failPendingInputs();
+                root.pushToast((err || out || "").trim() || qsTr("flake-probe failed"), true);
                 return;
             }
-            names.splice(at, 1);
+            const merged = root.mergeProbeLines(root._probeRaw, out || "");
+            root.writeFlakeCache(merged);
+            root.parseFlakeProbe(merged, false, true);
+        });
+    }
+
+    // One-click on the Updates tab: put an input on, or take it off, the input list.
+    function setInputChecked(inputName, checked) {
+        root.setInputsChecked([inputName], checked);
+    }
+
+    // Same as setInputChecked for a whole selection: the list is written once, so there is one probe and one toast.
+    function setInputsChecked(inputNames, checked) {
+        if (!inputNames || inputNames.length === 0)
+            return;
+        let targets = inputNames;
+        if (checked) {
+            const retry = targets.filter(n => root.failedInputs.indexOf(n) >= 0);
+            if (retry.length > 0) {
+                root.failedInputs = root.failedInputs.filter(n => retry.indexOf(n) < 0);
+                root.pendingInputs = root.pendingInputs.concat(retry);
+                pendingInputsTimer.restart();
+                targets = targets.filter(n => retry.indexOf(n) < 0);
+                if (targets.length === 0) {
+                    root.checkFlakeUpdates();
+                    return;
+                }
+            }
         }
+        const names = (root.settings.ignoredInputs || "").split(/[,\s]+/).filter(n => n !== "");
+        const changed = [];
+        let patterned = 0;
+        targets.forEach(inputName => {
+            const at = names.indexOf(inputName);
+            if (!checked) {
+                if (at === -1) {
+                    names.push(inputName);
+                    changed.push(inputName);
+                }
+            } else if (at === -1) {
+                patterned++;
+            } else {
+                names.splice(at, 1);
+                changed.push(inputName);
+            }
+        });
+        if (patterned > 0)
+            root.pushToast(patterned === 1 ? qsTr("An input is matched by a pattern. Edit the input list on the Updates tab.") : qsTr("%1 inputs are matched by a pattern. Edit the input list on the Updates tab.").arg(patterned), true);
+        if (changed.length === 0)
+            return;
         // Hiding needs no new probe: the other inputs are unchanged, so patch the
         // result we already have and store it under the new list's cache key.
         const patchInPlace = !checked && root._probeRaw !== "";
-        root._keepProbe = patchInPlace;
+        // Putting inputs back probes just those and merges the answer into the result we have.
+        const partialCheck = checked && root._probeRaw !== "" && root.initialized && !root.isBusy && !root.isCheckingFlake;
+        root._keepProbe = patchInPlace || partialCheck;
         root.settings.ignoredInputs = names.join(",");
         root._keepProbe = false;
+        if (partialCheck) {
+            root.failedInputs = root.failedInputs.filter(n => changed.indexOf(n) < 0);
+            root.pendingInputs = root.pendingInputs.concat(changed.filter(n => root.pendingInputs.indexOf(n) < 0));
+            pendingInputsTimer.restart();
+            root.checkInputs(changed);
+        }
         if (checked) {
-            // The row stays and shows as loading (see recheckAfterListChange); the probe replaces it with a card.
+            // The rows stay and show as loading (see recheckAfterListChange); the probe replaces them with cards.
         } else {
-            root.flakeUpdates = root.flakeUpdates.filter(u => u.input !== inputName);
-            root.upToDateInputs = root.upToDateInputs.filter(u => u.input !== inputName);
-            root.skippedInputs = root.skippedInputs.concat([inputName]).sort();
+            root.flakeUpdates = root.flakeUpdates.filter(u => changed.indexOf(u.input) < 0);
+            root.upToDateInputs = root.upToDateInputs.filter(u => changed.indexOf(u.input) < 0);
+            root.skippedInputs = root.skippedInputs.concat(changed).sort();
         }
         if (patchInPlace) {
-            const patched = root._probeRaw.split("\n").map(line => line.split("\t")[0] === inputName && line.split("\t").length >= 6 ? inputName + "\tignored\t\t\t\t\t" : line).join("\n");
+            const patched = root._probeRaw.split("\n").map(line => {
+                const cols = line.split("\t");
+                return changed.indexOf(cols[0]) >= 0 && cols.length >= 6 ? cols[0] + "\tignored\t\t\t\t\t" : line;
+            }).join("\n");
             root._probeRaw = patched;
             root.writeFlakeCache(patched, root._lastFlakeCacheTs);
         }
-        root.pushToast(checked ? qsTr("%1 will be checked for updates.").arg(inputName) : qsTr("%1 is no longer checked for updates.").arg(inputName), false);
+        const one = changed[0];
+        root.pushToast(changed.length === 1 ? (checked ? qsTr("%1 will be checked for updates.").arg(one) : qsTr("%1 is no longer checked for updates.").arg(one)) : (checked ? qsTr("%1 inputs will be checked for updates.").arg(changed.length) : qsTr("%1 inputs are no longer checked for updates.").arg(changed.length)), false);
     }
 
     function runFlakeUpdateInput(inputName) {
+        runFlakeUpdateInputs([inputName]);
+    }
+    function runFlakeUpdateInputs(inputNames) {
+        if (!inputNames || inputNames.length === 0)
+            return;
         if (!root.isNixOS)
             return;
         if (root.flakePath === "") {
@@ -2147,18 +2229,19 @@ Item {
             return;
         }
         root.isBusy = true;
-        root.updatingInput = inputName;
-        root.currentActionType = qsTr("Updating %1…").arg(inputName);
-        const cmd = cli("update " + shq(inputName), root.flakePath);
+        const label = inputNames.length === 1 ? inputNames[0] : qsTr("%1 inputs").arg(inputNames.length);
+        root.updatingInputs = inputNames;
+        root.currentActionType = qsTr("Updating %1…").arg(label);
+        const cmd = cli("update " + inputNames.map(shq).join(" "), root.flakePath);
         sh(cmd, function (c, out, err, code) {
             root.isBusy = false;
-            root.updatingInput = "";
+            root.updatingInputs = [];
             root.loadHistory();
             if (code !== 0) {
                 root.pushToast(qsTr("Update failed: ") + (err || out || "").trim(), true);
                 return;
             }
-            root.pushToast(qsTr("'%1' updated in lock file.").arg(inputName), false);
+            root.pushToast(inputNames.length === 1 ? qsTr("'%1' updated in lock file.").arg(inputNames[0]) : qsTr("%1 inputs updated in lock file.").arg(inputNames.length), false);
 
             root.refreshFlakeContext(function () {
                 root.checkFlakeUpdates(false, true);

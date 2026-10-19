@@ -25,7 +25,7 @@ Suggestions never run automatically. Missing option values also report a usage e
 | Commands |
 | --- | --- |
 | Generations | `generations`, `diff [A [B]]`, `diff --config`, `switch N`, `boot N`, `rollback`, `delete N…` / `--keep N` / `--older-than DAYS`, `profiles` (Home Manager, `nix profile`) |
-| Flake | `updates [--all] [--check]`, `update [INPUT]`, `preview INPUT` (packages that would change), `notes INPUT` (upstream releases and commits) |
+| Flake | `updates [--all] [--check]`, `update [INPUT...]`, `preview INPUT` (packages that would change), `notes INPUT` (upstream releases and commits) |
 | Store | `disk`, `disk STORE-PATH` (GC roots, referrers, closure), `gc [--older-than 14d \| --all]`, `path NAME [VERSION]` |
 | System | `status`, `health`, `info`, `history`, `hash` |
 | Secrets | `secrets` (names and freshness, never values) |
