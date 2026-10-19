@@ -2093,6 +2093,48 @@ Item {
         probeSettingsTimer.restart();
     }
 
+    // Probe only some inputs and merge their lines into the result we already have.
+    function mergeProbeLines(raw, partial) {
+        const fresh = {};
+        partial.split("\n").forEach(line => {
+            const name = line.split("\t")[0];
+            if (name && line.split("\t").length >= 6)
+                fresh[name] = line;
+        });
+        const seen = {};
+        const merged = raw.split("\n").map(line => {
+            const name = line.split("\t")[0];
+            if (fresh[name] === undefined)
+                return line;
+            seen[name] = true;
+            return fresh[name];
+        });
+        Object.keys(fresh).forEach(name => {
+            if (!seen[name])
+                merged.push(fresh[name]);
+        });
+        return merged.join("\n");
+    }
+    function checkInputs(inputNames) {
+        const epoch = root.flakeEpoch;
+        const settingsKey = root.probeSettingsKey;
+        const probeEnv = "NIXDATIFIER_CHECK_TARBALLS=" + (root.settings.checkTarballs ? "on " : "off ") + "NIXDATIFIER_DEEP_INPUTS=" + (root.settings.deepInputCheck ? "on " : "off ") + "NIXDATIFIER_IGNORE_INPUTS=" + shq(root.settings.ignoredInputs || "") + " NIXDATIFIER_ONLY_INPUTS=" + shq(inputNames.join(" ")) + " ";
+        root.isCheckingFlake = true;
+        sh("timeout 60s env " + probeEnv + shq(root.scriptDir + "flake-probe") + " " + shq(root.flakePath), function (cmd, out, err, code) {
+            root.isCheckingFlake = false;
+            if (epoch !== root.flakeEpoch || settingsKey !== root.probeSettingsKey)
+                return;
+            if (code !== 0) {
+                root.failPendingInputs();
+                root.pushToast((err || out || "").trim() || qsTr("flake-probe failed"), true);
+                return;
+            }
+            const merged = root.mergeProbeLines(root._probeRaw, out || "");
+            root.writeFlakeCache(merged);
+            root.parseFlakeProbe(merged, false, true);
+        });
+    }
+
     // One-click on the Updates tab: put an input on, or take it off, the input list.
     function setInputChecked(inputName, checked) {
         root.setInputsChecked([inputName], checked);
@@ -2140,9 +2182,17 @@ Item {
         // Hiding needs no new probe: the other inputs are unchanged, so patch the
         // result we already have and store it under the new list's cache key.
         const patchInPlace = !checked && root._probeRaw !== "";
-        root._keepProbe = patchInPlace;
+        // Putting inputs back probes just those and merges the answer into the result we have.
+        const partialCheck = checked && root._probeRaw !== "" && root.initialized && !root.isBusy && !root.isCheckingFlake;
+        root._keepProbe = patchInPlace || partialCheck;
         root.settings.ignoredInputs = names.join(",");
         root._keepProbe = false;
+        if (partialCheck) {
+            root.failedInputs = root.failedInputs.filter(n => changed.indexOf(n) < 0);
+            root.pendingInputs = root.pendingInputs.concat(changed.filter(n => root.pendingInputs.indexOf(n) < 0));
+            pendingInputsTimer.restart();
+            root.checkInputs(changed);
+        }
         if (checked) {
             // The rows stay and show as loading (see recheckAfterListChange); the probe replaces them with cards.
         } else {
