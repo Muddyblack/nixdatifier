@@ -1396,6 +1396,15 @@ class Cli(HelperCase):
         later = json.loads(self.cli_run("config", "sync", "pull", json.dumps(window)).stdout)
         self.assertIs(later["deepInputCheck"], False)
 
+    def test_measure_store_is_shared_and_validated(self):
+        window = {"measureStore": False}
+        self.cli_run("config", "sync", "pull", json.dumps(window))
+        self.assertEqual(self.cli_run("config", "get", "measure_store").stdout.strip(), "off")
+        self.assertIn("takes on or off", self.cli_run("config", "set", "measure_store", "no").stderr)
+        self.cli_run("config", "unset", "measure_store")
+        later = json.loads(self.cli_run("config", "sync", "pull", json.dumps(window)).stdout)
+        self.assertIs(later["measureStore"], True)  # clearing restores the default in the window
+
     def test_window_settings_sync_both_ways(self):
         window = {
             "flakePath": "/etc/nixos",

@@ -120,6 +120,14 @@ var fields = [
     "type": "String"
   },
   {
+    "key": "measureStore",
+    "tab": "General",
+    "group": "Storage",
+    "label": "Measure the Nix store",
+    "help": "Walk the store to show its size and how much garbage collection could free. Turn off on big stores or slow disks; only free space is shown then.",
+    "type": "Bool"
+  },
+  {
     "key": "customCommands",
     "tab": "Commands",
     "group": "Quick-run commands",

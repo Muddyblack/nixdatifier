@@ -57,6 +57,7 @@ FullView {
     diskReclaimableBytes: engine.diskReclaimableBytes
     diskFreeBytes: engine.diskFreeBytes
     diskUsageError: engine.diskUsageError
+    measureStore: engine.settings.measureStore
     isProbingDiskUsage: engine._diskProbeRunning
     hashResult: engine.hashResult
     isProbingHash: engine.isProbingHash

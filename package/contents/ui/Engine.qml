@@ -490,6 +490,11 @@ Item {
     property string diskUsageError: ""
 
     function probeDiskUsage(force) {
+        if (!root.settings.measureStore) {
+            // Only the cheap free-space read; the slow store walk stays off.
+            root.probeFreeDiskSpace();
+            return;
+        }
         if (force)
             root._diskProbeDirty = true;
         if (root._diskProbeRunning)
@@ -2767,7 +2772,7 @@ Item {
     property bool syncSettings: false
     property bool _syncReady: false
     property bool _syncApplying: false
-    readonly property var _syncKeys: ["flakePath", "configRepoPath", "secretsPath", "secretsSourcePath", "githubTokenFile", "githubUseGh", "checkTarballs", "deepInputCheck", "ignoredInputs", "impermanencePaths", "checkInterval", "customCommands", "showNotifications"]
+    readonly property var _syncKeys: ["flakePath", "configRepoPath", "secretsPath", "secretsSourcePath", "githubTokenFile", "githubUseGh", "checkTarballs", "deepInputCheck", "measureStore", "ignoredInputs", "impermanencePaths", "checkInterval", "customCommands", "showNotifications"]
     function _syncSnapshot() {
         const values = {};
         for (const key of root._syncKeys)
@@ -2853,6 +2858,13 @@ Item {
         }
         function onDeepInputCheckChanged() {
             root.schedulePushSharedSettings();
+        }
+        function onMeasureStoreChanged() {
+            root.schedulePushSharedSettings();
+            if (root.settings.measureStore)
+                root.probeDiskUsage(true);
+            else
+                root.probeFreeDiskSpace();
         }
         function onIgnoredInputsChanged() {
             root.schedulePushSharedSettings();
