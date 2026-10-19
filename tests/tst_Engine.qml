@@ -597,6 +597,19 @@ Item {
             compare(lines[2].split("\t")[0], "hm");
             compare(lines[3].split("\t")[0], "extra");
         }
+        function test_flake_check_keeps_the_input_list_apart_from_the_helper() {
+            // Glued to the assignment, the helper's path became its value and bash ran `cached` (#38).
+            const original = cfg.ignoredInputs;
+            for (const list of ["", "nur"]) {
+                cfg.ignoredInputs = list;
+                jobs = [];
+                core.isCheckingFlake = false;
+                core.checkFlakeUpdates();
+                compare(jobs.length, 1);
+                verify(jobs[0].cmd.indexOf("NIXDATIFIER_IGNORE_INPUTS=" + core.shq(list) + " " + core.shq(core.scriptDir + "run") + " cached ") >= 0, jobs[0].cmd);
+            }
+            cfg.ignoredInputs = original;
+        }
         function test_putting_inputs_back_probes_only_those() {
             cfg.ignoredInputs = "nur,hm";
             core.initialized = true;
