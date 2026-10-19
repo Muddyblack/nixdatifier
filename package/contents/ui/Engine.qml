@@ -1907,7 +1907,7 @@ Item {
         root.isCheckingFlake = true;
         const epoch = root.flakeEpoch;
         const settingsKey = root.probeSettingsKey;
-        const probeEnv = "NIXDATIFIER_CHECK_TARBALLS=" + (root.settings.checkTarballs ? "on " : "off ") + "NIXDATIFIER_DEEP_INPUTS=" + (root.settings.deepInputCheck ? "on " : "off ") + "NIXDATIFIER_IGNORE_INPUTS=" + shq(root.settings.ignoredInputs || "");
+        const probeEnv = "NIXDATIFIER_CHECK_TARBALLS=" + (root.settings.checkTarballs ? "on " : "off ") + "NIXDATIFIER_DEEP_INPUTS=" + (root.settings.deepInputCheck ? "on " : "off ") + "NIXDATIFIER_IGNORE_INPUTS=" + shq(root.settings.ignoredInputs || "") + " ";
         sh(probeEnv + shq(root.scriptDir + "run") + " cached " + shq("flake:" + root.flakePath + (probeEnv ? ":" + probeEnv.trim() : "")) + " 30 -- " + shq(root.scriptDir + "flake-probe") + " " + shq(root.flakePath), function (cmd, out, err, code) {
             root.isCheckingFlake = false;
             if (epoch !== root.flakeEpoch || settingsKey !== root.probeSettingsKey)
