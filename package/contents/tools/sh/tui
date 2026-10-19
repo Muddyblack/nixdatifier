@@ -735,7 +735,7 @@ settings_desc() { # settings_desc KEY: what it is
         github_use_gh) echo 'on: borrow the GitHub CLI login (gh auth token) for release notes when no token file is set. Its token often has wide scopes, so it is off unless you switch it on. Empty: off.' ;;
         check_tarballs) echo 'off: skip tarball flake inputs (channels, .tar.zst) when checking for updates, here and in the window. Empty: on.' ;;
         deep_inputs) echo 'on: check every transitive flake input, not just the root (and wrapper) inputs. Costs one request per input. Empty: off.' ;;
-        measure_store) echo 'off: do not measure the Nix store (total and reclaimable size); only free space is shown, here and in the window. Empty: on.' ;;
+        measure_store) echo 'off: do not measure the Nix store (total and reclaimable size); free space only until you ask (disk --refresh, or Measure in the window). Empty: on.' ;;
         ignored_inputs) echo 'Flake inputs to skip when checking for updates: names separated by commas, globs allowed (nur, my-private/*). Empty: check them all.' ;;
         theme) echo 'Colour theme: deep, marina, midnight, full, plain or your own (see docs/cli.md). Enter cycles.' ;;
         layout) echo 'roomy: boxed sections with the logo. compact: no boxes. Enter switches.' ;;

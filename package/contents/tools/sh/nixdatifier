@@ -22,7 +22,7 @@ help_entry() {
         generations) echo "generations [--limit N]#system generations, newest first#Marks the running (ACTIVE) and booted generation. JSON has storePath, nixosVersion and kernel." ;;
         updates) echo "updates [--all] [--check]#flake inputs behind upstream#Probes each input's remote (cached for the check interval, 1h by default, and shared with the window; --refresh checks again). --all also lists up-to-date and pinned inputs. --check exits 2 when an update exists, for cron and CI." ;;
         diff) echo "diff [--config] [A [B]]#what changed between generations (default: newest vs previous)#Package changes with sizes. --config shows the changes in your .nix files instead (needs recorded snapshots, see: help snapshot)." ;;
-        disk) echo "disk [STORE-PATH]#store size and what GC could free; or why a path is kept#With a store path: its GC roots, referrers and closure size." ;;
+        disk) echo "disk [STORE-PATH]#store size and what GC could free; or why a path is kept#With a store path: its GC roots, referrers and closure size. With measure_store off, only free space is shown; --refresh measures once." ;;
         health) echo "health#release/EOL, reboot needed, failed units, binary caches#Read only. Works on any distro with Nix; NixOS-only checks are left out elsewhere." ;;
         status) echo "status [--updates]#one-line summary for prompts and status bars#Running generation, reboot needed, failed units. --updates adds a (cached) upstream check. --json for scripts." ;;
         history) echo "history [list|clear]#what earlier switches, cleanups and updates did#Shared with the window: the last 50 runs, including their output (--json). clear forgets them (asks first)." ;;
@@ -454,9 +454,9 @@ cmd_disk() {
             kv '"path\t\(.path)", "exists\t\(.exists)", "closure\t\(.closureBytes | hb)", (.roots[] | "root\t\(.)"), (.referrers[] | "referrer\t\(.)")'
         return
     fi
-    if [[ ${NIXDATIFIER_MEASURE_STORE:-} == off ]]; then # the slow walk is switched off: only the free space
+    if [[ ${NIXDATIFIER_MEASURE_STORE:-} == off ]] && ((!refresh)); then # the slow walk is off unless asked for (--refresh): only the free space
         free=$("$here/diskusage" --free) || die 'could not read the free space'
-        jq -n --argjson f "$free" '{freeBytes: $f}' | kv '"free\t\(.freeBytes | hb)", "note\tstore measurement is off (measure_store)"'
+        jq -n --argjson f "$free" '{freeBytes: $f}' | kv '"free\t\(.freeBytes | hb)", "note\tstore measurement is off; disk --refresh measures once"'
         return
     fi
     IFS=$'\x1e' read -r total reclaimable free stamp < <(NOTE='Measuring the store…' cached disk:nar-v1 1800 -- "$here/diskusage") || die 'could not measure the store'

@@ -57,7 +57,7 @@ reason; the widget also shows a notification when an upstream cannot be reached.
 | **Show delete generation action** | `true` | Shows Delete on generation cards. |
 | **Show update notifications** | `true` | Desktop notifications for new flake updates and finished actions. |
 | **Refresh generations when the popup opens** | `true` | Reloads generations and system info each time you open the popup. |
-| **Measure the Nix store** | `true` | Walks the store for its size and the estimated reclaimable space. Off shows free space only (also `measure_store` in the CLI/TUI config). |
+| **Measure the Nix store** | `true` | Walks the store for its size and the estimated reclaimable space. Off shows free space only until you click Measure (also `measure_store` in the CLI/TUI config). |
 | **Check flake inputs in the background** | `true` | Turns the update checks on or off. |
 | **Deployed secrets directory** | `""` | Empty detects `/run/secrets` or `/run/agenix.d`. |
 | **Encrypted source secrets path** | `""` | Empty detects a SOPS file in the flake directory. |

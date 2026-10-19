@@ -104,7 +104,7 @@ FullView {
     onCompareRequested: (a, b) => engine.comparePair(a, b)
     onDiffViewModeChanged: engine.settings.diffViewMode = diffViewMode
     onRefreshRequested: () => engine.refreshGenerations()
-    onDiskUsageRefreshRequested: () => engine.probeDiskUsage(true)
+    onDiskUsageRefreshRequested: () => engine.probeDiskUsage(true, true)
     onCheckFlakeRequested: () => engine.checkFlakeUpdates()
     onSelectGen: n => engine.loadGenDetails(n)
     onCollapseGen: () => engine.selectedGenNum = -1

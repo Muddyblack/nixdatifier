@@ -80,6 +80,8 @@ Pane {
     property string diskUsageError: ""
     property bool isProbingDiskUsage: false
     property bool measureStore: true
+    // With measuring off the card shows free space only, until Measure was clicked.
+    readonly property bool showMeasured: measureStore || diskStoreBytes > 0
 
     readonly property string storeLabel: UI.Theme.formatBytes(diskStoreBytes) || "—"
     readonly property string storeMeasurementHint: diskUsageError ? qsTr("Refresh failed; showing the last measurement. %1").arg(diskUsageError) : qsTr("Logical store contents and estimated GC candidates use NAR sizes. Actual space freed depends on shared files, compression and snapshots. Old generations remain protected until removed.")
@@ -831,31 +833,30 @@ Pane {
                                 Layout.fillWidth: true
                                 Text {
                                     Layout.fillWidth: true
-                                    text: fullView.measureStore ? qsTr("Nix store · logical size") : qsTr("Nix store · free space")
+                                    text: fullView.showMeasured ? qsTr("Nix store · logical size") : qsTr("Nix store · free space")
                                     color: fullView.textColor
                                     font.pixelSize: 10 * fullView.fs
                                 }
                                 Text {
-                                    visible: fullView.measureStore
+                                    visible: fullView.showMeasured
                                     text: fullView.storeLabel
                                     color: "#93a5bd"
                                     font.pixelSize: 9 * fullView.fs
                                 }
                                 UI.ActionButton {
                                     objectName: "refreshStoreUsage"
-                                    visible: fullView.measureStore
-                                    text: fullView.isProbingDiskUsage ? qsTr("Measuring…") : qsTr("Refresh")
+                                    text: fullView.isProbingDiskUsage ? qsTr("Measuring…") : fullView.showMeasured ? qsTr("Refresh") : qsTr("Measure")
                                     glyph: fullView.svg("ic_refresh")
                                     flatStyle: true
                                     implicitHeight: 23 * fullView.fs
                                     font.pixelSize: 9 * fullView.fs
-                                    tip: fullView.diskUsageError || qsTr("Recalculate logical size, estimated reclaimable space and free space")
+                                    tip: fullView.diskUsageError || (fullView.showMeasured ? qsTr("Recalculate logical size, estimated reclaimable space and free space") : qsTr("Measure the store once: logical size and estimated reclaimable space"))
                                     enabled: !fullView.isProbingDiskUsage
                                     onClicked: fullView.diskUsageRefreshRequested()
                                 }
                             }
                             Rectangle {
-                                visible: fullView.measureStore
+                                visible: fullView.showMeasured
                                 Layout.fillWidth: true
                                 Layout.topMargin: 13
                                 Layout.bottomMargin: 10
@@ -882,7 +883,7 @@ Pane {
                             }
                             RowLayout {
                                 Layout.fillWidth: true
-                                Layout.topMargin: fullView.measureStore ? 0 : 10
+                                Layout.topMargin: fullView.showMeasured ? 0 : 10
                                 Text {
                                     Layout.fillWidth: true
                                     text: qsTr("%1 free").arg(UI.Theme.formatBytes(fullView.diskFreeBytes) || "—")
@@ -890,7 +891,7 @@ Pane {
                                     font.pixelSize: 9 * fullView.fs
                                 }
                                 Text {
-                                    visible: fullView.measureStore
+                                    visible: fullView.showMeasured
                                     text: qsTr("≈ %1 reclaimable").arg(fullView.reclaimableLabel)
                                     color: UI.Theme.changed
                                     font.pixelSize: 9 * fullView.fs
