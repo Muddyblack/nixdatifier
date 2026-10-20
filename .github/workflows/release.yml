@@ -27,7 +27,7 @@ jobs:
       tag: ${{ steps.v.outputs.tag }}
       new: ${{ steps.v.outputs.new }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Work out the version and whether it is released
         id: v
