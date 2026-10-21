@@ -637,6 +637,15 @@ Item {
             compare(core.bootedGenNum, -1);
             verify(!core.runningTestBuild, "An unresolvable current-system is not a test build");
         }
+        function test_parse_generations_without_link_lines_is_not_a_test_build() {
+            core.parseGenerations(["/nix/store/162-sys", "/nix/store/162-sys", "current /nix/store/162-sys"].join("\n"));
+            compare(core.generations.length, 0);
+            verify(!core.runningTestBuild, "no parsed generations means a parse failure, not a test build");
+        }
+        function test_parse_generations_accepts_stat_without_fraction_or_zone() {
+            core.parseGenerations(["/nix/store/7-sys", "/nix/store/7-sys", "2026-10-11 12:39:05 '/nix/var/nix/profiles/system-7-link' -> '/nix/store/7-sys'"].join("\n"));
+            compare(core.activeGenNum, 7);
+        }
         function test_terminal_completion_tracks_exit_not_generations() {
             core.runCustomCommand("false", "Test");
             verify(core.isBusy);
