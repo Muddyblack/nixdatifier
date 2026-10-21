@@ -2592,7 +2592,8 @@ Item {
 
         list.sort((a, b) => b.number - a.number);
         // `nixos-rebuild test` / `nh os test` activate a closure without registering a generation.
-        root.runningTestBuild = currentPath !== "" && !list.some(g => g.storePath === currentPath);
+        // An empty list means parsing failed, not a test build.
+        root.runningTestBuild = currentPath !== "" && list.length > 0 && !list.some(g => g.storePath === currentPath);
         // Keep the preceding closure even when the displayed history is limited.
         for (let i = 0; i + 1 < list.length; ++i) {
             list[i].previousNumber = list[i + 1].number;
