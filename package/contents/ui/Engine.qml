@@ -2570,7 +2570,7 @@ Item {
                 currentPath = lines[i].slice(8).trim();
                 continue;
             }
-            const m = lines[i].match(/^([\d-]+ [\d:]+)\.\d+ [+-]\d+ '([^']*system-(\d+)-link)' -> '([^']+)'/);
+            const m = lines[i].match(/^([\d-]+ [\d:]+)(?:\.\d+)?(?: [+-]\d+)? '([^']*system-(\d+)-link)' -> '([^']+)'/);
             if (!m)
                 continue;
             const genNum = parseInt(m[3]);
