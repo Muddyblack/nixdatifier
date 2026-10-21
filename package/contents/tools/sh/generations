@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Emit: active-store-path, booted-store-path, then one stat line per system-N-link,
+# Emit: active-store-path, booted-store-path, then one line per system-N-link,
 # then "current <store-path>" when /run/current-system resolves.
+# Link lines are: <stat %y> '<link>' -> '<target>'. The target comes from readlink rather than
+# stat's %N, whose quoting varies with QUOTING_STYLE and the installed coreutils (#44).
 readlink -f /nix/var/nix/profiles/system 2>/dev/null
 readlink -f /run/booted-system 2>/dev/null
-find /nix/var/nix/profiles -maxdepth 1 -name 'system-*-link' -type l \
-    -exec stat --format='%y %N' {} + 2>/dev/null
+for link in /nix/var/nix/profiles/system-*-link; do
+    [ -L "$link" ] || continue
+    printf "%s '%s' -> '%s'\n" "$(stat --format=%y "$link" 2>/dev/null)" "$link" "$(readlink "$link")"
+done
 current=$(readlink -e /run/current-system 2>/dev/null) && echo "current $current"
 exit 0
