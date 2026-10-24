@@ -50,11 +50,11 @@
 ## A closer look
 
 <p align="center">
-  <a href="https://www.youtube.com/shorts/sPLJVrwA7G4">
-    <img src="https://i.ytimg.com/vi/sPLJVrwA7G4/hqdefault.jpg" width="360" alt="Watch Nixdatifier in action on YouTube Shorts">
+  <a href="https://www.youtube.com/shorts/eQVtcJyeG9o">
+    <img src="https://i.ytimg.com/vi/eQVtcJyeG9o/hqdefault.jpg" width="360" alt="Watch Nixdatifier in action on YouTube Shorts">
   </a>
   <br>
-  <a href="https://www.youtube.com/shorts/sPLJVrwA7G4"><strong>▶ Watch on YouTube Shorts</strong></a>
+  <a href="https://www.youtube.com/shorts/eQVtcJyeG9o"><strong>▶ Watch on YouTube Shorts</strong></a>
 </p>
 
 | Generations timeline | Flake updates |
