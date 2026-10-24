@@ -332,6 +332,14 @@ Item {
                                     Layout.fillWidth: true
                                     // Grow with the text (the date line, larger fonts) so nothing spills out of the card.
                                     implicitHeight: Math.max(38, cardInfo.implicitHeight)
+                                    // Declared first so the checkbox above it in z-order keeps its own clicks.
+                                    MouseArea {
+                                        objectName: "toggle-" + card.modelData.input
+                                        anchors.fill: parent
+                                        enabled: !!card.modelData.overrideRef
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.togglePreview(card.modelData)
+                                    }
                                     RowLayout {
                                         anchors.fill: parent
                                         spacing: 10
@@ -434,13 +442,6 @@ Item {
                                                 font.pixelSize: 9 * root.fs
                                             }
                                         }
-                                    }
-                                    MouseArea {
-                                        objectName: "toggle-" + card.modelData.input
-                                        anchors.fill: parent
-                                        enabled: !!card.modelData.overrideRef
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: root.togglePreview(card.modelData)
                                     }
                                 }
                                 RowLayout {
