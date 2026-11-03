@@ -18,6 +18,7 @@ stop when settings close; the Info pane is released when hidden or another tab o
 | **Detect hostname and flake configuration** | `true` | When off, previews need a flake with exactly one NixOS configuration. |
 | **Check tarball inputs** | `true` | Check inputs fetched as tarballs (channels, `.tar.zst`). A light HEAD request compares the immutable URL Nix locked; Nix only downloads the archive if the server gives no hint. |
 | **Check nested inputs** | `false` | Walk every transitive input instead of the root inputs (plus a wrapper flake's own inputs). One request per input. |
+| **Warn when an update downloads more than (MiB)** | `2048` | The update preview flags a download above this size (metered connection?). `0` turns the warning off. Also `preview_warn` in the CLI/TUI config, shared with the window. |
 | **Input list** | `""` | Input names separated by commas; globs work (`nur, my-private/*`). Use `wrapper/input` for a wrapper flake's own inputs. Empty checks everything. The Updates tab also has a hide button on each input that adds it to this list. |
 | **Open on** | `timeline` | Starting view: `timeline`, `updates`, `diff`, `tools`, `devenv`, `secrets`, `hash`, `history`, `storeusage`, or `impermanence`. |
 

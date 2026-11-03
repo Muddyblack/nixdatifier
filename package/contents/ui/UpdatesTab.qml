@@ -26,6 +26,28 @@ Item {
     property var metaCache: ({})
     property bool showPackageIcons: true
     property var openPreviews: ({})
+    // Download size (MiB) above which a preview warns; 0 turns it off.
+    property int previewWarnMiB: 2048
+    // One line with what an update costs, from the preview's summary:
+    // "↓ 1.2 GB download · 3.4 GB unpacked · 38 to build".
+    function costText(summary) {
+        if (!summary)
+            return "";
+        const parts = [];
+        if (summary.downloadBytes > 0)
+            parts.push(qsTr("↓ %1 download").arg(UI.Theme.formatBytes(summary.downloadBytes)));
+        else if (summary.downloadBytes < 0 && summary.toFetch > 0)
+            parts.push(summary.toFetch === 1 ? qsTr("↓ 1 path to fetch") : qsTr("↓ %1 paths to fetch").arg(summary.toFetch));
+        // Before the unpacked size: on a narrow card the build count is what must stay visible.
+        if (summary.toBuild > 0)
+            parts.push(qsTr("%1 to build").arg(summary.toBuild));
+        if (summary.unpackedBytes > 0)
+            parts.push(qsTr("%1 unpacked").arg(UI.Theme.formatBytes(summary.unpackedBytes)));
+        return parts.length ? parts.join("  ·  ") : qsTr("Nothing to download or build");
+    }
+    function overWarnSize(summary) {
+        return !!summary && previewWarnMiB > 0 && summary.downloadBytes > previewWarnMiB * 1048576;
+    }
     signal dryRunRequested(string inputName, string overrideRef)
     signal releaseNotesRequested(string inputName, bool force)
     signal updateInputRequested(string inputName)
@@ -271,6 +293,9 @@ Item {
                     id: card
                     required property var modelData
                     readonly property var entry: root.dryRunCache[modelData.input] || null
+                    readonly property var summary: entry && entry.status === "ok" && entry.summary ? entry.summary : null
+                    readonly property bool localBuilds: !!summary && summary.toBuild > 0
+                    readonly property bool largeDownload: root.overWarnSize(summary)
                     readonly property bool opened: !!root.openPreviews[modelData.input]
                     readonly property bool updating: root.updatingInputs.indexOf(modelData.input) >= 0
                     Layout.fillWidth: true
@@ -435,6 +460,27 @@ Item {
                                                     elide: Text.ElideRight
                                                 }
                                             }
+                                            RowLayout {
+                                                objectName: "cost-" + card.modelData.input
+                                                Layout.fillWidth: true
+                                                spacing: 5
+                                                visible: !card.updating && !!card.summary
+                                                UI.Icon {
+                                                    visible: card.localBuilds || card.largeDownload
+                                                    source: Qt.resolvedUrl("assets/ic_warning.svg")
+                                                    implicitWidth: 10 * root.fs
+                                                    implicitHeight: 10 * root.fs
+                                                    isMask: true
+                                                    color: UI.Theme.changed
+                                                }
+                                                Text {
+                                                    Layout.fillWidth: true
+                                                    text: root.costText(card.summary)
+                                                    color: card.localBuilds || card.largeDownload ? UI.Theme.changed : "#8293ab"
+                                                    font.pixelSize: 9 * root.fs
+                                                    elide: Text.ElideRight
+                                                }
+                                            }
                                             Text {
                                                 visible: card.updating
                                                 text: qsTr("Updating input…")
@@ -514,6 +560,26 @@ Item {
                                     text: qsTr("Evaluating package changes…")
                                     color: root.accentColor
                                     font.pixelSize: 10 * root.fs
+                                }
+                                Notice {
+                                    objectName: "localBuilds-" + card.modelData.input
+                                    visible: card.localBuilds
+                                    Layout.fillWidth: true
+                                    emphasis: true
+                                    glyph: "ic_warning"
+                                    tone: UI.Theme.changed
+                                    fs: root.fs
+                                    text: !card.summary ? "" : card.summary.toBuild === 1 ? qsTr("1 derivation must be built locally: the binary cache has no build for it yet, so this update can take a while.") : qsTr("%1 derivations must be built locally: the binary cache has no build for them yet, so this update can take a while. Packages marked “build” are among them.").arg(card.summary.toBuild)
+                                }
+                                Notice {
+                                    objectName: "largeDownload-" + card.modelData.input
+                                    visible: card.largeDownload
+                                    Layout.fillWidth: true
+                                    emphasis: true
+                                    glyph: "ic_warning"
+                                    tone: UI.Theme.changed
+                                    fs: root.fs
+                                    text: card.summary ? qsTr("Large download: %1, above your %2 warning threshold.").arg(UI.Theme.formatBytes(card.summary.downloadBytes)).arg(UI.Theme.formatBytes(root.previewWarnMiB * 1048576)) : ""
                                 }
                                 UI.ActionButton {
                                     visible: !card.entry

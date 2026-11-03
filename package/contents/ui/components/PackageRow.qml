@@ -152,6 +152,19 @@ Item {
                 Layout.fillWidth: true
             }
 
+            // Needs a local build (update previews: no binary cache hit)
+            Tag {
+                visible: root.pkg && root.pkg.action === "build"
+                text: qsTr("build")
+                tone: UI.Theme.changed
+                fs: root.fs
+                ToolTip.visible: buildHover.hovered
+                ToolTip.text: qsTr("Not in the binary cache: built on this machine")
+                HoverHandler {
+                    id: buildHover
+                }
+            }
+
             // Version
             Text {
                 text: root.pkgType === "added" ? root.pkgNewVersion : root.pkgType === "removed" ? root.pkgOldVersion : root.pkgOldVersion + " → " + root.pkgNewVersion

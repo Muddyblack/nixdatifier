@@ -63,6 +63,7 @@ ShellRoot {
             property bool enableHostDetect: true
             property bool checkTarballs: true
             property bool deepInputCheck: false
+            property int previewWarnMiB: 2048
             property bool measureStore: true
             property string ignoredInputs: ""
             property string customCommands: "[{\"label\":\"update\",\"cmd\":\"nix flake update\"},{\"label\":\"upnix\",\"cmd\":\"upnix\"}]"

@@ -107,6 +107,7 @@ Pane {
     property var dryRunCache: ({})
     property var releaseNotesCache: ({})
     property bool isDryRunning: false
+    property int previewWarnMiB: 2048
     property bool isProbingHash: false
     property string diffViewMode: "compact"   // "compact" | "detailed"
     property var iconCache: ({})
@@ -733,6 +734,7 @@ Pane {
                 dryRunCache: fullView.dryRunCache
                 releaseNotesCache: fullView.releaseNotesCache
                 isDryRunning: fullView.isDryRunning
+                previewWarnMiB: fullView.previewWarnMiB
                 skippedInputs: fullView.skippedInputs
                 pendingInputs: fullView.pendingInputs
                 upToDateInputs: fullView.upToDateInputs

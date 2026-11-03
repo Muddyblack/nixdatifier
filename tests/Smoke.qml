@@ -134,7 +134,15 @@ Window {
         core.dryRunCache = {
             nixpkgs: {
                 status: "ok",
-                packages: core.detailsCache[661].diff
+                packages: core.detailsCache[661].diff.map((p, i) => Object.assign({
+                        action: i % 3 === 0 ? "build" : "fetch"
+                    }, p)),
+                summary: {
+                    downloadBytes: 2576980378,
+                    unpackedBytes: 9126805504,
+                    toBuild: 38,
+                    toFetch: 412
+                }
             }
         };
     }

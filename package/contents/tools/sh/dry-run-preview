@@ -6,6 +6,14 @@
 #
 #   action<TAB>name<TAB>oldVersion<TAB>newVersion
 #
+# preceded by one summary line with the cost of the whole update:
+#
+#   SUMMARY<TAB>downloadBytes<TAB>unpackedBytes<TAB>toBuild<TAB>toFetch
+#
+# downloadBytes/unpackedBytes are empty when nix printed no parseable size.
+# toBuild/toFetch count every derivation/path nix listed, including the
+# system-level ones the package lines below leave out.
+#
 # action = "fetch" (pre-built binary available) | "build" (needs local build)
 # oldVersion = currently installed version, or "" if package is new
 # newVersion = version from the store path name, or "" if unparseable
@@ -72,6 +80,39 @@ if [ -z "$DRY_OUT" ]; then
     echo "OK: already up to date"
     exit 0
 fi
+
+# ── Summarise the cost: sizes from the "will be fetched (…)" header, counts ───
+# from the listed paths. The headers look like (singular forms too):
+#   these 38 derivations will be built:
+#   these 120 paths will be fetched (245.3 MiB download, 1.0 GiB unpacked):
+to_bytes() { # to_bytes <number> <unit>
+    awk -v n="$1" -v u="$2" 'BEGIN {
+        m["B"] = 1; m["KiB"] = 1024; m["MiB"] = 1048576; m["GiB"] = 1073741824; m["TiB"] = 1099511627776
+        if (!(u in m)) exit 1
+        printf "%.0f", n * m[u] }'
+}
+size_re='\(([0-9.]+) ([KMGT]?i?B) download, ([0-9.]+) ([KMGT]?i?B) unpacked\)'
+TO_BUILD=0 TO_FETCH=0 DL_BYTES=0 UNP_BYTES=0 section=''
+while IFS= read -r line; do
+    case "$line" in
+        *"will be built"*) section=build ;;
+        *"will be fetched"*)
+            section=fetch
+            if [[ "$line" =~ $size_re ]]; then
+                DL_BYTES=$(to_bytes "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}") || DL_BYTES=''
+                UNP_BYTES=$(to_bytes "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}") || UNP_BYTES=''
+            else
+                DL_BYTES='' UNP_BYTES=''
+            fi ;;
+        [[:space:]]*/nix/store/*)
+            case "$section" in
+                build) TO_BUILD=$((TO_BUILD + 1)) ;;
+                fetch) TO_FETCH=$((TO_FETCH + 1)) ;;
+            esac ;;
+        *) section='' ;;
+    esac
+done <<< "$DRY_OUT"
+printf 'SUMMARY\t%s\t%s\t%s\t%s\n' "$DL_BYTES" "$UNP_BYTES" "$TO_BUILD" "$TO_FETCH"
 
 # ── Parse and emit results ────────────────────────────────────────────────────
 SKIP_PATTERNS="^nixos-system-|^nixos-configuration-|^etc-|^system-path$|-man$|-info$|-doc$|-dev$|-lib$"

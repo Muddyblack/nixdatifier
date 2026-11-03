@@ -664,6 +664,35 @@ printf 403
         self.assertIn("--no-write-lock-file", args.read_text().splitlines())
         self.assertEqual(lock.read_text(), "original")
 
+    def test_dry_preview_summarises_download_and_builds(self):
+        self.script(self.bin / "nix-store", "exit 0\n")
+        dry_run = (
+            "these 2 derivations will be built:\n"
+            "  /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-foo-1.2.drv\n"
+            "  /nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-nixos-system-host-26.05.drv\n"
+            "these 2 paths will be fetched (496.8 MiB download, 1.5 GiB unpacked):\n"
+            "  /nix/store/cccccccccccccccccccccccccccccccc-firefox-150.0\n"
+            "  /nix/store/dddddddddddddddddddddddddddddddd-hello-2.12\n"
+        )
+        (self.root / "dry-run.txt").write_text(dry_run)
+        self.script(self.bin / "nix", f"cat '{self.root / 'dry-run.txt'}' >&2\n")
+        work = self.root / "flake"
+        work.mkdir()
+        result = self.run_helper("dry-run-preview", str(work), "nixpkgs", "github:NixOS/nixpkgs/rev", "host")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual(lines[0], "SUMMARY\t520932557\t1610612736\t2\t2")
+        self.assertIn("build\tfoo\t\t1.2", lines)
+        self.assertIn("fetch\tfirefox\t\t150.0", lines)
+
+        # A single path, no size nix could print: sizes stay unknown, counts do not.
+        (self.root / "dry-run.txt").write_text(
+            "this derivation will be built:\n  /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-foo-1.2.drv\n"
+            "these paths will be fetched:\n  /nix/store/cccccccccccccccccccccccccccccccc-firefox-150.0\n"
+        )
+        result = self.run_helper("dry-run-preview", str(work), "nixpkgs", "github:NixOS/nixpkgs/rev", "host")
+        self.assertEqual(result.stdout.splitlines()[0], "SUMMARY\t\t\t1\t1")
+
     def test_settings_agree_across_hosts(self):
         """main.xml, Settings.qml, the Hyprland adapter, the editor schema and
         the Plasma config page must declare the same keys and defaults."""
@@ -1404,6 +1433,15 @@ class Cli(HelperCase):
         self.cli_run("config", "unset", "measure_store")
         later = json.loads(self.cli_run("config", "sync", "pull", json.dumps(window)).stdout)
         self.assertIs(later["measureStore"], True)  # clearing restores the default in the window
+
+    def test_preview_warn_is_shared_and_validated(self):
+        window = {"previewWarnMiB": 512}
+        self.cli_run("config", "sync", "pull", json.dumps(window))
+        self.assertEqual(self.cli_run("config", "get", "preview_warn").stdout.strip(), "512")
+        self.assertIn("MiB", self.cli_run("config", "set", "preview_warn", "2G").stderr)
+        self.cli_run("config", "unset", "preview_warn")
+        later = json.loads(self.cli_run("config", "sync", "pull", json.dumps(window)).stdout)
+        self.assertEqual(later["previewWarnMiB"], 2048)  # clearing restores the default in the window
 
     def test_window_settings_sync_both_ways(self):
         window = {

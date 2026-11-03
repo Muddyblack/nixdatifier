@@ -2260,6 +2260,18 @@ Item {
         });
     }
 
+    // "SUMMARY<TAB>downloadBytes<TAB>unpackedBytes<TAB>toBuild<TAB>toFetch" from
+    // dry-run-preview. An empty size means nix printed none we could read.
+    function parsePreviewSummary(parts) {
+        const num = v => v === undefined || v === "" || isNaN(Number(v)) ? -1 : Number(v);
+        return {
+            downloadBytes: num(parts[1]),
+            unpackedBytes: num(parts[2]),
+            toBuild: Math.max(0, num(parts[3])),
+            toFetch: Math.max(0, num(parts[4]))
+        };
+    }
+
     function runDryPreview(inputName, overrideRef) {
         if (!root.isNixOS)
             return;
@@ -2299,16 +2311,27 @@ Item {
             if (text.startsWith("OK:")) {
                 updated[inputName] = {
                     status: "ok",
-                    packages: []
+                    packages: [],
+                    summary: {
+                        downloadBytes: 0,
+                        unpackedBytes: 0,
+                        toBuild: 0,
+                        toFetch: 0
+                    }
                 };
                 root.dryRunCache = updated;
                 return;
             }
 
             const pkgs = [];
+            let summary = null;
             const lines = text.split("\n");
             for (let i = 0; i < lines.length; i++) {
                 const parts = lines[i].split("\t");
+                if (parts[0] === "SUMMARY") {
+                    summary = root.parsePreviewSummary(parts);
+                    continue;
+                }
                 if (parts.length < 2)
                     continue;
                 const action = parts[0] || "";
@@ -2328,7 +2351,8 @@ Item {
             }
             updated[inputName] = {
                 status: "ok",
-                packages: pkgs
+                packages: pkgs,
+                summary
             };
             root.dryRunCache = updated;
             root.loadIcons(pkgs);
@@ -2779,7 +2803,7 @@ Item {
     property bool syncSettings: false
     property bool _syncReady: false
     property bool _syncApplying: false
-    readonly property var _syncKeys: ["flakePath", "configRepoPath", "secretsPath", "secretsSourcePath", "githubTokenFile", "githubUseGh", "checkTarballs", "deepInputCheck", "measureStore", "ignoredInputs", "impermanencePaths", "checkInterval", "customCommands", "showNotifications"]
+    readonly property var _syncKeys: ["flakePath", "configRepoPath", "secretsPath", "secretsSourcePath", "githubTokenFile", "githubUseGh", "checkTarballs", "deepInputCheck", "measureStore", "previewWarnMiB", "ignoredInputs", "impermanencePaths", "checkInterval", "customCommands", "showNotifications"]
     function _syncSnapshot() {
         const values = {};
         for (const key of root._syncKeys)
@@ -2864,6 +2888,9 @@ Item {
             root.schedulePushSharedSettings();
         }
         function onDeepInputCheckChanged() {
+            root.schedulePushSharedSettings();
+        }
+        function onPreviewWarnMiBChanged() {
             root.schedulePushSharedSettings();
         }
         function onMeasureStoreChanged() {
