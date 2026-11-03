@@ -388,13 +388,14 @@ changes_screen() { # changes_screen [BASE TARGET] [label]; no pair: newest vs pr
     fzf "${FZF_BASE[@]}" --with-nth 5 --no-sort --exact --list-label " #$a → #$b ${label:+· $label }" --input-label ' Filter packages ' \
         --ghost 'type a package name' --preview-label ' Package ' \
         --header "${D}Comparing #$a and #$b…${X}" --header-label ' Changes ' \
-        --footer "$(keys 'Tab=next filter' 'click/Alt-A R C 0=filter' 'Enter=store paths' 'Esc/⌫=back')" \
+        --footer "$(keys 'Tab=next filter' 'click/Alt-A R C 0=filter' 'Enter=store paths' 'Ctrl-W=why is it here' 'Esc/⌫=back')" \
         --preview '$NXD_TUI _paths {2} {3} {4} {6}' \
         --bind 'start:reload($NXD_TUI _changerows)' \
         --bind 'load:transform-header($NXD_TUI _changehead)' \
         --bind 'tab:transform($NXD_TUI _filter next)' \
         --bind 'alt-0:transform($NXD_TUI _filter all),alt-a:transform($NXD_TUI _filter A),alt-r:transform($NXD_TUI _filter R),alt-c:transform($NXD_TUI _filter C)' \
         --bind 'click-header:transform:case $FZF_CLICK_HEADER_WORD in *All*) $NXD_TUI _filter all ;; *Added*) $NXD_TUI _filter A ;; *Removed*) $NXD_TUI _filter R ;; *Changed*) $NXD_TUI _filter C ;; esac' \
+        --bind 'ctrl-w:execute($NXD_TUI _why {2} {3} {4})' \
         --bind 'enter:toggle-preview,backward-eof:abort' </dev/null >/dev/null
     rm -f "$NXD_CHANGES"
 }
@@ -435,8 +436,22 @@ store_paths() { # store_paths NAME OLD NEW SIZE; a card like the widget's: versi
             printf '  %snot in this generation%s\n' "$D" "$X"
         echo
     done
+    # Why it is there: the shortest chain in the generation that has it.
+    if [[ -n $3 ]]; then n=$NXD_B v=$3; else n=$NXD_A v=$2; fi
+    if [[ -n $v ]]; then
+        printf '%sWhy it is in #%s%s %s(Ctrl-W: everything that pulls it in)%s\n' "$D" "$n" "$X" "$D" "$X"
+        "$NXD_CLI" why "$1" "$v" --generation "$n" 2>/dev/null | awk '!NF && ++blank == 2 { exit } { print }'
+        echo
+    fi
     printf '%snixpkgs%s      %s%s' "$D" "$X" "$e]8;;$url$e\\" "$P$url$X$e]8;;$e\\"
     echo
+}
+why_page() { # why_page NAME OLD NEW: every chain, in the generation that has the package
+    local n v
+    if [[ -n $3 ]]; then n=$NXD_B v=$3; else n=$NXD_A v=$2; fi
+    [[ -n $v ]] || return 0
+    working "Why $1"
+    { cli why "$1" "$v" --generation "$n"; echo; cli why "$1" "$v" --generation "$n" --all; } | page "Why $1 · #$n"
 }
 
 # ── Screens ─────────────────────────────────────────────────────────────────
@@ -633,6 +648,15 @@ hash_flow() { # one prompt: the kind is judged from what you give
     [[ -n $what ]] || return 0
     working 'Hashing'
     cli hash "$what" | page "Hash · $what"
+}
+why_flow() { # ask for a package, then every chain that pulls it into the running system
+    local what
+    clear
+    printf '%sWhy is this here?%s  %sa package name (zstd, btrfs-progs-6.19.1) or a /nix/store path%s\n\n' "$B" "$X" "$D" "$X"
+    what=$(ask "package:") || return 0
+    [[ -n $what ]] || return 0
+    working 'Tracing dependencies'
+    { cli why "$what"; echo; cli why "$what" --all; } | page "Why · $what"
 }
 
 # ── About and support ───────────────────────────────────────────────────────
@@ -956,6 +980,7 @@ home_rows() {
     item profiles '⊞' "$P" Profiles 'your packages, Home Manager and nix profile' 'Enter: install, upgrade, remove'
     item info 'i' "$C" 'System info' 'host, version, uptime' 'Enter: full screen'
     item hash '#' "$O" 'Hash calculator' 'fixed-output hash and SRI' 'Enter: paste what to hash'
+    item why '?' "$C" 'Why is this here?' 'what pulls a package into the system' 'Enter: type a package name'
     item about '♥' "$P" 'About & support' 'the project, links, how to support it' 'Enter: full screen'
     item settings '⚙' "$P" Settings 'paths, commands, update checks, look' 'Enter: change them'
     item quit '✕' "$D" Quit 'leave nixdatifier' 'Enter: quit'
@@ -983,6 +1008,7 @@ home_preview() { # home_preview KEY
             cli disk
             printf '\n%s%sCleaning up would%s %s(keeps the 5 newest generations and any younger than 14 days, never the running or booted one; then collects garbage)%s\n\n' "$B" "$Y" "$X" "$D" "$X"
             "$NXD_CLI" "${clr[@]}" --dry-run --yes clean 2>&1 | sed 's/^Nothing to delete\.$/No old generations to delete; garbage collection still frees what nothing uses./' ;;
+        why) printf '%sEnter, then type a package name%s (zstd, btrfs-progs-6.19.1) or a /nix/store path.\n\nShows the chain from the system down to it and what pulls it in:\nenvironment.systemPackages, a service, Home Manager, /etc or the system itself.\n\n%sIn What changed and Compare, Ctrl-W asks the same for the highlighted package.%s\n' "$B" "$X" "$D" "$X" ;;
         hash) printf '%sEnter, then paste what to hash:%s\n\n  a URL                 https://example.org/file.tar.gz\n  a local file          ./result.zip\n  a store path          /nix/store/…\n  a GitHub revision     owner/repo/v1.2.3\n\n%sFor an archive that fetchzip unpacks, use: nixdatifier hash zip URL%s\n' "$B" "$X" "$D" "$X" ;;
         quit) printf '\n  %sSee you.%s\n' "$D" "$X" ;;
         *) cli "$1" ;;
@@ -1003,6 +1029,7 @@ home_enter() { # home_enter KEY
         profiles) profile_screen ;;
         disk) disk_screen ;;
         hash) hash_flow ;;
+        why) why_flow ;;
         *) working "$1"; cli "$1" | page "$1" ;;
     esac
 }
@@ -1035,7 +1062,7 @@ help_text() {
         'Ctrl-O' 'compare against previous / booted / next boot' 'Ctrl-S  Ctrl-B' 'switch now / boot next time' \
         'Ctrl-D' 'delete the marked (or highlighted) generations'
     printf '\n%s%sWhat changed%s\n\n' "$B" "$P" "$X"
-    printf '  %-16s %s\n' 'Tab' 'All → Added → Removed → Changed' 'Alt-A R C 0' 'jump to a filter (or click it)' 'Enter' 'store paths of the package'
+    printf '  %-16s %s\n' 'Tab' 'All → Added → Removed → Changed' 'Alt-A R C 0' 'jump to a filter (or click it)' 'Enter' 'store paths of the package' 'Ctrl-W' 'why it is in the system'
     printf '\n%s%sUpdates%s\n\n' "$B" "$O" "$X"
     printf '  %-16s %s\n' 'Enter' 'packages the update would change' 'Ctrl-U  Alt-U' 'update this input / all inputs'
     printf '\n%sEverything that changes the system asks first and lands in History.%s\n' "$D" "$X"
@@ -1134,6 +1161,7 @@ case ${1:-} in
     _changerows) changes_load ;;
     _changehead) changes_header ;;
     _paths) store_paths "$2" "${3:-}" "${4:-}" "${5:-}" ;;
+    _why) why_page "$2" "${3:-}" "${4:-}" ;;
     _inputs) input_rows "${@:2}" ;;
     _toggleall) if [[ -e $NXD_STATE/showall ]]; then rm -f "$NXD_STATE/showall"; else : >"$NXD_STATE/showall"; fi ;;
     _inputpv) input_preview "$2" "$3" ;;

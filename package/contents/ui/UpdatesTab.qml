@@ -8,7 +8,9 @@ Item {
     id: root
     property bool enableGlow: true
     property var storePathCache: ({})
+    property var whyCache: ({})
     signal storePathRequested(var pkg)
+    signal whyRequested(var pkg, bool all)
     property bool uiActive: true
     required property string activeViewMode
     required property color accentColor
@@ -603,7 +605,9 @@ Item {
                                 }
                                 PackageList {
                                     storePathCache: root.storePathCache
+                                    whyCache: root.whyCache
                                     onStorePathRequested: pkg => root.storePathRequested(pkg)
+                                    onWhyRequested: (pkg, all) => root.whyRequested(pkg, all)
                                     visible: !!card.entry && card.entry.status === "ok"
                                     Layout.fillWidth: true
                                     packages: card.entry ? card.entry.packages || [] : []

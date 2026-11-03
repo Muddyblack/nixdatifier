@@ -14,6 +14,7 @@ NUMBER  DATE                 NEXT_BOOT  BOOTED  NIXOS_VERSION           KERNEL
 $ nixdatifier delete --keep 5 --older-than 30d      # lists, asks, deletes
 $ nixdatifier updates --check || echo "inputs are behind"   # exit 2
 $ nixdatifier diff --json | jq '.counts'
+$ nixdatifier why zstd --all                         # what pulls zstd into the system
 $ nixdatifier preview nixpkgs --json | jq '{downloadBytes, unpackedBytes, toBuild}'   # cost before updating
 ```
 
@@ -27,7 +28,7 @@ Suggestions never run automatically. Missing option values also report a usage e
 | --- | --- |
 | Generations | `generations`, `diff [A [B]]`, `diff --config`, `switch N`, `boot N`, `rollback`, `delete N…` / `--keep N` / `--older-than DAYS`, `profiles` (Home Manager, `nix profile`) |
 | Flake | `updates [--all] [--check]`, `update [INPUT...]`, `preview INPUT` (what the update would cost and which packages would change), `notes INPUT` (upstream releases and commits) |
-| Store | `disk`, `disk STORE-PATH` (GC roots, referrers, closure), `gc [--older-than 14d \| --all]`, `path NAME [VERSION]` |
+| Store | `disk`, `disk STORE-PATH` (GC roots, referrers, closure), `gc [--older-than 14d \| --all]`, `path NAME [VERSION]`, `why NAME\|STORE-PATH [VERSION] [--all]` (the dependency chain that pulls a package into the system, and what pulls it in) |
 | System | `status`, `health`, `info`, `history`, `hash` |
 | Secrets | `secrets` (names and freshness, never values) |
 | Impermanence | `persist` (`status`, `sizes`, `ls DIR`, `scan`, `cleanup`, `rm PATH…`) |
@@ -69,11 +70,12 @@ every key.
 | Screen | What you can do |
 | --- | --- |
 | Generations | Enter opens a generation's package changes. Ctrl-O switches the comparison between *previous*, *booted* and *next boot*. Tab marks generations; with two marked, Enter compares them. Ctrl-S switches, Ctrl-B sets next boot, Ctrl-D deletes the marked (or highlighted) ones. |
-| What changed | The package list with `[All] [+Added] [-Removed] [~Changed]` buttons. Click them, press Tab to cycle, or use Alt-A/R/C/0. Type to filter. Enter shows the package's store paths in both generations. |
+| What changed | The package list with `[All] [+Added] [-Removed] [~Changed]` buttons. Click them, press Tab to cycle, or use Alt-A/R/C/0. Type to filter. Enter shows the package's store paths in both generations and why it is in the system; Ctrl-W lists everything that pulls it in. |
 | Updates | Every flake input with its status. The preview has the release notes. Enter lists the packages an update would change. Ctrl-U updates one input, Alt-U updates all. |
 | History | Every switch, cleanup and update, with its full output. |
 | Dev environments | direnv projects by cache size. Enter evaluates their shells, Ctrl-O opens a shell there, Ctrl-X clears `.direnv`. |
 | Impermanence, Health, Disk, Secrets, Profiles, System info | Live preview; Enter opens it full screen with search. |
+| Why is this here? | Type a package name or store path: the chain from the system down to it, then everything that pulls it in. |
 | Clean up, Hash calculator | The preview shows a dry run of what Enter would do. |
 
 Everywhere: Ctrl-R refreshes, Ctrl-/ hides the preview, Shift-↑↓ scrolls it.

@@ -693,6 +693,72 @@ printf 403
         result = self.run_helper("dry-run-preview", str(work), "nixpkgs", "github:NixOS/nixpkgs/rev", "host")
         self.assertEqual(result.stdout.splitlines()[0], "SUMMARY\t\t\t1\t1")
 
+    def fake_closure(self, root="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-nixos-system-host-26.05"):
+        """A small system closure for the why helper: nix-store answers --graph and --size."""
+        h = lambda c, name: c * 32 + "-" + name  # noqa: E731
+        nodes = {
+            "R": root,
+            "SP": h("b", "system-path"),
+            "E": h("c", "etc"),
+            "SU": h("d", "system-units"),
+            "UF": h("e", "unit-foo.service"),
+            "P": h("f", "btrfs-progs-6.19"),
+            "L": h("g", "zstd-1.5.7"),
+            "L2": h("h", "zstd-1.5.7-bin"),
+            "RS": h("i", "rsync-3.5.0"),
+        }
+        edges = [
+            ("SP", "R"),
+            ("E", "R"),
+            ("SU", "E"),
+            ("UF", "SU"),
+            ("P", "SP"),
+            ("L", "P"),
+            ("L", "UF"),
+            ("L2", "SP"),
+            ("RS", "R"),
+            ("L", "RS"),
+        ]
+        graph = "digraph G {\n" + "".join(f'"{nodes[a]}" -> "{nodes[b]}" [color = "red"];\n' for a, b in edges) + "}\n"
+        (self.root / "graph.dot").write_text(graph)
+        self.script(
+            self.bin / "nix-store",
+            f"""case "$*" in *--graph*) cat '{self.root / "graph.dot"}' ;; *--size*) shift 2; for p; do echo 1024; done ;; esac\n""",
+        )
+        return {k: "/nix/store/" + v for k, v in nodes.items()}
+
+    def why_rows(self, *args):
+        result = self.run_helper("why", "--compute", *args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return [line.split("\t") for line in result.stdout.splitlines()]
+
+    def test_why_finds_the_shortest_chain_and_its_origin(self):
+        n = self.fake_closure()
+        rows = self.why_rows(n["R"], "zstd", "ε", "")
+        self.assertIn(["TARGET", n["L"]], rows)  # the main output, not zstd-…-bin
+        self.assertIn(["ALSO", n["L2"]], rows)
+        chains = [r for r in rows if r[0] == "CHAIN"]
+        self.assertEqual(chains, [["CHAIN", "system", n["RS"], n["R"], n["RS"], n["L"]]])
+        self.assertIn(["SIZE", n["L"], "1024"], rows)
+
+    def test_why_all_lists_one_chain_per_origin_shortest_first(self):
+        n = self.fake_closure()
+        rows = self.why_rows(n["R"], n["L"], "ε", "all")
+        self.assertIn(["COUNT", "3"], rows)
+        chains = [r[1:3] for r in rows if r[0] == "CHAIN"]
+        self.assertEqual(chains, [["system", n["RS"]], ["package", n["P"]], ["service", n["UF"]]])
+        service = next(r for r in rows if r[0] == "CHAIN" and r[1] == "service")
+        self.assertEqual(service[3:], [n["R"], n["E"], n["SU"], n["UF"], n["L"]])
+
+    def test_why_name_version_and_missing_packages(self):
+        n = self.fake_closure()
+        rows = self.why_rows(n["R"], "btrfs-progs", "6.19", "")
+        self.assertIn(["CHAIN", "package", n["P"], n["R"], n["SP"], n["P"]], rows)
+        self.assertEqual(self.why_rows(n["R"], "firefox", "ε", ""), [["NONE", "not in this system closure"]])
+        # zstd-1.5.7 with the version: the exact name only, so no -bin match
+        rows = self.why_rows(n["R"], "zstd", "1.5.7", "")
+        self.assertNotIn(["ALSO", n["L2"]], rows)
+
     def test_settings_agree_across_hosts(self):
         """main.xml, Settings.qml, the Hyprland adapter, the editor schema and
         the Plasma config page must declare the same keys and defaults."""
@@ -1356,7 +1422,7 @@ class Cli(HelperCase):
         tools = self.root / "tools"
         shutil.copytree(HELPERS, tools)
         self.profiles = self.root / "profiles"
-        for name in ("nixdatifier", "generations"):
+        for name in ("nixdatifier", "generations", "why"):
             path = tools / name
             path.write_text(
                 path.read_text()
@@ -1442,6 +1508,34 @@ class Cli(HelperCase):
         self.cli_run("config", "unset", "preview_warn")
         later = json.loads(self.cli_run("config", "sync", "pull", json.dumps(window)).stdout)
         self.assertEqual(later["previewWarnMiB"], 2048)  # clearing restores the default in the window
+
+    def test_why_command_formats(self):
+        root = (self.profiles / "system-2-link").resolve().name
+        h = lambda c, name: c * 32 + "-" + name  # noqa: E731
+        sp, pkg, lib = h("b", "system-path"), h("f", "btrfs-progs-6.19"), h("g", "zstd-1.5.7")
+        (self.root / "graph.dot").write_text(f'"{sp}" -> "{root}";\n"{pkg}" -> "{sp}";\n"{lib}" -> "{pkg}";\n')
+        self.script(
+            self.bin / "nix-store",
+            f"""case "$*" in *--graph*) cat '{self.root / "graph.dot"}' ;; *--size*) shift 2; for p; do echo 2048; done ;; esac\n""",
+        )
+        data = json.loads(self.cli_run("--json", "why", "zstd", "--generation", "2").stdout)
+        self.assertEqual(data["targetName"], "zstd-1.5.7")
+        self.assertEqual(data["chains"][0]["kind"], "package")
+        self.assertEqual(data["chains"][0]["originName"], "btrfs-progs-6.19")
+        self.assertEqual(
+            [p["name"] for p in data["chains"][0]["path"]], ["system", "system-path", "btrfs-progs-6.19", "zstd-1.5.7"]
+        )
+        self.assertEqual(data["chains"][0]["path"][-1]["sizeBytes"], 2048)
+        text = self.cli_run("why", "zstd", "--generation", "2").stdout
+        self.assertIn("zstd-1.5.7 is here because of btrfs-progs-6.19 (environment.systemPackages)", text)
+        self.assertIn("└─ zstd-1.5.7", text)
+        plain = self.cli_run("--plain", "why", "zstd", "--generation", "2", "--all").stdout
+        self.assertEqual(
+            plain.strip(), "package\tbtrfs-progs-6.19\tsystem > system-path > btrfs-progs-6.19 > zstd-1.5.7"
+        )
+        missing = json.loads(self.cli_run("--json", "why", "firefox", "--generation", "2").stdout)
+        self.assertEqual((missing["chains"], missing["message"]), ([], "not in this system closure"))
+        self.assertNotEqual(self.cli_run("why").returncode, 0)
 
     def test_window_settings_sync_both_ways(self):
         window = {

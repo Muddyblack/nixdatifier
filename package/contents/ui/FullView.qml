@@ -7,9 +7,11 @@ import "shared" as UI
 Pane {
     id: fullView
     property var storePathCache: ({})
+    property var whyCache: ({})
     property var generationCounts: ({})
     signal generationCountsRequested(int genNum)
     signal storePathRequested(var pkg)
+    signal whyRequested(var pkg, bool all)
     padding: 0
     background: null
     palette.window: fullView.showBg ? fullView.bgColor : UI.Theme.systemBackgroundColor
@@ -671,7 +673,9 @@ Pane {
                 generationCounts: fullView.generationCounts
                 onGenerationCountsRequested: genNum => fullView.generationCountsRequested(genNum)
                 storePathCache: fullView.storePathCache
+                whyCache: fullView.whyCache
                 onStorePathRequested: pkg => fullView.storePathRequested(pkg)
+                onWhyRequested: (pkg, all) => fullView.whyRequested(pkg, all)
                 enableGlow: fullView.enableGlow
                 enableMotion: fullView.enableMotion
                 enableLiveSwitch: fullView.enableLiveSwitch
@@ -714,7 +718,9 @@ Pane {
                 enableGlow: fullView.enableGlow
                 objectName: "updatesView"
                 storePathCache: fullView.storePathCache
+                whyCache: fullView.whyCache
                 onStorePathRequested: pkg => fullView.storePathRequested(pkg)
+                onWhyRequested: (pkg, all) => fullView.whyRequested(pkg, all)
                 updatingInputs: fullView.updatingInputs
                 anchors.fill: parent
                 isBusy: fullView.isBusy
@@ -757,7 +763,9 @@ Pane {
                 id: diffTab
                 enableGlow: fullView.enableGlow
                 storePathCache: fullView.storePathCache
+                whyCache: fullView.whyCache
                 onStorePathRequested: pkg => fullView.storePathRequested(pkg)
+                onWhyRequested: (pkg, all) => fullView.whyRequested(pkg, all)
                 activeViewMode: fullView.activeViewMode
                 accentColor: fullView.accentColor
                 textColor: fullView.textColor
@@ -1284,7 +1292,9 @@ Pane {
                     storeUsageResult: fullView.storeUsageResult
                     isProbingStoreUsage: fullView.isProbingStoreUsage
 
+                    whyCache: fullView.whyCache
                     onStoreUsageRequested: path => fullView.storeUsageRequested(path)
+                    onWhyRequested: (pkg, all) => fullView.whyRequested(pkg, all)
                     onCopyToClipboard: t => fullView.copyToClipboard(t)
                 }
             }

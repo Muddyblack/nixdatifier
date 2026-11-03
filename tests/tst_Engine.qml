@@ -564,6 +564,67 @@ Item {
             verify(!updates.overWarnSize(entry.summary));
         }
 
+        function test_why_loads_once_and_parses_chains() {
+            const pkg = {
+                name: "zstd",
+                type: "upgrade",
+                oldVersion: "1.5.6",
+                newVersion: "1.5.7",
+                storeProfile: "/nix/var/nix/profiles/system-661-link"
+            };
+            core.whyCache = {};
+            core.loadWhy(pkg, false);
+            core.loadWhy(pkg, false);
+            compare(jobs.length, 1);
+            verify(jobs[0].cmd.indexOf("/why' '/nix/var/nix/profiles/system-661-link' 'zstd' '1.5.7'") >= 0);
+            verify(jobs[0].cmd.indexOf(" all") < 0);
+            const key = core.whyKey(pkg, false);
+            compare(core.whyCache[key].status, "loading");
+            const root = "/nix/store/" + "a".repeat(32) + "-nixos-system-host";
+            const sp = "/nix/store/" + "b".repeat(32) + "-system-path";
+            const lib = "/nix/store/" + "g".repeat(32) + "-zstd-1.5.7";
+            jobs[0].callback(jobs[0].cmd, ["ROOT\t" + root, "TARGET\t" + lib, "CHAIN\tpackage\t" + lib + "\t" + root + "\t" + sp + "\t" + lib, "SIZE\t" + lib + "\t2048"].join("\n"), "", 0);
+            const entry = core.whyCache[key];
+            compare(entry.status, "ok");
+            compare(entry.chains.length, 1);
+            compare(entry.chains[0].kind, "package");
+            compare(entry.chains[0].originName, "zstd-1.5.7");
+            compare(entry.chains[0].path.map(p => p.name).join(">"), "system>system-path>zstd-1.5.7");
+            compare(entry.chains[0].path[2].sizeBytes, 2048);
+            compare(entry.chains[0].path[1].sizeBytes, -1);
+            compare(entry.total, 1);
+
+            core.loadWhy(pkg, true);
+            compare(jobs.length, 2);
+            verify(jobs[1].cmd.endsWith(" all"));
+            jobs[1].callback(jobs[1].cmd, "NONE\tnot in this system closure", "", 0);
+            compare(core.whyCache[core.whyKey(pkg, true)].message, "not in this system closure");
+            compare(core.whyCache[core.whyKey(pkg, true)].chains.length, 0);
+        }
+        function test_why_errors_allow_retry_and_need_a_generation() {
+            core.whyCache = {};
+            core.loadWhy({
+                name: "app",
+                type: "added",
+                newVersion: "1"
+            }, false);
+            compare(jobs.length, 0); // not in an installed generation
+            const pkg = {
+                name: "app",
+                type: "removed",
+                oldVersion: "1",
+                newVersion: "",
+                storeProfile: "/nix/var/nix/profiles/system-660-link"
+            };
+            core.loadWhy(pkg, false);
+            verify(jobs[0].cmd.indexOf("'app' '1'") >= 0); // a removed package: its old version
+            jobs[0].callback(jobs[0].cmd, "", "", 124);
+            compare(core.whyCache[core.whyKey(pkg, false)].status, "error");
+            verify(core.whyCache[core.whyKey(pkg, false)].message.indexOf("Timed out") >= 0);
+            core.loadWhy(pkg, false);
+            compare(jobs.length, 2);
+        }
+
         function test_stale_preview_is_not_applied() {
             const input = fixtureInput();
             core.flakeUpdates = [input];

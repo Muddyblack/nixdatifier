@@ -5,12 +5,14 @@ FullView {
     implicitHeight: engine.settings.popupHeight || 740
     required property var engine
     storePathCache: engine.storePathCache
+    whyCache: engine.whyCache
     generationCounts: engine.generationCounts
     onGenerationCountsRequested: genNum => {
         if (engine.autoStart)
             engine.requestGenerationCounts(genNum);
     }
     onStorePathRequested: pkg => engine.resolveStorePath(pkg)
+    onWhyRequested: (pkg, all) => engine.loadWhy(pkg, all)
     updatingInputs: engine.updatingInputs
     isSpinning: engine.isSpinning
     busyLabel: engine.busyLabel

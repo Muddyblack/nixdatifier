@@ -490,6 +490,43 @@ Item {
             compare(packages.filtered.length, 2);
             compare(core.activeViewMode, "diff");
         }
+        function test_why_chain_in_package_details() {
+            const pkg = {
+                name: "zstd",
+                type: "upgrade",
+                oldVersion: "1.5.6",
+                newVersion: "1.5.7",
+                storeProfile: "/nix/var/nix/profiles/system-661-link"
+            };
+            core.whyCache = {};
+            core.pairDiffCache = {
+                "661_660": {
+                    diff: [pkg]
+                }
+            };
+            app.openCompareInDiffTab(661, 660);
+            const row = findChild(app, "packageRow-zstd");
+            verify(row);
+            row._userExpanded = true;
+            const button = findChild(row, "whyButton");
+            verify(button.visible);
+            button.clicked();
+            compare(core.whyCache[core.whyKey(pkg, false)].status, "loading");
+
+            const root = "/nix/store/" + "a".repeat(32) + "-nixos-system-host";
+            const sp = "/nix/store/" + "b".repeat(32) + "-system-path";
+            const tool = "/nix/store/" + "f".repeat(32) + "-btrfs-progs-6.19";
+            const lib = "/nix/store/" + "g".repeat(32) + "-zstd-1.5.7";
+            const cache = {};
+            cache[core.whyKey(pkg, false)] = core.parseWhy(["ROOT\t" + root, "TARGET\t" + lib, ["CHAIN", "package", tool, root, sp, tool, lib].join("\t")].join("\n"));
+            core.whyCache = cache;
+            verify(!button.visible);
+            tryCompare(findChild(row, "whyOrigin"), "text", "Pulled in by btrfs-progs-6.19");
+            const showAll = findChild(row, "whyShowAll");
+            verify(showAll.visible);
+            showAll.clicked();
+            compare(core.whyCache[core.whyKey(pkg, true)].status, "loading");
+        }
         function test_empty_search_keeps_timeline_rail() {
             const timeline = findChild(app, "generationTimeline");
             const search = findChild(timeline, "generationSearch");

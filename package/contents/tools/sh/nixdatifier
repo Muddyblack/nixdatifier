@@ -7,12 +7,15 @@
 # and are recorded in the history the UI shows.
 set -uo pipefail
 export LC_ALL=C
+# Inside `nix develop` $out is exported, and bash exports every `local out` too:
+# a large result then overflows the environment of the next command (E2BIG).
+export -n out 2>/dev/null || true
 export PATH="$PATH:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:${HOME:-/root}/.nix-profile/bin"
 here=$(dirname "$(realpath "$0")")
 profiles=/nix/var/nix/profiles
 version=$(jq -r '.KPlugin.Version // empty' "$here/../../../metadata.json" 2>/dev/null)
 
-COMMANDS="generations updates diff disk health status history info hash profiles profile secrets persist dev path preview notes snapshot update rebuild run commands watch switch boot rollback delete clean gc menu config completion help"
+COMMANDS="generations updates diff disk health status history info hash profiles profile secrets persist dev path why preview notes snapshot update rebuild run commands watch switch boot rollback delete clean gc menu config completion help"
 OPTIONS="--json --plain --flake --yes --dry-run --refresh --priv --label --check --limit --all --older-than --keep --quiet --color --roots --secrets --source --host --days --shells --config --updates --generation --help --version"
 
 # One entry per command: "<usage>|<summary>|<detail>". The overview, `help CMD`
@@ -34,6 +37,7 @@ help_entry() {
         persist) echo "persist [status|sizes|ls [DIR]|scan|cleanup|rm PATH...]#impermanence: what survives a reboot#status shows the persistent areas; sizes measures entries; ls lists a folder; scan looks for suspicious autostart hooks; cleanup finds temp and stale data (--days N, default 180); rm deletes a path inside a persistent area (asks first). Extra roots: --roots /a:/b or NIXDATIFIER_PERSIST. NIXDATIFIER_IMP_ALL=1 includes data disks." ;;
         dev) echo "dev [list|show DIR|shells DIR|pkgs DIR SHELL|clear DIR]#direnv/flake dev environments#list shows projects direnv knows with their .direnv cache size; show describes one (--shells also evaluates its devShells); clear removes DIR/.direnv (asks first)." ;;
         path) echo "path NAME [VERSION] [--generation N]#store paths of a package in a generation's closure#Default generation: the running system." ;;
+        why) echo "why NAME|STORE-PATH [VERSION] [--generation N] [--all]#why a package is in the system: the dependency chain that pulls it in#Shows the shortest chain from the system down to the package (like nix why-depends) and what pulls it in: an environment.systemPackages entry, a service, Home Manager, /etc or a part of the system itself. --all lists one chain per thing that pulls it in, shortest first. Default generation: the running system. NAME matches name-VERSION in the closure; a store path is exact." ;;
         preview) echo "preview INPUT#which packages would change if INPUT were updated#Dry-run build with the input overridden; downloads only the flake source. --host NAME picks the configuration (default: this host)." ;;
         notes) echo "notes INPUT#upstream releases and commits between your lock and latest#GitHub only; set GITHUB_TOKEN or github_token_file to lift the rate limit." ;;
         snapshot) echo "snapshot [REPO]#remember which config commit built the running generation#Run it after a rebuild (the window does it automatically) so 'diff --config' can compare your .nix files. 'generations' records it too when a flake is found." ;;
@@ -568,6 +572,59 @@ cmd_path() {
     [[ -z $generation ]] || profile="$profiles/system-$generation-link"
     "$here/store-path" "$profile" "${args[0]}" "${args[1]:-ε}" | jq -Rn '[inputs | select(length > 0)]' |
         if [[ $fmt == json ]]; then cat; else jq -r '.[]'; fi
+}
+# The helper's TSV as JSON: {root, target, alsoMatched, total, chains: [{kind,
+# origin, path: [{path, name, sizeBytes}]}]}. A name is the store path without
+# its hash; the system itself is called "system".
+why_json() { # why_json PROFILE TARGET [VERSION] [all]
+    local out
+    out=$("$here/why" "$@") || { [[ $out == NONE* ]] || die 'could not read the closure'; }
+    jq -Rn '
+        def name: if . == null then "" else sub("^/nix/store/[a-z0-9]{32}-"; "") end;
+        [inputs | split("\t")] as $r
+        | ($r | map(select(.[0] == "SIZE") | {key: .[1], value: (.[2] | tonumber? // 0)}) | from_entries) as $size
+        | ($r | map(select(.[0] == "ROOT")) | .[0][1]) as $root
+        | {root: ($root // ""), target: ($r | map(select(.[0] == "TARGET")) | .[0][1] // ""),
+           alsoMatched: [$r[] | select(.[0] == "ALSO") | .[1]],
+           message: ($r | map(select(.[0] == "NONE")) | .[0][1] // ""),
+           chains: [$r[] | select(.[0] == "CHAIN") | {kind: .[1], origin: .[2], originName: (.[2] | name),
+               path: [.[3:][] | {path: ., name: (if . == $root then "system" else name end), sizeBytes: ($size[.] // null)}]}]}
+        | .targetName = (.target | name)
+        | .total = ([$r[] | select(.[0] == "COUNT") | .[1] | tonumber][0] // (.chains | length))' <<<"$out"
+}
+cmd_why() {
+    [[ -n ${args[0]:-} ]] || usage_error 'usage: nixdatifier why NAME|STORE-PATH [VERSION] [--generation N] [--all]'
+    need_nixos
+    local profile=/run/current-system json
+    [[ -z $generation ]] || profile="$profiles/system-$generation-link"
+    [[ -e $profile ]] || die "no generation $generation"
+    json=$(NOTE='Tracing dependencies…' why_json "$profile" "${args[0]}" "${args[1]:-ε}" "$( ((all)) && echo all)")
+    if [[ $fmt == json ]]; then jq . <<<"$json"; return; fi
+    if [[ $fmt == plain ]]; then # kind, origin, chain
+        jq -r '.chains[] | [.kind, .originName, (.path | map(.name) | join(" > "))] | @tsv' <<<"$json"; return
+    fi
+    jq -r --argjson all "$all" "$JQ_DEFS"'
+        def pad($n): . + (" " * ([$n - length, 0] | max));
+        def what: {package: "environment.systemPackages", service: "a service", "home-manager": "Home Manager",
+            etc: "a file in /etc", system: "part of the system itself", root: "the system itself"}[.] // .;
+        if .message != "" then "\(if .targetName == "" then "That package" else .targetName end) is \(.message)."
+        elif $all == 0 then
+            (.chains[0] as $c
+             | ($c.path | to_entries | map("   " * .key + (if .key > 0 then "└─ " else "" end) + .value.name)) as $tree
+             | ($tree | map(length) | max) as $w
+             | (if $c.origin == .target then "\(.targetName) is pulled in directly by \($c.kind | what):"
+                else "\(.targetName) is here because of \($c.originName) (\($c.kind | what)):" end), "",
+               ([$tree, $c.path] | transpose[] | "  \(.[0] | pad($w))  \(.[1].sizeBytes | hb)"),
+               "", "All that pulls it in: nixdatifier why \(.target) --all")
+        else
+            (.chains | map(.originName | length) | max) as $w
+            | "\(.targetName) is pulled in by \(.total) thing\(if .total == 1 then "" else "s" end)\(if .total > (.chains | length) then " (the \(.chains | length) closest shown)" else "" end):", "",
+              (.chains[] | "  \(.kind | pad(12)) \(.originName | pad($w))  \(.path | map(.name) | join(" → "))")
+        end,
+        (if (.alsoMatched | length) > 0 then
+            "", "Also matched (pass one as a store path):", (.alsoMatched[:5][] | "  \(.)"),
+            (if (.alsoMatched | length) > 5 then "  … and \((.alsoMatched | length) - 5) more" else empty end)
+         else empty end)' <<<"$json"
 }
 
 # ── Secrets ─────────────────────────────────────────────────────────────────
@@ -1289,6 +1346,7 @@ case $cmd in
     persist) cmd_persist ;;
     dev) cmd_dev ;;
     path) cmd_path ;;
+    why) cmd_why ;;
     preview) cmd_preview ;;
     notes) cmd_notes ;;
     snapshot) cmd_snapshot ;;

@@ -19,7 +19,9 @@ Item {
     required property bool showPackageIcons
     required property string activeViewMode
     property var storePathCache: ({})
+    property var whyCache: ({})
     signal storePathRequested(var pkg)
+    signal whyRequested(var pkg, bool all)
     signal compareRequested(int genA, int genB)
     signal copyToClipboard(string text)
     signal diffViewModePicked(string mode)
@@ -138,7 +140,9 @@ Item {
                 showPackageIcons: root.showPackageIcons
                 enableGlow: root.enableGlow
                 storePathCache: root.storePathCache
+                whyCache: root.whyCache
                 onStorePathRequested: pkg => root.storePathRequested(pkg)
+                onWhyRequested: (pkg, all) => root.whyRequested(pkg, all)
                 onCopyToClipboard: text => root.copyToClipboard(text)
             }
             Text {
