@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# Usage: why <system-profile> <NAME|STORE-PATH> [VERSION|ε] [all]
+#
+# Answers "why is this package in my system?": the dependency chain from the
+# system closure down to the package, like `nix why-depends`, computed from
+# the closure graph so one evaluation answers both questions below.
+#
+# Default: the shortest chain. `all`: one shortest chain per *origin*, the
+# thing that pulls the package in: an environment.systemPackages entry, a
+# systemd unit, a Home Manager package, an /etc file or a top-level part of
+# the system (kernel, initrd, firmware, …). The default chain is classified
+# the same way.
+#
+# Output (TSV):
+#   ROOT    <path>
+#   TARGET  <path>
+#   ALSO    <path>                                 other paths the name matched
+#   CHAIN   <kind> <origin path> <path> <path> …   root first, target last
+#   SIZE    <path> <nar bytes>                     every path in a chain
+#   COUNT   <n>                                    `all`: origins found (500 shown)
+#   NONE    <message>                              nothing to show (exit 0)
+# kind = package | service | home-manager | etc | system | root
+#
+# Results are cached per (closure, target): a store closure never changes.
+
+set -euo pipefail
+export PATH="$PATH:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin"
+helper_dir=$(dirname "$(realpath "$0")")
+
+if [[ "${1:-}" != --compute ]]; then
+    profile=${1:?usage: why PROFILE NAME|STORE-PATH [VERSION] [all]}
+    target=${2:?usage: why PROFILE NAME|STORE-PATH [VERSION] [all]}
+    [[ "$profile" =~ ^/nix/var/nix/profiles/system-[0-9]+-link$ || "$profile" == /run/booted-system || "$profile" == /run/current-system ]] || {
+        echo 'NONE	not a system profile' ; exit 2; }
+    real=$(readlink -f "$profile") || exit 2
+    [[ -e "$real" ]] || { printf 'NONE\tthis generation is no longer in the store\n'; exit 0; }
+    exec "$helper_dir/run" cached "why:$real" 604800 -- "$0" --compute "$real" "$target" "${3:-ε}" "${4:-}"
+fi
+
+root=$2 target=$3 version=${4:-ε} mode=${5:-}
+graph=$("$helper_dir/run" cached "closure-graph:$root" 604800 -- nix-store -q --graph "$root") || {
+    printf 'NONE\tcould not read the closure of %s\n' "$root"; exit 1; }
+
+result=$(awk -v root="${root##*/}" -v target="$target" -v version="$version" -v mode="$mode" '
+# Store path basename "hash-name" -> "name"
+function nm(n) { return substr(n, 34) }
+function aggregator(n,    s) {
+    s = nm(n)
+    return n == root || s == "system-path" || s == "etc" || s == "system-units" || s == "user-units" || s == "user-environment" ||
+        s ~ /^home-manager-(path|generation|files)(-|$)/ || s ~ /^unit-home-manager-.*\.service$/
+}
+function kind(parent, child,    s) {
+    s = nm(parent)
+    if (parent == root) return "system"
+    if (s == "system-path" || s == "user-environment") return "package"
+    if (s == "system-units" || s == "user-units") return "service"
+    if (s ~ /^home-manager-/ || s ~ /^unit-home-manager-/) return "home-manager"
+    if (s == "etc") return "etc"
+    return "system"
+}
+# Shortest way down from `from` to the target, following the BFS distances.
+function down(from,    cur, out, i, best, c) {
+    out = from; cur = from
+    while (cur != tgt) {
+        best = ""
+        for (i = 1; i <= ndeps[cur]; i++) {
+            c = deps[cur, i]
+            if ((c in dist) && dist[c] == dist[cur] - 1 && (best == "" || c < best)) best = c
+        }
+        if (best == "") return ""
+        out = out " " best; cur = best
+    }
+    return out
+}
+# The root-side part: root .. node, from the forward BFS.
+function up(node,    out) {
+    out = node
+    while (node != root) { node = prev[node]; out = node " " out }
+    return out
+}
+# Origin of a chain: the node right after its last aggregator.
+function origin(chain,    n, p, i, o, k) {
+    n = split(chain, p, " ")
+    o = p[n]; k = "root"
+    for (i = n - 1; i >= 1; i--) if (aggregator(p[i])) { o = p[i + 1]; k = kind(p[i], o); break }
+    return k "\t/nix/store/" o
+}
+function full(chain,    n, p, i, out) {
+    n = split(chain, p, " ")
+    for (i = 1; i <= n; i++) { out = out (i > 1 ? "\t" : "") "/nix/store/" p[i]; inchain[p[i]] = 1 }
+    return out
+}
+/->/ {
+    gsub(/"/, ""); sub(/;$/, "", $3); dep = $1; ref = $3
+    deps[ref, ++ndeps[ref]] = dep
+    refs[dep, ++nrefs[dep]] = ref
+    node[dep] = 1; node[ref] = 1
+}
+END {
+    node[root] = 1
+    # Resolve the target: a store path, NAME-VERSION, NAME, or NAME-<version>.
+    if (target ~ /^\/nix\/store\//) {
+        t = target; sub(/^\/nix\/store\//, "", t); sub(/\/.*/, "", t)
+        if (t in node) cand[++nc] = t
+    } else {
+        for (n in node) {
+            s = nm(n)
+            if (version != "ε" && version != "") { if (s == target "-" version) cand[++nc] = n }
+            else if (s == target || (index(s, target "-") == 1 && substr(s, length(target) + 2, 1) ~ /[0-9]/)) cand[++nc] = n
+        }
+    }
+    if (nc == 0) { print "NONE\tnot in this system closure"; exit }
+    # Forward BFS from the root: depth of every path, and the way back up.
+    prev[root] = ""; depth[root] = 0; q[1] = root; h = 1; tl = 1
+    while (h <= tl) { c = q[h++]; for (i = 1; i <= ndeps[c]; i++) { d = deps[c, i]; if (!(d in depth)) { depth[d] = depth[c] + 1; prev[d] = c; q[++tl] = d } } }
+    # Several matches (outputs, versions): the one closest to the system is
+    # most likely meant (an installed package, not a library copy), then the
+    # main output (shortest name).
+    tgt = ""
+    for (i = 1; i <= nc; i++) {
+        c = cand[i]; if (!(c in depth)) continue
+        if (tgt == "" || depth[c] < depth[tgt] || (depth[c] == depth[tgt] && (length(nm(c)) < length(nm(tgt)) || (length(nm(c)) == length(nm(tgt)) && c < tgt)))) tgt = c
+    }
+    if (tgt == "") { print "NONE\tnot in this system closure"; exit }
+    print "ROOT\t/nix/store/" root
+    print "TARGET\t/nix/store/" tgt
+    for (i = 1; i <= nc; i++) if (cand[i] != tgt) print "ALSO\t/nix/store/" cand[i]
+    if (tgt == root) { print "CHAIN\troot\t/nix/store/" root "\t/nix/store/" root; inchain[root] = 1 }
+    else {
+        # Distance of every referrer to the target (BFS up the referrer edges).
+        delete q; dist[tgt] = 0; q[1] = tgt; h = 1; tl = 1
+        while (h <= tl) { c = q[h++]; for (i = 1; i <= nrefs[c]; i++) { r = refs[c, i]; if (!(r in dist)) { dist[r] = dist[c] + 1; q[++tl] = r } } }
+        if (!(root in dist)) { print "NONE\tnot in this system closure"; exit }
+        if (mode != "all") {
+            ch = down(root); print "CHAIN\t" origin(ch) "\t" full(ch)
+        } else {
+            # Every non-aggregator child of an aggregator that reaches the target
+            # with no further aggregator on the way down is an origin (a Home
+            # Manager file that links home-manager-path is not; the package is).
+            for (a in depth) {
+                if (!aggregator(a)) continue
+                for (i = 1; i <= ndeps[a]; i++) {
+                    x = deps[a, i]
+                    if (!(x in dist) || aggregator(x) || (x in done)) continue
+                    done[x] = 1
+                    dn = down(x)
+                    n = split(dn, p, " "); skip = 0
+                    for (j = 2; j <= n; j++) if (aggregator(p[j])) skip = 1
+                    if (skip) continue
+                    ch = up(a) " " dn
+                    n = split(ch, p, " ")
+                    line[++nl] = sprintf("%06d\t%s\tCHAIN\t%s\t/nix/store/%s\t%s", n, nm(x), kind(a, x), x, full(ch))
+                }
+            }
+            if (nl == 0) { ch = down(root); print "CHAIN\t" origin(ch) "\t" full(ch) }
+            # Shortest first, then by name; the sort happens outside awk.
+            for (i = 1; i <= nl; i++) print "SORT\t" line[i]
+        }
+    }
+    for (n in inchain) print "PATH\t/nix/store/" n
+}' <<<"$graph")
+
+# Chains (shortest first, at most 500), then the sizes of every path shown.
+grep -v -e '^SORT' -e '^PATH' <<<"$result" || true
+count=$(grep -c '^SORT' <<<"$result" || true)
+((count == 0)) || printf 'COUNT\t%s\n' "$count"
+grep '^SORT' <<<"$result" | sort -t$'\t' -k2,2n -k3,3 | head -500 | cut -f4- || true
+mapfile -t paths < <(grep '^PATH' <<<"$result" | cut -f2)
+if ((${#paths[@]})); then
+    paste <(printf '%s\n' "${paths[@]}") <(nix-store -q --size "${paths[@]}" 2>/dev/null || printf '%s\n' "${paths[@]/*/0}") | sed 's/^/SIZE\t/'
+fi

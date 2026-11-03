@@ -1811,6 +1811,89 @@ Item {
         });
     }
 
+    // "Why is this package here?": the chain from the generation's closure down
+    // to the package (tools/sh/why). Keyed like the store path cache, plus
+    // "|all" for one chain per origin. A closure never changes, so a result is
+    // good for as long as it is cached.
+    property var whyCache: ({})
+    function whyKey(pkg, all) {
+        const version = pkg.type === "removed" ? pkg.oldVersion : pkg.newVersion;
+        return (pkg.storeProfile || "") + "|" + pkg.name + "|" + version + (all ? "|all" : "");
+    }
+    // The helper's TSV as {status, root, target, also, total, message, chains:
+    // [{kind, origin, originName, path: [{path, name, sizeBytes}]}]}.
+    function parseWhy(text) {
+        const name = p => (p || "").replace(/^\/nix\/store\/[a-z0-9]{32}-/, "");
+        const result = {
+            status: "ok",
+            root: "",
+            target: "",
+            also: [],
+            total: 0,
+            message: "",
+            chains: []
+        };
+        const sizes = {};
+        const rows = (text || "").split("\n").map(l => l.split("\t"));
+        for (const r of rows)
+            if (r[0] === "SIZE")
+                sizes[r[1]] = Number(r[2]) || 0;
+        for (const r of rows) {
+            if (r[0] === "ROOT")
+                result.root = r[1] || "";
+            else if (r[0] === "TARGET")
+                result.target = r[1] || "";
+            else if (r[0] === "ALSO")
+                result.also.push(r[1]);
+            else if (r[0] === "COUNT")
+                result.total = Number(r[1]) || 0;
+            else if (r[0] === "NONE")
+                result.message = r[1] || "";
+            else if (r[0] === "CHAIN" && r.length >= 4)
+                result.chains.push({
+                    kind: r[1],
+                    origin: r[2],
+                    originName: name(r[2]),
+                    path: r.slice(3).filter(p => p !== "").map(p => ({
+                                path: p,
+                                name: p === result.root ? qsTr("system") : name(p),
+                                sizeBytes: sizes[p] !== undefined ? sizes[p] : -1
+                            }))
+                });
+        }
+        result.total = Math.max(result.total, result.chains.length);
+        if (!result.chains.length && !result.message)
+            result.message = qsTr("No dependency chain found");
+        return result;
+    }
+    function loadWhy(pkg, all) {
+        if (!pkg || !pkg.storeProfile)
+            return;
+        const key = root.whyKey(pkg, all);
+        if (root.whyCache[key] && root.whyCache[key].status !== "error")
+            return;
+        const version = pkg.type === "removed" ? pkg.oldVersion : pkg.newVersion;
+        const cache = Object.assign({}, root.whyCache);
+        cache[key] = {
+            status: "loading",
+            chains: []
+        };
+        root.whyCache = root.boundedCache(cache, 64);
+        sh("timeout --kill-after=5s 120s " + shq(root.scriptDir + "why") + " " + shq(pkg.storeProfile) + " " + shq(pkg.name) + " " + shq(version || "ε") + (all ? " all" : ""), function (cmd, out, err, code) {
+            const next = Object.assign({}, root.whyCache);
+            if (code !== 0 && !(out || "").startsWith("NONE")) {
+                next[key] = {
+                    status: "error",
+                    chains: [],
+                    message: code === 124 || code === 137 ? qsTr("Timed out tracing the dependencies.") : (err || "").trim() || qsTr("Could not read the closure")
+                };
+            } else {
+                next[key] = root.parseWhy(out);
+            }
+            root.whyCache = root.boundedCache(next, 64);
+        });
+    }
+
     property var pendingIcons: ({})
     property var pendingMeta: ({})
 

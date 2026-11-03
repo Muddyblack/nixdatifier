@@ -7,11 +7,18 @@ import "../shared" as UI
 // Used in both GenerationDelegate (timeline) and the Diff tab.
 Item {
     id: root
+    objectName: "packageRow-" + pkgName
 
     property var storePathCache: ({})
+
+    property var whyCache: ({})
     signal storePathRequested(var pkg)
+    signal whyRequested(var pkg, bool all)
     readonly property string pathKey: (pkg.storeProfile || "") + "|" + pkgName + "|" + (pkgType === "removed" ? pkgOldVersion : pkgNewVersion)
     readonly property var pathResult: storePathCache[pathKey]
+    // Same keys as Engine.whyKey
+    readonly property var whyResult: whyCache[pathKey]
+    readonly property var whyAllResult: whyCache[pathKey + "|all"]
     onIsOpenChanged: if (isOpen && pkg.storeProfile && !pathResult)
         storePathRequested(pkg)
     property var pkg: ({})     // { name, type, oldVersion, newVersion, size }
@@ -397,6 +404,47 @@ Item {
                         ToolTip.visible: containsMouse
                         ToolTip.delay: 400
                     }
+                }
+            }
+
+            // Why is this package here? Only for packages in an installed generation.
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                visible: !!root.pkg.storeProfile
+                Text {
+                    Layout.alignment: Qt.AlignTop
+                    text: qsTr("Why here")
+                    color: root.textColor
+                    opacity: 0.65
+                    font.pixelSize: root.fpx(8)
+                    Layout.minimumWidth: 65
+                }
+                UI.ActionButton {
+                    objectName: "whyButton"
+                    visible: !root.whyResult
+                    text: qsTr("Why is this here?")
+                    flatStyle: true
+                    implicitHeight: 22 * root.fs
+                    font.pixelSize: 9 * root.fs
+                    tip: qsTr("Show the dependency chain that pulls %1 into this generation").arg(root.pkgName)
+                    onClicked: root.whyRequested(root.pkg, false)
+                }
+                WhyChain {
+                    visible: !!root.whyResult
+                    Layout.fillWidth: true
+                    entry: root.whyResult || null
+                    allEntry: root.whyAllResult || null
+                    metaCache: root.metaCache
+                    fs: root.fs
+                    textColor: root.textColor
+                    accentColor: root.accentColor
+                    onShowAllRequested: root.whyRequested(root.pkg, true)
+                    onCopyRequested: text => root.copyRequested(text)
+                }
+                Item {
+                    Layout.fillWidth: true
+                    visible: !root.whyResult
                 }
             }
 

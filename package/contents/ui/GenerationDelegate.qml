@@ -7,9 +7,11 @@ import "components"
 Item {
     id: genDelegate
     property var storePathCache: ({})
+    property var whyCache: ({})
     property var changeCounts: null
     property date referenceDate: new Date()
     signal storePathRequested(var pkg)
+    signal whyRequested(var pkg, bool all)
 
     property var gen: ({})
     // See FullView.uiActive — false while the popup is closed.
@@ -453,7 +455,9 @@ Item {
             }
             PackageList {
                 storePathCache: genDelegate.storePathCache
+                whyCache: genDelegate.whyCache
                 onStorePathRequested: pkg => genDelegate.storePathRequested(pkg)
+                onWhyRequested: (pkg, all) => genDelegate.whyRequested(pkg, all)
                 Layout.fillWidth: true
                 packages: genDelegate.details.diff || []
                 iconCache: genDelegate.iconCache

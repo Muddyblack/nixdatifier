@@ -17,6 +17,17 @@ Item {
     readonly property bool found: !!result && !result.isError && result.exists
 
     signal storeUsageRequested(string path)
+    // Why the inspected path is in the running system (Engine.loadWhy)
+    property var whyCache: ({})
+    signal whyRequested(var pkg, bool all)
+    readonly property var whyPkg: found ? {
+        name: result.path,
+        type: "added",
+        newVersion: "ε",
+        storeProfile: "/run/current-system"
+    } : null
+    readonly property string whyKey: whyPkg ? whyPkg.storeProfile + "|" + whyPkg.name + "|ε" : ""
+    readonly property var whyResult: whyKey ? whyCache[whyKey] : undefined
     signal copyToClipboard(string text)
 
     anchors.fill: parent
@@ -181,6 +192,33 @@ Item {
                         value: UI.Theme.formatBytes(storeUsageTab.result.closureBytes) || "—"
                     }
                 ] : []
+            }
+            Subheading {
+                Layout.fillWidth: true
+                Layout.topMargin: 18
+                visible: storeUsageTab.found
+                fs: storeUsageTab.fs
+                text: qsTr("Why it is in the running system")
+            }
+            UI.ActionButton {
+                objectName: "storeWhyButton"
+                visible: storeUsageTab.found && !storeUsageTab.whyResult
+                text: qsTr("Why is this here?")
+                flatStyle: true
+                implicitHeight: 24 * storeUsageTab.fs
+                font.pixelSize: 9 * storeUsageTab.fs
+                onClicked: storeUsageTab.whyRequested(storeUsageTab.whyPkg, false)
+            }
+            WhyChain {
+                Layout.fillWidth: true
+                visible: storeUsageTab.found && !!storeUsageTab.whyResult
+                entry: storeUsageTab.whyResult || null
+                allEntry: storeUsageTab.whyKey ? storeUsageTab.whyCache[storeUsageTab.whyKey + "|all"] || null : null
+                fs: storeUsageTab.fs
+                textColor: storeUsageTab.textColor
+                accentColor: storeUsageTab.accentColor
+                onShowAllRequested: storeUsageTab.whyRequested(storeUsageTab.whyPkg, true)
+                onCopyRequested: t => storeUsageTab.copyToClipboard(t)
             }
             Notice {
                 Layout.fillWidth: true

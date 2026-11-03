@@ -6,9 +6,11 @@ import "shared" as UI
 Item {
     id: timelineTab
     property var storePathCache: ({})
+    property var whyCache: ({})
     property var generationCounts: ({})
     signal generationCountsRequested(int genNum)
     signal storePathRequested(var pkg)
+    signal whyRequested(var pkg, bool all)
 
     // ── Required properties ───────────────────────────────────────────────────
     // See FullView.uiActive — false while the popup is closed.
@@ -273,7 +275,9 @@ Item {
                 referenceDate: timelineTab.referenceDate
                 changeCounts: timelineTab.generationCounts[modelData.number] || null
                 storePathCache: timelineTab.storePathCache
+                whyCache: timelineTab.whyCache
                 onStorePathRequested: pkg => timelineTab.storePathRequested(pkg)
+                onWhyRequested: (pkg, all) => timelineTab.whyRequested(pkg, all)
                 enableLiveSwitch: timelineTab.enableLiveSwitch
                 enableGlow: timelineTab.enableGlow
                 enableMotion: timelineTab.enableMotion

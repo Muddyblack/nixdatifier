@@ -2,7 +2,7 @@
 
 - **Generations** — A timeline of your system generations with the booted and next-boot ones highlighted, added / removed / changed package counts, kernel and NixOS release badges, and search across numbers, dates, and package names.
 - **Generation actions** — Activate a generation now, set it for next boot, or delete it (through Polkit/`pkexec`). The booted and next-boot generations are protected, and confirmations are configurable.
-- **Package changes** — Expand any generation to see what changed against the previous one (or the booted one), with versions, size deltas, store paths, app icons, and homepage links.
+- **Package changes** — Expand any generation to see what changed against the previous one (or the booted one), with versions, size deltas, store paths, app icons, and homepage links. **Why is this here?** on a package shows the dependency chain from the system down to it (like `nix why-depends`) and what pulls it in: an `environment.systemPackages` entry, a service, Home Manager, `/etc` or the system itself; "Show all" lists one chain per such origin.
 - **Compare** — Diff any two generations with `nix store diff-closures`.
 - **Configuration changes** — When your config lives in a Git repository, each generation records its commit, so you can see the `.nix` changes between generations.
 - **Flake updates** — Checks your flake inputs against their upstream repositories, notifies you of updates, and can preview the resulting package changes (`nix build --dry-run`, lock file untouched) together with the cost: download and unpacked size, and how many derivations must be built locally because the binary cache has no build for them (flagged, as are downloads above a configurable threshold) or update a single input. Expanding an input shows what changed upstream: GitHub releases with their notes, the newest commits, and a link to the full diff (set `GITHUB_TOKEN` to lift GitHub's anonymous limit of 60 requests per hour).
@@ -10,7 +10,7 @@
   - **Secrets** — Deployed secrets (`/run/secrets`, `/run/agenix.d`) and your encrypted source file: format, recipients, freshness.
   - **Hash calculator** — Hashes for URLs, archives, GitHub revisions, local files, and store paths, in both Nix and SRI form, with a ready-to-paste fetcher snippet.
   - **Rebuild history** — The output of past switches, cleanups, flake updates, and custom commands, kept after the notification is gone.
-  - **Store usage** — Why a store path cannot be garbage-collected: its GC roots, referrers, and closure size.
+  - **Store usage** — Why a store path cannot be garbage-collected: its GC roots, referrers, and closure size, and why it is in the running system.
 - **Persistent folders** — A dedicated tab that appears on systems with [impermanence](https://github.com/nix-community/impermanence) (a root that is wiped on every boot, detected from the mounts). Three views:
   - **Folders** — everything your configuration persists (VS Code, Firefox, SSH keys, …) with friendly names, sizes and last change; search, filter by Home/System, sort by size, recency or name. Click a folder to look inside, with Back and breadcrumbs; filter by age, executables, unusual permissions or hidden names, tick several items and delete them in one go.
   - **Cleanup** — separate groups for caches, Trash, temporary and backup files, logs and crash reports, and personal files that have not changed in months. Each group explains what deletion means; tick, review, delete.

@@ -6,7 +6,9 @@ import "../shared" as UI
 ColumnLayout {
     id: root
     property var storePathCache: ({})
+    property var whyCache: ({})
     signal storePathRequested(var pkg)
+    signal whyRequested(var pkg, bool all)
     property var packages: []
     property var iconCache: ({})
     property var metaCache: ({})
@@ -111,7 +113,9 @@ ColumnLayout {
         ScrollBar.vertical: UI.ScrollBar {}
         delegate: PackageRow {
             storePathCache: root.storePathCache
+            whyCache: root.whyCache
             onStorePathRequested: pkg => root.storePathRequested(pkg)
+            onWhyRequested: (pkg, all) => root.whyRequested(pkg, all)
             required property var modelData
             required property int index
             alternate: index % 2 !== 0
