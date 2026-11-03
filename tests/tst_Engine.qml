@@ -529,6 +529,41 @@ Item {
             compare(core.dryRunCache[input.input].status, "ok");
         }
 
+        function test_preview_summary_is_parsed_and_shown() {
+            const input = fixtureInput();
+            core.flakeUpdates = [input];
+            core.runDryPreview(input.input, input.overrideRef);
+            compare(jobs.length, 1);
+            jobs[0].callback(jobs[0].cmd, "SUMMARY\t1073741824\t3221225472\t38\t120\nbuild\tfoo\t1.0\t1.2\nfetch\tapp\t1\t2", "", 0);
+            const entry = core.dryRunCache[input.input];
+            compare(entry.status, "ok");
+            compare(entry.packages.length, 2);
+            compare(entry.packages[0].action, "build");
+            compare(entry.summary.downloadBytes, 1073741824);
+            compare(entry.summary.unpackedBytes, 3221225472);
+            compare(entry.summary.toBuild, 38);
+            compare(entry.summary.toFetch, 120);
+            verify(updates.costText(entry.summary).indexOf("38 to build") >= 0);
+            verify(updates.costText(entry.summary).indexOf("1") >= 0);
+            updates.previewWarnMiB = 512;
+            verify(updates.overWarnSize(entry.summary));
+            updates.previewWarnMiB = 0;
+            verify(!updates.overWarnSize(entry.summary));
+            updates.previewWarnMiB = 2048;
+            verify(!updates.overWarnSize(entry.summary));
+        }
+        function test_preview_without_summary_still_loads() {
+            const input = fixtureInput();
+            core.flakeUpdates = [input];
+            core.runDryPreview(input.input, input.overrideRef);
+            jobs[0].callback(jobs[0].cmd, "SUMMARY\t\t\t0\t3\nfetch\tapp\t1\t2", "", 0);
+            const entry = core.dryRunCache[input.input];
+            compare(entry.packages.length, 1);
+            compare(entry.summary.downloadBytes, -1);
+            verify(updates.costText(entry.summary).indexOf("3") >= 0);
+            verify(!updates.overWarnSize(entry.summary));
+        }
+
         function test_stale_preview_is_not_applied() {
             const input = fixtureInput();
             core.flakeUpdates = [input];

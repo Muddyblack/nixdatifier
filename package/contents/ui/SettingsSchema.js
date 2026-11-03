@@ -112,6 +112,16 @@ var fields = [
     "type": "Bool"
   },
   {
+    "key": "previewWarnMiB",
+    "tab": "General",
+    "group": "Update checks",
+    "label": "Warn when an update downloads more than (MiB)",
+    "help": "The update preview flags a download above this size, e.g. on a metered connection. 0 turns the warning off.",
+    "type": "Int",
+    "min": 0,
+    "max": 1048576
+  },
+  {
     "key": "ignoredInputs",
     "tab": "General",
     "group": "Update checks",

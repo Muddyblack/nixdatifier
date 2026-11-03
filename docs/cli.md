@@ -14,6 +14,7 @@ NUMBER  DATE                 NEXT_BOOT  BOOTED  NIXOS_VERSION           KERNEL
 $ nixdatifier delete --keep 5 --older-than 30d      # lists, asks, deletes
 $ nixdatifier updates --check || echo "inputs are behind"   # exit 2
 $ nixdatifier diff --json | jq '.counts'
+$ nixdatifier preview nixpkgs --json | jq '{downloadBytes, unpackedBytes, toBuild}'   # cost before updating
 ```
 
 Commands can be abbreviated (`nixdatifier gen`, `nixdatifier upd`) and `nixdatifier help <command>` explains each one.
@@ -25,7 +26,7 @@ Suggestions never run automatically. Missing option values also report a usage e
 | Commands |
 | --- | --- |
 | Generations | `generations`, `diff [A [B]]`, `diff --config`, `switch N`, `boot N`, `rollback`, `delete N…` / `--keep N` / `--older-than DAYS`, `profiles` (Home Manager, `nix profile`) |
-| Flake | `updates [--all] [--check]`, `update [INPUT...]`, `preview INPUT` (packages that would change), `notes INPUT` (upstream releases and commits) |
+| Flake | `updates [--all] [--check]`, `update [INPUT...]`, `preview INPUT` (what the update would cost and which packages would change), `notes INPUT` (upstream releases and commits) |
 | Store | `disk`, `disk STORE-PATH` (GC roots, referrers, closure), `gc [--older-than 14d \| --all]`, `path NAME [VERSION]` |
 | System | `status`, `health`, `info`, `history`, `hash` |
 | Secrets | `secrets` (names and freshness, never values) |
@@ -147,6 +148,7 @@ There is no config file; it is flags and environment, so it works the same in a 
 | `NIXDATIFIER_GITHUB_TOKEN_FILE` | file holding a GitHub token, used when `GITHUB_TOKEN` is unset (config key `github_token_file`). |
 | `NIXDATIFIER_CHECK_TARBALLS` | `off` skips tarball flake inputs when checking for updates (config key `check_tarballs`; on by default) |
 | `NIXDATIFIER_DEEP_INPUTS` | `on` checks every transitive flake input, not just the root (and wrapper) inputs (config key `deep_inputs`; off by default) |
+| `NIXDATIFIER_PREVIEW_WARN` | `preview` warns when an update downloads more than this many MiB (config key `preview_warn`, shared with the window; `0` never warns; 2048 by default) |
 | `NIXDATIFIER_MEASURE_STORE` | `off` skips the slow store measurement; `disk` and the window then show only free space until you ask (`disk --refresh`, or Measure in the window; config key `measure_store`; on by default) |
 | `NIXDATIFIER_IGNORE_INPUTS` | comma-separated input names (globs allowed) to leave out of update checks (config key `ignored_inputs`; empty by default) |
 | `NIXDATIFIER_GITHUB_USE_GH` | `on` borrows the login of a signed-in `gh` when there is no token (config key `github_use_gh`; off by default, its token often has wide scopes) |

@@ -126,14 +126,15 @@ unknown_name() {
 # Saved settings (nixdatifier config): they fill in what the environment leaves
 # empty, so a variable or option on the command line still wins.
 CONFIG_FILE=${NIXDATIFIER_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/nixdatifier/config}
-CONFIG_KEYS="flake config_repo secrets secrets_source persist priv commands check_interval notifications github_token_file github_use_gh check_tarballs deep_inputs ignored_inputs measure_store"
+CONFIG_KEYS="flake config_repo secrets secrets_source persist priv commands check_interval notifications github_token_file github_use_gh check_tarballs deep_inputs ignored_inputs measure_store preview_warn"
 config_var() { # config_var KEY: the environment variable a key stands for
     case $1 in flake) echo NIXDATIFIER_FLAKE ;; config_repo) echo NIXDATIFIER_CONFIG_REPO ;; secrets) echo NIXDATIFIER_SECRETS ;;
         secrets_source) echo NIXDATIFIER_SECRETS_SOURCE ;; persist) echo NIXDATIFIER_PERSIST ;; priv) echo NIXDATIFIER_PRIV ;;
         commands) echo NIXDATIFIER_COMMANDS ;; check_interval) echo NIXDATIFIER_CHECK_INTERVAL ;; notifications) echo NIXDATIFIER_NOTIFICATIONS ;;
         github_token_file) echo NIXDATIFIER_GITHUB_TOKEN_FILE ;; github_use_gh) echo NIXDATIFIER_GITHUB_USE_GH ;;
         check_tarballs) echo NIXDATIFIER_CHECK_TARBALLS ;; deep_inputs) echo NIXDATIFIER_DEEP_INPUTS ;;
-        ignored_inputs) echo NIXDATIFIER_IGNORE_INPUTS ;; measure_store) echo NIXDATIFIER_MEASURE_STORE ;; esac
+        ignored_inputs) echo NIXDATIFIER_IGNORE_INPUTS ;; measure_store) echo NIXDATIFIER_MEASURE_STORE ;;
+        preview_warn) echo NIXDATIFIER_PREVIEW_WARN ;; esac
 }
 config_file_get() { [[ -f $CONFIG_FILE ]] && sed -n "s/^$1=//p" "$CONFIG_FILE" | tail -1; return 0; }
 COMMANDS_FROM_ENV=${NIXDATIFIER_COMMANDS:+1}
@@ -363,15 +364,43 @@ update_row() { # the probe row of the named input, which must have an update
     printf '%s' "$row"
 }
 cmd_preview() {
-    local row out
+    local row out json warn
     resolve_flake # before update_row, which runs in a subshell
     row=$(update_row) || exit $?
     out=$(NOTE='Evaluating the updated system…' cached "preview:$flake:$(sha256sum "$flake/flake.lock" | cut -c1-16)" 300 -- \
         timeout --kill-after=5s 180s "$here/dry-run-preview" "$flake" "${args[0]}" "$(jq -r .overrideRef <<<"$row")" "$host")
     [[ $out != ERROR:* ]] || die "${out#ERROR: }"
-    jq -Rn '[inputs | split("\t") | select(length > 1 and .[1] != "") |
-        {action: .[0], name: .[1], oldVersion: .[2], newVersion: .[3], kind: (if (.[2] // "") == "" then "added" else "upgrade" end)}]' <<<"$out" |
-        render action,kind,name,oldVersion,newVersion
+    warn=${NIXDATIFIER_PREVIEW_WARN:-2048}
+    [[ $warn =~ ^[0-9]+$ ]] || warn=2048
+    # The cost of the update (sizes in bytes; null when nix printed none) and
+    # the packages it would change. "build" means no binary cache hit.
+    json=$(jq -Rn --arg input "${args[0]}" --argjson warn "$((10#$warn))" '
+        def n: if . == null or . == "" then null else tonumber end;
+        [inputs | split("\t")] as $rows
+        | ($rows | any(.[0] | startswith("OK:"))) as $current
+        | (if $current then ["SUMMARY", "0", "0", "0", "0"] else ($rows | map(select(.[0] == "SUMMARY")) | first) end) as $s
+        | {input: $input,
+           downloadBytes: ($s[1] | n), unpackedBytes: ($s[2] | n),
+           toBuild: (($s[3] | n) // 0), toFetch: (($s[4] | n) // 0)}
+        | .localBuilds = (.toBuild > 0)
+        | .largeDownload = ($warn > 0 and (.downloadBytes // 0) > $warn * 1048576)
+        | .packages = [$rows[] | select(.[0] != "SUMMARY" and length > 1 and .[1] != "") |
+            {action: .[0], name: .[1], oldVersion: .[2], newVersion: .[3], kind: (if (.[2] // "") == "" then "added" else "upgrade" end)}]' <<<"$out")
+    if [[ $fmt == json ]]; then jq . <<<"$json"; return; fi
+    if [[ $fmt != plain ]]; then
+        local y='' x=''
+        ((paint)) && { y=$'\e[33m' x=$'\e[0m'; }
+        jq -r --arg y "$y" --arg x "$x" --argjson warn "$((10#$warn))" "$JQ_DEFS"'
+            ([ (if .downloadBytes == null then (if .toFetch > 0 then "\(.toFetch) paths to fetch" else empty end)
+                elif .downloadBytes > 0 then "Download \(.downloadBytes | hb)" else empty end),
+               (if .toBuild > 0 then "\(.toBuild) to build" else empty end),
+               (if (.unpackedBytes // 0) > 0 then "unpacked \(.unpackedBytes | hb)" else empty end) ]
+             | if length == 0 then "Nothing to download or build" else join(" · ") end),
+            (if .localBuilds then "\($y)! \(.toBuild) derivation\(if .toBuild == 1 then "" else "s" end) must be built locally (not in the binary cache): this can take a while.\($x)" else empty end),
+            (if .largeDownload then "\($y)! Large download: above preview_warn (\($warn) MiB).\($x)" else empty end),
+            ""' <<<"$json"
+    fi
+    jq '.packages' <<<"$json" | warn_sed='s/^build\b/\x1b[33m&\x1b[0m/' render action,kind,name,oldVersion,newVersion
 }
 cmd_notes() {
     local row out
@@ -972,7 +1001,7 @@ cmd_persist() {
 # The window keeps these settings in its own store (KDE config, a JSON file),
 # so it mirrors them into the config file through `config sync`: the terminal
 # view and the window then show and change the same values. GUI name:file key.
-GUI_MAP="flakePath:flake configRepoPath:config_repo secretsPath:secrets secretsSourcePath:secrets_source impermanencePaths:persist checkInterval:check_interval customCommands:commands showNotifications:notifications githubTokenFile:github_token_file githubUseGh:github_use_gh checkTarballs:check_tarballs deepInputCheck:deep_inputs ignoredInputs:ignored_inputs measureStore:measure_store"
+GUI_MAP="flakePath:flake configRepoPath:config_repo secretsPath:secrets secretsSourcePath:secrets_source impermanencePaths:persist checkInterval:check_interval customCommands:commands showNotifications:notifications githubTokenFile:github_token_file githubUseGh:github_use_gh checkTarballs:check_tarballs deepInputCheck:deep_inputs ignoredInputs:ignored_inputs measureStore:measure_store previewWarnMiB:preview_warn"
 config_file_put() { # config_file_put KEY VALUE: set it, or remove it when empty
     mkdir -p "$(dirname "$CONFIG_FILE")" || die "cannot create $(dirname "$CONFIG_FILE")"
     { grep -v "^$1=" "$CONFIG_FILE" 2>/dev/null; [[ -z $2 ]] || echo "$1=$2"; } >"$CONFIG_FILE.new" && mv "$CONFIG_FILE.new" "$CONFIG_FILE"
@@ -1006,6 +1035,7 @@ gui_sync() { # gui_sync pull|push JSON: JSON holds the window's current values
                     [[ $mode == pull && $v == on ]] && v='' ;; # on is the default everywhere
                 githubUseGh | deepInputCheck) case $v in true) v=on ;; *) v='' ;; esac ;; # off is the default
                 checkTarballs | measureStore) case $v in false) v=off ;; *) v='' ;; esac ;; # on is the default
+                previewWarnMiB) [[ $v =~ ^[0-9]+$ && $v != 2048 ]] || v='' ;; # 2048 is the default
                 customCommands) v=$(commands_normalize "$v") || v=''
                     [[ $mode == pull && $v == '[]' ]] && v='' ;;
             esac
@@ -1026,6 +1056,7 @@ gui_sync() { # gui_sync pull|push JSON: JSON holds the window's current values
             # Always answer these, so clearing the file's value restores the default in the window.
             githubUseGh | deepInputCheck) out=$(jq -c --arg g "$g" --argjson v "$([[ $v == on ]] && echo true || echo false)" '.[$g] = $v' <<<"$out") ;;
             checkTarballs | measureStore) out=$(jq -c --arg g "$g" --argjson v "$([[ $v == off ]] && echo false || echo true)" '.[$g] = $v' <<<"$out") ;;
+            previewWarnMiB) [[ $v =~ ^[0-9]+$ ]] || v=2048; out=$(jq -c --arg g "$g" --argjson v "$((10#$v))" '.[$g] = $v' <<<"$out") ;;
             customCommands) [[ -n $v ]] || continue; out=$(jq -c --arg g "$g" --arg v "$v" '.[$g] = $v' <<<"$out") ;;
             *) out=$(jq -c --arg g "$g" --arg v "$v" '.[$g] = $v' <<<"$out") ;;
         esac
@@ -1052,6 +1083,7 @@ cmd_config() {
             [[ $key != notifications || -z $v || $v =~ ^(on|off)$ ]] || usage_error 'notifications takes on or off'
             [[ $key != github_use_gh || -z $v || $v =~ ^(on|off)$ ]] || usage_error 'github_use_gh takes on or off'
             [[ $key != check_tarballs && $key != deep_inputs && $key != measure_store || -z $v || $v =~ ^(on|off)$ ]] || usage_error "$key takes on or off"
+            [[ $key != preview_warn || -z $v || $v =~ ^[0-9]+$ ]] || usage_error 'preview_warn takes a download size in MiB (0 turns the warning off)'
             [[ $key != check_interval || -z $v || $v =~ ^[1-9][0-9]*[mhd]$ ]] || usage_error 'check_interval takes minutes, hours or days: 30m, 6h, 1d'
             mkdir -p "$(dirname "$CONFIG_FILE")" || die "cannot create $(dirname "$CONFIG_FILE")"
             { grep -v "^$key=" "$CONFIG_FILE" 2>/dev/null; [[ -z $v ]] || echo "$key=$v"; } >"$CONFIG_FILE.new" && mv "$CONFIG_FILE.new" "$CONFIG_FILE"

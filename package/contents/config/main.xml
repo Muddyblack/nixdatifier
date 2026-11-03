@@ -34,6 +34,10 @@
             <!-- check every transitive input, not just the root (and wrapper) inputs -->
             <default>false</default>
         </entry>
+        <entry name="previewWarnMiB" type="Int">
+            <!-- warn in an update preview whose download exceeds this many MiB; 0 turns the warning off -->
+            <default>2048</default>
+        </entry>
         <entry name="measureStore" type="Bool">
             <!-- measure the Nix store (total and reclaimable size); off shows free space only -->
             <default>true</default>

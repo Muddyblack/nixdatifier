@@ -81,6 +81,7 @@ FullView {
     dryRunCache: engine.dryRunCache
     releaseNotesCache: engine.releaseNotesCache
     isDryRunning: engine.isDryRunning
+    previewWarnMiB: engine.settings.previewWarnMiB === undefined ? 2048 : engine.settings.previewWarnMiB
     diffViewMode: engine.settings.diffViewMode || "compact"
     iconCache: engine.iconCache
     metaCache: engine.metaCache
