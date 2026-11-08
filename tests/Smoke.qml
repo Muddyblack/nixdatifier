@@ -258,7 +258,23 @@ Window {
             }
             if (stage === 27)
                 win.capture("empty-search");
-            if (stage === 28)
+            if (stage === 28) {
+                win.findObject(app, "generationSearch").text = "";
+                win.width = 520;
+                win.height = 760;
+                core.doctorResult = core.parseDoctor(["about\tinfo\tThis system\tnixdatifier 2.2.2 · NixOS 26.05 (Yarara) · Linux 6.12 · nix (Nix) 2.34.0\t\t\t\t\t", "nixos\tok\tRunning on NixOS\tNixOS 26.05 (Yarara)\t\t\t\t\t", "tools\tok\tRequired tools\tnix, nix-store, nix-env and jq found; runs as root with sudo\t\t\t\t\t", "profiles\tfail\tProfiles readable\t/nix/var/nix/profiles exists but cannot be listed: a permission problem, not a missing system.\tIt should be readable by everyone (drwxr-xr-x root).\tls -ld /nix/var/nix/profiles\t\tls /nix/var/nix/profiles\tls: cannot open directory '/nix/var/nix/profiles': Permission denied", "flake\tfail\tFlake path\tThe configured folder /home/me/nixos does not exist.\tPick your config folder in the settings, or clear the path to search the usual places.\tnixdatifier config set flake /path/to/your/flake\tconfigure\t\t", "optional\tinfo\tOptional tools\tNot found: fzf (the terminal menu). Everything else works without them.\t\t\t\t\t"].join("\n"));
+                core.generations = [];
+            }
+            if (stage === 29)
+                win.capture("doctor");
+            if (stage === 30) {
+                core.flakeUpdates = [];
+                core.lastFlakeCheckTime = "";
+                core.activeViewMode = "updates";
+            }
+            if (stage === 31)
+                win.capture("doctor-updates");
+            if (stage === 32)
                 Qt.quit();
         }
     }

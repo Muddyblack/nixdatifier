@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls
 import "shared" as UI
+import "components"
 
 Item {
     id: timelineTab
@@ -61,6 +62,12 @@ Item {
     signal compareWithRequested(int genA, int genB)
     signal refreshRequested
     signal configureRequested
+    // Why the list is empty: the doctor checklist (Engine.diagnose).
+    property var doctorResult: null
+    property bool isDiagnosing: false
+    property string doctorReport: ""
+    signal diagnoseRequested
+    signal toolsRequested
 
     visible: activeViewMode === "timeline"
     focus: visible
@@ -512,7 +519,7 @@ Item {
         y: 10
         width: 2
         height: Math.min(parent.height - y, Math.max(64, emptyState.implicitHeight + 16))
-        visible: emptyState.visible
+        visible: emptyScroll.visible
         gradient: Gradient {
             GradientStop {
                 position: 0
@@ -530,53 +537,80 @@ Item {
     }
 
     // Keep the rail present even when a search has no matching generations.
-    Column {
-        id: emptyState
+    // No generations at all: say what was checked, with a fix for each failure.
+    UI.ScrollView {
+        id: emptyScroll
+        objectName: "emptyTimeline"
         parent: genListView
-        anchors.horizontalCenter: parent.horizontalCenter
-        anchors.top: parent.top
+        anchors.fill: parent
         anchors.topMargin: 30
-        spacing: 8
-        width: Math.max(0, parent.width - 58)
         readonly property bool noGenerations: timelineTab.generations.length === 0 && !timelineTab.isLoadingGens
         readonly property bool noMatches: timelineTab.generations.length > 0 && timelineTab.filteredGenerations.length === 0 && timelineTab.searchText.trim() !== ""
         visible: noGenerations || noMatches
-        Text {
-            width: parent.width
-            text: emptyState.noMatches ? qsTr("No matching generations.") : qsTr("No generations found.")
-            color: "#91a4bd"
-            font.pixelSize: 11 * timelineTab.fs
-            horizontalAlignment: Text.AlignHCenter
-            wrapMode: Text.WordWrap
-        }
-        Text {
-            width: parent.width
-            text: emptyState.noMatches ? qsTr("Try a generation number, package, or date.") : qsTr("Refresh your system history or check the flake configuration.")
-            color: "#91a4bd"
-            font.pixelSize: 10 * timelineTab.fs
-            horizontalAlignment: Text.AlignHCenter
-            wrapMode: Text.WordWrap
-        }
-        RowLayout {
-            anchors.horizontalCenter: parent.horizontalCenter
+        clip: true
+        contentWidth: availableWidth
+        Column {
+            id: emptyState
+            x: Math.round((emptyScroll.availableWidth - width) / 2)
             spacing: 8
-            UI.ActionButton {
-                visible: emptyState.noMatches
-                objectName: "clearGenerationSearch"
-                text: qsTr("Clear search")
-                flatStyle: true
-                font.pixelSize: 9 * timelineTab.fs
-                onClicked: timelineSearch.text = ""
+            width: Math.max(0, emptyScroll.availableWidth - 58)
+            Text {
+                width: parent.width
+                text: emptyScroll.noMatches ? qsTr("No matching generations.") : qsTr("No generations found.")
+                color: "#91a4bd"
+                font.pixelSize: 11 * timelineTab.fs
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
             }
-            UI.ActionButton {
-                visible: !emptyState.noMatches
-                text: qsTr("Refresh")
-                onClicked: timelineTab.refreshRequested()
+            Text {
+                width: parent.width
+                text: emptyScroll.noMatches ? qsTr("Try a generation number, package, or date.") : qsTr("Below is what was checked and how to fix what failed.")
+                color: "#91a4bd"
+                font.pixelSize: 10 * timelineTab.fs
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
             }
-            UI.ActionButton {
-                visible: !emptyState.noMatches
-                text: qsTr("Configure…")
-                onClicked: timelineTab.configureRequested()
+            RowLayout {
+                anchors.horizontalCenter: parent.horizontalCenter
+                spacing: 8
+                UI.ActionButton {
+                    visible: emptyScroll.noMatches
+                    objectName: "clearGenerationSearch"
+                    text: qsTr("Clear search")
+                    flatStyle: true
+                    font.pixelSize: 9 * timelineTab.fs
+                    onClicked: timelineSearch.text = ""
+                }
+                UI.ActionButton {
+                    visible: !emptyScroll.noMatches
+                    text: qsTr("Refresh")
+                    onClicked: timelineTab.refreshRequested()
+                }
+                UI.ActionButton {
+                    visible: !emptyScroll.noMatches
+                    text: qsTr("Configure…")
+                    onClicked: timelineTab.configureRequested()
+                }
+            }
+            Item {
+                width: 1
+                height: 6
+                visible: diagnosis.visible
+            }
+            Diagnosis {
+                id: diagnosis
+                objectName: "timelineDiagnosis"
+                width: parent.width
+                wanted: emptyScroll.noGenerations && timelineTab.visible
+                result: timelineTab.doctorResult
+                busy: timelineTab.isDiagnosing
+                report: timelineTab.doctorReport
+                fs: timelineTab.fs
+                textColor: timelineTab.textColor
+                accentColor: timelineTab.accentColor
+                onRunRequested: timelineTab.diagnoseRequested()
+                onCopyRequested: text => timelineTab.copyToClipboard(text)
+                onActionRequested: action => action === "tools" ? timelineTab.toolsRequested() : timelineTab.configureRequested()
             }
         }
     }

@@ -44,6 +44,10 @@ Item {
         anchors.fill: parent
         engine: core
     }
+    Component {
+        id: spyComponent
+        SignalSpy {}
+    }
     SignalSpy {
         id: commandSpy
         target: app
@@ -541,6 +545,52 @@ Item {
             tryCompare(rail, "visible", false);
             compare(search.text, "");
             tryCompare(timeline, "travelAvailable", true);
+        }
+        function test_empty_timeline_shows_what_was_checked() {
+            const timeline = findChild(app, "generationTimeline");
+            const spy = createTemporaryObject(spyComponent, host, {
+                target: core,
+                signalName: "configureRequested"
+            });
+            core.doctorResult = null;
+            core.generations = [];
+            wait(30);
+            const diagnosis = findChild(timeline, "timelineDiagnosis");
+            verify(findChild(timeline, "emptyTimeline").visible);
+            verify(diagnosis.visible);
+            // Shown without a result: the checks start by themselves (the fake runner answers nothing).
+            tryVerify(() => core.doctorResult && core.doctorResult.isError);
+            core.doctorResult = core.parseDoctor("profiles\tfail\tProfiles readable\tNo system-N-link entries.\tBuild once.\tsudo nixos-rebuild switch\t\t\t\n" + "flake\tfail\tFlake path\tNo flake.nix.\tPick your config folder.\t\tconfigure\tls /x\tls: cannot access\n" + "tools\tok\tRequired tools\tfound\t\t\t\t\t\n");
+            wait(30);
+            verify(findChild(timeline, "doctorCheck-profiles").visible);
+            verify(findChild(timeline, "doctorCheck-tools").visible);
+            verify(findChild(timeline, "doctorOutput-flake").visible);
+            verify(!findChild(timeline, "doctorOutput-profiles").visible);
+            verify(!findChild(timeline, "doctorAction-profiles").visible);
+            const pick = findChild(timeline, "doctorAction-flake");
+            verify(pick.visible);
+            compare(pick.text, "Pick your config folder");
+            mouseClick(pick);
+            compare(spy.count, 1);
+            findChild(timeline, "doctorCopyReport").clicked();
+            verify(core.toasts.some(t => t.msg === "Copied to clipboard"));
+            core.doctorResult = null;
+        }
+        function test_updates_lists_only_problems_before_the_first_check() {
+            const updates = findChild(app, "updatesView");
+            core.doctorResult = core.parseDoctor("tools\tok\tRequired tools\tfound\t\t\t\t\t\n");
+            core.flakeUpdates = [];
+            core.lastFlakeCheckTime = "";
+            core.activeViewMode = "updates";
+            wait(30);
+            const diagnosis = findChild(updates, "updatesDiagnosis");
+            verify(!diagnosis.visible); // nothing in the way: no checklist
+            core.doctorResult = core.parseDoctor("tools\tok\tRequired tools\tfound\t\t\t\t\t\n" + "setup\twarn\tSetup type\tChannels.\t\t\t\t\t\n");
+            tryCompare(diagnosis, "visible", true);
+            verify(findChild(updates, "doctorCheck-setup").visible);
+            verify(!findChild(updates, "doctorCheck-tools"));
+            core.doctorResult = null;
+            core.activeViewMode = "timeline";
         }
         function test_generation_opens_in_larger_window() {
             const list = findChild(app, "generationList");

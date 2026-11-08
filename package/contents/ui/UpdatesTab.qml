@@ -65,6 +65,13 @@ Item {
     signal inputListSaved(string text)
     property var upToDateInputs: []
     signal checkRequested
+    // Before the first successful check: what stands in the way (Engine.diagnose).
+    property var doctorResult: null
+    property bool isDiagnosing: false
+    property string doctorReport: ""
+    signal diagnoseRequested
+    signal configureRequested
+    signal toolsRequested
     // One shared pulse for every card that is waiting on the running check; it only runs while checking.
     property real pulse: 1
     SequentialAnimation on pulse {
@@ -637,9 +644,27 @@ Item {
                 Layout.bottomMargin: 25
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
-                text: root.isCheckingFlake ? qsTr("Checking upstream inputs…") : root.lastFlakeCheckTime ? qsTr("No pending input updates.") : qsTr("Configure a flake directory or check for updates.")
+                text: root.isCheckingFlake ? qsTr("Checking upstream inputs…") : root.lastFlakeCheckTime ? qsTr("No pending input updates.") : updatesDiagnosis.visible && updatesDiagnosis.result ? qsTr("Nothing to check yet. This is what stands in the way:") : qsTr("Configure a flake directory or check for updates.")
                 color: "#91a4bd"
                 font.pixelSize: 11 * root.fs
+            }
+            Diagnosis {
+                id: updatesDiagnosis
+                objectName: "updatesDiagnosis"
+                Layout.fillWidth: true
+                Layout.bottomMargin: 18
+                // Only the problems: a healthy system before its first check needs no checklist.
+                onlyProblems: true
+                wanted: root.visible && !root.flakeUpdates.length && !root.isCheckingFlake && root.lastFlakeCheckTime === ""
+                result: root.doctorResult
+                busy: root.isDiagnosing
+                report: root.doctorReport
+                fs: root.fs
+                textColor: root.textColor
+                accentColor: root.accentColor
+                onRunRequested: root.diagnoseRequested()
+                onCopyRequested: text => root.copyToClipboard(text)
+                onActionRequested: action => action === "tools" ? root.toolsRequested() : root.configureRequested()
             }
             InputSection {
                 objectName: "upToDateSection"

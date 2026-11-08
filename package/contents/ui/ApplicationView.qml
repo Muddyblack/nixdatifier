@@ -164,6 +164,10 @@ FullView {
     onMeasureSpaceRequested: engine.measureDevSpace()
     onClearCacheRequested: dir => engine.clearDevCache(dir)
     healthResult: engine.healthResult
+    doctorResult: engine.doctorResult
+    isDiagnosing: engine.isDiagnosing
+    doctorReport: engine.doctorReport(engine.doctorResult)
+    onDiagnoseRequested: engine.diagnose()
     isProbingHealth: engine.isProbingHealth
     onHealthRequested: force => engine.probeHealth(force)
     onDryRunRequested: (inputName, overrideRef) => engine.runDryPreview(inputName, overrideRef)

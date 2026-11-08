@@ -564,6 +564,52 @@ Item {
             verify(!updates.overWarnSize(entry.summary));
         }
 
+        function doctorRows() {
+            return ["about\tinfo\tThis system\tnixdatifier 2 · NixOS\t\t\t\t\t", "profiles\tok\tProfiles readable\t3 system generations\t\t\t\t\t", "flake\tfail\tFlake path\t/x has no flake.nix.\tPick your config folder.\tnixdatifier config set flake DIR\tconfigure\t\t", "nix\tfail\tNix runs\tnix --version failed.\t\t\t\tnix --version\terror: bad\\tthing\\nsecond \\\\ line"].join("\n");
+        }
+        function test_doctor_runs_once_and_parses_checks() {
+            core.doctorResult = null;
+            core.isDiagnosing = false;
+            cfg.flakePath = "/x";
+            core.diagnose();
+            core.diagnose();
+            compare(jobs.length, 1);
+            verify(jobs[0].cmd.indexOf("/doctor' '/x'") >= 0);
+            verify(core.isDiagnosing);
+            jobs[0].callback(jobs[0].cmd, doctorRows(), "", 0);
+            verify(!core.isDiagnosing);
+            const r = core.doctorResult;
+            compare(r.checks.length, 4);
+            compare(r.failures, 2);
+            compare(r.problems, 2);
+            compare(r.checks[2].action, "configure");
+            compare(r.checks[2].fixCommand, "nixdatifier config set flake DIR");
+            compare(r.checks[3].output, "error: bad\tthing\nsecond \\ line");
+            const report = core.doctorReport(r);
+            verify(report.indexOf("✔ Profiles readable: 3 system generations") >= 0);
+            verify(report.indexOf("✘ Flake path: /x has no flake.nix.\n    → Pick your config folder.\n      $ nixdatifier config set flake DIR") >= 0);
+            verify(report.indexOf("    failed: nix --version\n    │ error: bad\tthing\n    │ second \\ line") >= 0);
+            // A changed flake path checks again.
+            cfg.flakePath = "/y";
+            compare(jobs.length, 2);
+            verify(jobs[1].cmd.indexOf("/doctor' '/y'") >= 0);
+            jobs[1].callback(jobs[1].cmd, "", "boom", 1);
+            verify(core.doctorResult.isError);
+            compare(core.doctorResult.value, "boom");
+            cfg.flakePath = "";
+        }
+        function test_empty_generation_list_runs_the_doctor() {
+            core.doctorResult = null;
+            core.isDiagnosing = false;
+            core.generations = [];
+            core.refreshGenerations();
+            compare(jobs.length, 1);
+            jobs[0].callback(jobs[0].cmd, "", "", 0);
+            verify(jobs.some(j => j.cmd.indexOf("/doctor'") >= 0));
+            compare(core.toasts.length, 0); // the view explains it instead
+            core.isDiagnosing = false;
+        }
+
         function test_why_loads_once_and_parses_chains() {
             const pkg = {
                 name: "zstd",

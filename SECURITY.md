@@ -9,6 +9,8 @@ Only the latest release receives fixes.
 Please do not open a public issue. Report it privately through
 [GitHub security advisories](https://github.com/Muddyblack/nixdatifier/security/advisories/new).
 Include the version, how to reproduce it, and what an attacker could do.
+`nixdatifier doctor` prints the versions involved. For ordinary bugs, open an issue
+and paste its output there.
 
 You can expect a first reply within a week.
 

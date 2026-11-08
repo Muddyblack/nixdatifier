@@ -117,7 +117,7 @@ If Nixdatifier saves you time, you can support its development:
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-muddyblack-ff5e5b?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/muddyblack)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy_Me_a_Coffee-muddyblack-ffdd00?style=for-the-badge&logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/muddyblack)
 
-Stars, bug reports, and translations help just as much.
+Stars, bug reports, and translations help just as much. For a bug report, paste the output of `nixdatifier doctor`.
 
 ## License
 

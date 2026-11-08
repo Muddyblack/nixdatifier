@@ -306,6 +306,9 @@ Item {
     property bool isMeasuringSpace: false
     property var healthResult: null
     property bool isProbingHealth: false
+    // Why a view is empty (tools/sh/doctor): { checks: [...], failures } | { isError, value } | null
+    property var doctorResult: null
+    property bool isDiagnosing: false
 
     // ── Rebuild history state ────────────────────────────────────────────────
     // Newest first, as returned by the "history list" script.
@@ -463,11 +466,13 @@ Item {
             // Activation time and version follow the generation list.
             root.probeSysInfo();
             const text = (out || "").trim();
-            if (!text) {
-                root.pushToast(qsTr("No generations found — is /nix/var/nix/profiles/ accessible?"), true);
+            if (text)
+                root.parseGenerations(text);
+            // An empty list explains itself: the Generations view shows what was checked.
+            if (root.generations.length === 0) {
+                root.diagnose();
                 return;
             }
-            root.parseGenerations(text);
             if (root.expanded)
                 root.probeDiskUsage(false);
         });
@@ -1566,6 +1571,66 @@ Item {
         });
     }
 
+    // ── Doctor: what was checked when a view stays empty ──────────────────────
+    // Fields are tab-separated with \t, \n and \\ escaped (see tools/sh/doctor).
+    function parseDoctor(text) {
+        const unescape = v => (v || "").replace(/\\(.)/g, (m, c) => c === "n" ? "\n" : c === "t" ? "\t" : c);
+        const checks = (text || "").split("\n").filter(l => l.indexOf("\t") > 0).map(l => {
+            const f = l.split("\t").map(unescape);
+            return {
+                id: f[0],
+                status: f[1] || "info",
+                title: f[2] || "",
+                detail: f[3] || "",
+                fix: f[4] || "",
+                fixCommand: f[5] || "",
+                action: f[6] || "",
+                failedCommand: f[7] || "",
+                output: f[8] || ""
+            };
+        });
+        return {
+            isError: false,
+            checks: checks,
+            failures: checks.filter(c => c.status === "fail").length,
+            problems: checks.filter(c => c.status === "fail" || c.status === "warn").length
+        };
+    }
+    // The checklist as text, the same shape `nixdatifier doctor` prints, for bug reports.
+    function doctorReport(result) {
+        if (!result || result.isError)
+            return result ? result.value : "";
+        const mark = {
+            ok: "✔",
+            fail: "✘",
+            warn: "!"
+        };
+        return result.checks.map(c => {
+            let lines = (mark[c.status] || "·") + " " + c.title + ": " + c.detail;
+            if (c.fix)
+                lines += "\n    → " + c.fix;
+            if (c.fixCommand)
+                lines += "\n      $ " + c.fixCommand;
+            if (c.failedCommand)
+                lines += "\n    failed: " + c.failedCommand;
+            if (c.output)
+                lines += "\n" + c.output.split("\n").map(l => "    │ " + l).join("\n");
+            return lines;
+        }).join("\n");
+    }
+    function diagnose() {
+        if (root.isDiagnosing)
+            return;
+        root.isDiagnosing = true;
+        sh("timeout --kill-after=5s 90s " + shq(root.scriptDir + "doctor") + " " + shq(root.settings.flakePath || ""), function (cmd, out, err, code) {
+            root.isDiagnosing = false;
+            root.doctorResult = code === 0 && (out || "").trim() ? root.parseDoctor(out) : {
+                isError: true,
+                value: (err || out || qsTr("Could not run the checks")).trim()
+            };
+        });
+    }
+
     function getPreviousGen(genNum) {
         for (let i = 0; i < root.generations.length; i++) {
             if (root.generations[i].number === genNum) {
@@ -2010,6 +2075,9 @@ Item {
                 const msg = (err || out || "").trim() || qsTr("flake-probe failed");
                 root.failPendingInputs();
                 root.pushToast(msg, true);
+                // The Updates view lists what is in the way; keep it current.
+                if (root.doctorResult)
+                    root.diagnose();
                 return;
             }
             const raw = out || "";
@@ -3110,6 +3178,9 @@ Item {
     Connections {
         target: root.settings
         function onFlakePathChanged() {
+            // A new path can fix (or cause) what the checklist found.
+            if (root.doctorResult)
+                root.diagnose();
             if (root.autoStart)
                 root.syncFlakeContext(true);
         }
