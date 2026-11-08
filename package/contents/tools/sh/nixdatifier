@@ -15,8 +15,8 @@ here=$(dirname "$(realpath "$0")")
 profiles=/nix/var/nix/profiles
 version=$(jq -r '.KPlugin.Version // empty' "$here/../../../metadata.json" 2>/dev/null)
 
-COMMANDS="generations updates diff disk health doctor status history info hash profiles profile secrets persist dev path why preview notes snapshot update rebuild run commands watch switch boot rollback delete clean gc menu config completion help"
-OPTIONS="--json --plain --flake --yes --dry-run --refresh --priv --label --check --limit --all --older-than --keep --quiet --color --roots --secrets --source --host --days --shells --config --updates --generation --help --version"
+COMMANDS="generations updates diff disk health doctor status history info hash profiles profile secrets persist dev path why preview notes snapshot update rebuild run commands watch switch boot rollback delete clean gc optimise menu config completion help"
+OPTIONS="--json --plain --flake --yes --dry-run --refresh --priv --label --check --limit --all --older-than --keep --quiet --color --roots --secrets --source --host --days --shells --config --updates --optimise --generation --help --version"
 
 # One entry per command: "<usage>|<summary>|<detail>". The overview, `help CMD`
 # and `CMD --help` all read this.
@@ -51,8 +51,9 @@ help_entry() {
         boot) echo "boot N#make generation N the next boot only#Asks first. Reboot to use it." ;;
         rollback) echo "rollback#switch to the generation before the running one#Asks first." ;;
         delete) echo "delete N... (or --keep N [--older-than DAYS])#delete generations; never the running or booted one#--keep N keeps the N newest; --older-than DAYS selects by age; together both must match. Lists what it will remove before asking." ;;
-        clean) echo "clean [--keep N] [--older-than DAYS]#one step: delete old generations, then collect garbage#Defaults: keep the 5 newest and delete generations older than 14 days (never the running or booted one), then run gc. Asks once per step; --yes for none. On non-NixOS it only collects garbage." ;;
+        clean) echo "clean [--keep N] [--older-than DAYS] [--optimise]#one step: delete old generations, then collect garbage#Defaults: keep the 5 newest and delete generations older than 14 days (never the running or booted one), then run gc. --optimise also hard-links identical files afterwards (see: help optimise). Asks once per step; --yes for none. On non-NixOS it only collects garbage." ;;
         gc) echo "gc [--older-than 14d | --all]#collect garbage#--all also deletes every old generation (nix-collect-garbage -d)." ;;
+        optimise) echo "optimise [status]#hard-link identical files in the store (nix-store --optimise)#Without an argument: shows what it would free, asks, then runs nix-store --optimise as root (see --priv) and records the space it freed in history. It reads every file in the store, so it can take a while. --dry-run shows the estimate and the command only. status: whether nix.settings.auto-optimise-store is on, whether the nix-optimise timer (nix.optimise.automatic) runs, the last run, and a rough estimate of what optimising would free, from a sample of store paths (cached for 6 hours and after every change; --refresh samples again)." ;;
         config) echo "config [list|get KEY|set KEY VALUE|unset KEY|path]#paths and preferences kept between runs#Saved in ~/.config/nixdatifier/config (NIXDATIFIER_CONFIG moves it) and read before every command; an environment variable or option still wins. Keys: flake (system flake directory), config_repo (git repository recording each generation), secrets (sops/agenix directory), secrets_source (the secrets file in the flake), persist (impermanence roots, colon separated), priv (sudo, doas or pkexec), commands (quick-run commands, see: help commands), check_interval (how often update checks run, like 6h), notifications (on or off: desktop notifications for found updates; default on), github_token_file (file holding a GitHub token for release notes), github_use_gh (on: borrow the GitHub CLI's login for release notes; default off), check_tarballs (off: skip tarball flake inputs when checking for updates; default on), deep_inputs (on: check every transitive flake input; default off). The window keeps these and the paths above in step with its own settings." ;;
         menu) echo "menu#interactive view: browse, compare and act without flags#What a bare 'nixdatifier' opens in a terminal: sections with live previews, generations you can open and compare, updates with release notes, keys for switch, boot, delete and update (F1 lists them). Needs fzf 0.70+, else a numbered menu (or set NIXDATIFIER_NO_FZF=1). Set NIXDATIFIER_MODE=cli to make a bare 'nixdatifier' print the help instead; 'nixdatifier menu' always opens it." ;;
         completion) echo "completion <bash|zsh|fish|install>#print a shell completion script, or set it up for you#'completion install' detects your shell and adds completion to its startup file (fish: its completions folder); safe to repeat. Manual: source <(nixdatifier completion bash)" ;;
@@ -153,7 +154,7 @@ fi
 
 fmt=text yes=0 dry=0 refresh=0 quiet=0 priv=${NIXDATIFIER_PRIV:-sudo} flake=${NIXDATIFIER_FLAKE:-} label='' check=0 all=0 limit=0
 older='' keep='' roots=${NIXDATIFIER_PERSIST:-} secrets_dir=${NIXDATIFIER_SECRETS:-} secrets_src=${NIXDATIFIER_SECRETS_SOURCE:-}
-host=auto days=180 shells=0 config=0 generation='' want_help=0 want_updates=0 color=auto args=()
+host=auto days=180 shells=0 config=0 generation='' want_help=0 want_updates=0 want_optimise=0 color=auto args=()
 # Shells call this private, read-only endpoint with the words being completed.
 completion_words=()
 if [[ ${1:-} == _complete ]]; then
@@ -191,6 +192,7 @@ while (($#)); do
         --shells) shells=1 ;;
         --config) config=1 ;;
         --updates) want_updates=1 ;;
+        --optimise | --optimize) want_optimise=1 ;;
         -h | --help) want_help=1 ;;
         -V | --version) echo "nixdatifier ${version:-unknown}"; exit 0 ;;
         --) shift; args+=("$@"); break ;;
@@ -721,6 +723,12 @@ change() { # change <action> <label> <generation|-1> <script> [args...]; the scr
     rc=${PIPESTATUS[0]}
     kept=$(tail -c 16000 "$out"); rm -f "$out"
     if ((quiet && rc != 0)); then printf '%s\n' "$kept" >&2; fi
+    # A command can sum up its result for the history label (summarize: a function reading the output).
+    if [[ -n ${summarize:-} && $rc == 0 ]]; then
+        local sum
+        sum=$("$summarize" <<<"$kept")
+        [[ -z $sum ]] || text="${text%…} · $sum"
+    fi
     "$here/history" record "$action" "$text" "$gen" "$rc" "$kept" || true
     if [[ $fmt == json ]]; then
         jq -n --arg a "$action" --argjson rc "$rc" --argjson g "$gen" '{ok: ($rc == 0), action: $a, exitCode: $rc, generation: (if $g > 0 then $g else null end)}'
@@ -827,7 +835,10 @@ cmd_clean() {
         cmd_delete || return $?
     fi
     older='' all=0
-    cmd_gc
+    cmd_gc || return $?
+    ((want_optimise)) || return 0
+    args=()
+    cmd_optimise
 }
 cmd_gc() {
     local flag=() mode=gc
@@ -836,6 +847,52 @@ cmd_gc() {
     confirm "Collect garbage${flag[*]:+ (${flag[*]})}?"
     # shellcheck disable=SC2016
     change "$mode" 'Cleaning Nix store…' -1 '$PRIV "$@"' "$(resolved nix-collect-garbage)" "${flag[@]}"
+}
+
+# ── Store optimisation ──────────────────────────────────────────────────────
+# nix-store --optimise prints "4096.00 MiB freed by hard-linking 1234 files".
+optimise_freed() { grep -oE '[0-9][0-9.]* [KMGT]?i?B freed by hard-linking [0-9]+ files' | tail -1 | sed -E 's/ freed by hard-linking ([0-9]+) files/ freed (\1 files)/'; }
+OPTIMISE_JQ='
+    def bytes: capture("(?<n>[0-9.]+) (?<u>[KMGT]?)i?B") as $m | ($m.n | tonumber) * ({"": 1, K: 1024, M: 1048576, G: 1073741824, T: 1099511627776}[$m.u]) | floor;
+    def freed: (capture("(?<b>[0-9][0-9.]* [KMGT]?i?B) freed") | .b | bytes) // null;'
+optimise_json() { # optimise_json: status, the last run from history and the estimate
+    local st est last
+    st=$("$here/optimise" status) || st=''
+    est=$(NOTE='Estimating what optimising would free (sampling the store)…' cached storeusage:optimise-estimate:v1 21600 -- "$here/optimise" estimate) || est=''
+    last=$("$here/history" list 2>/dev/null | jq "$OPTIMISE_JQ"'
+        [.[] | select(.action == "optimise" and .success)] | first // null
+        | if . == null then null else {timestamp, freedBytes: ((.output + "\n" + .label) | freed)} end' 2>/dev/null) || last=null
+    jq -n --arg st "$st" --arg est "$est" --argjson last "${last:-null}" '
+        def kv: split("\n") | map(select(contains("=")) | {key: split("=")[0], value: (split("=")[1:] | join("="))}) | from_entries;
+        ($st | kv) as $s | ($est | kv) as $e
+        | {autoOptimise: (if $s.auto_optimise == "true" then true elif $s.auto_optimise == "false" then false else null end),
+           timer: ($s.timer // "absent"),
+           estimate: (if ($e.estimate_bytes // "") == "" then null else
+               {bytes: ($e.estimate_bytes | tonumber), sampledPaths: ($e.sampled | tonumber), totalPaths: ($e.paths | tonumber),
+                partial: ($e.partial == "1"), measuredAt: ($e.measured_at | tonumber)} end),
+           lastRun: $last}'
+}
+cmd_optimise() {
+    case ${args[0]:-run} in
+        status)
+            optimise_json | kv '
+                "auto-optimise\t\(if .autoOptimise == true then "on" elif .autoOptimise == false then "off" else "unknown" end)  (nix.settings.auto-optimise-store)",
+                "timer\t\(.timer)  (nix.optimise.automatic: nix-optimise.timer)",
+                (if .estimate then "estimate\tabout \(.estimate.bytes | hb) could be freed  (rough: a sample of \(.estimate.sampledPaths) of \(.estimate.totalPaths) store paths)" else "estimate\tunknown" end),
+                (if .lastRun then "last run\t\(.lastRun.timestamp | fromdateiso8601 | tm)\(if .lastRun.freedBytes then "  freed \(.lastRun.freedBytes | hb)" else "" end)" else empty end),
+                (if .autoOptimise != true and .timer != "enabled" then "hint\tnix.settings.auto-optimise-store = true;  (or nix.optimise.automatic = true;)" else empty end)' ;;
+        run)
+            local est
+            # For a person deciding (the window shows its own estimate and passes --yes).
+            if ((dry)) || interactive; then
+                est=$(optimise_json | jq -r '.estimate.bytes // empty' 2>/dev/null)
+                [[ -z $est ]] || msg "Optimising would free about $(human "$est") (a rough estimate from a sample of the store)."
+            fi
+            confirm 'Optimise the Nix store (hard-link identical files)? It reads the whole store and can take a while.'
+            # shellcheck disable=SC2016
+            summarize=optimise_freed change optimise 'Optimising Nix store…' -1 '$PRIV "$@"' "$(resolved nix-store)" --optimise ;;
+        *) unknown_name 'optimise subcommand' "${args[0]}" 'status run' ;;
+    esac
 }
 
 cmd_update() {
@@ -1284,6 +1341,7 @@ completion_candidates() {
                     commands) ((${#positional[@]} == 0)) && choices='list add rm' ;;
                     profile) if ((${#positional[@]} == 0)); then choices='list install remove upgrade clean'; elif [[ ${positional[0]} =~ ^(remove|rm|upgrade|update)$ ]]; then choices=$(profile_json 2>/dev/null | jq -r '.[].name'); fi ;;
                     history) ((${#positional[@]} == 0)) && choices='list clear' ;;
+                    optimise) ((${#positional[@]} == 0)) && choices='status' ;;
                     run) ((${#positional[@]} == 0)) && choices=$(commands_json | jq -r '.[] | select(.label != "") | .label') ;;
                     persist) ((${#positional[@]} == 0)) && choices='status sizes ls scan cleanup rm' ;;
                     dev) ((${#positional[@]} == 0)) && choices='list show shells pkgs clear' ;;
@@ -1396,6 +1454,7 @@ case $cmd in
     rollback) cmd_rollback ;;
     delete) cmd_delete ;;
     gc) cmd_gc ;;
+    optimise) cmd_optimise ;;
     clean) cmd_clean ;;
     menu) cmd_menu ;;
     config) cmd_config ;;

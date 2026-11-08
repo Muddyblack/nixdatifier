@@ -164,6 +164,13 @@ FullView {
     onMeasureSpaceRequested: engine.measureDevSpace()
     onClearCacheRequested: dir => engine.clearDevCache(dir)
     healthResult: engine.healthResult
+    optimiseStatus: engine.optimiseStatus
+    optimiseEstimate: engine.optimiseEstimate
+    lastOptimise: engine.lastOptimise
+    isProbingOptimise: engine.isProbingOptimise
+    isEstimatingOptimise: engine.isEstimatingOptimise
+    onOptimiseStatusRequested: engine.probeOptimiseStatus()
+    onOptimiseEstimateRequested: force => engine.estimateOptimise(force)
     doctorResult: engine.doctorResult
     isDiagnosing: engine.isDiagnosing
     doctorReport: engine.doctorReport(engine.doctorResult)

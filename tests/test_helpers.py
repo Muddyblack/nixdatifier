@@ -1217,6 +1217,79 @@ class Doctor(HelperCase):
         self.assertIn("jq", rows["tools"]["detail"])
 
 
+class Optimise(HelperCase):
+    """tools/sh/optimise against a fake store and stand-ins for nix and systemctl."""
+
+    def setUp(self):
+        super().setUp()
+        self.store = self.root / "store"
+        (self.store / ".links").mkdir(parents=True)
+        self.env["NIXDATIFIER_STORE_DIR"] = str(self.store)
+        # A stand-in for nix-hash: the content's sha256, one line per file, in order.
+        self.script(self.bin / "nix-hash", 'shift 3; for f; do sha256sum "$f" | cut -c1-52; done\n')
+
+    def add(self, path, content):
+        f = self.store / path
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(content)
+        return f
+
+    def fields(self, *args):
+        result = self.run_helper("optimise", *args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return dict(line.split("=", 1) for line in result.stdout.splitlines())
+
+    def test_status_reads_the_setting_and_the_timer(self):
+        self.script(self.bin / "nix", 'case "$*" in "config show auto-optimise-store") echo true ;; esac\n')
+        self.script(self.bin / "systemctl", "echo enabled\n")
+        self.assertEqual(self.fields("status"), {"auto_optimise": "true", "timer": "enabled"})
+        self.script(self.bin / "nix", 'case "$*" in "config show auto-optimise-store") echo false ;; esac\n')
+        self.script(self.bin / "systemctl", "echo 'Failed to get unit file state' >&2; exit 1\n")
+        self.assertEqual(self.fields("status"), {"auto_optimise": "false", "timer": "absent"})
+        self.script(self.bin / "nix", "exit 1\n")
+        self.script(self.bin / "systemctl", "echo disabled; exit 1\n")
+        self.assertEqual(self.fields("status"), {"auto_optimise": "", "timer": "disabled"})
+
+    def test_estimate_counts_files_already_stored_elsewhere(self):
+        twice = "the same content " * 10
+        self.add("aaa-one/share/a", twice)
+        self.add("bbb-two/share/b", twice)  # a duplicate within the sample
+        known = self.add("ccc-three/lib/c", "already linked content")
+        digest = subprocess.run(
+            [str(self.bin / "nix-hash"), "--type", "sha256", "--base32", str(known)],
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        (self.store / ".links" / digest).write_text("already linked content")
+        self.add("ddd-four/unique", "only here")
+        linked = self.add("eee-five/bin/e", "hard-linked")
+        os.link(linked, self.store / ".links" / "hard")  # two links: already optimised, skipped
+        self.add("fff-six/empty", "")
+        facts = self.fields("estimate")
+        self.assertEqual(facts["paths"], "6")
+        self.assertEqual(facts["sampled"], "6")
+        self.assertEqual(facts["unlinked_files"], "5")
+        self.assertEqual(facts["duplicate_bytes"], str(len(twice) + len("already linked content")))
+        self.assertEqual(facts["estimate_bytes"], facts["duplicate_bytes"])  # the whole store was sampled
+        self.assertEqual(facts["partial"], "0")
+        # Half the store sampled: the duplicates found count twice.
+        half = self.fields("estimate", "3")
+        self.assertEqual(half["sampled"], "3")
+        self.assertEqual(int(half["estimate_bytes"]), int(half["duplicate_bytes"]) * 2)
+
+    def test_estimate_errors(self):
+        empty = self.run_helper("optimise", "estimate")
+        self.assertNotEqual(empty.returncode, 0)
+        self.assertIn("nothing in", empty.stderr)
+        # A file nix-hash cannot hash counts as not duplicated.
+        self.add("aaa-one/a", "x")
+        self.add("bbb-two/b", "x")
+        self.script(self.bin / "nix-hash", "exit 1\n")
+        self.assertEqual(self.fields("estimate")["duplicate_bytes"], "0")
+        self.assertEqual(self.run_helper("optimise", "bogus").returncode, 2)
+
+
 class Impermanence(HelperCase):
     """The persistent-folder helper against a fixture that mirrors a btrfs
     rollback setup: /@persist mounted at <root>/persist with entries bound out."""
@@ -1723,6 +1796,46 @@ class Cli(HelperCase):
         self.assertNotIn("\x1b[", text)
         # The usual messages point at the doctor.
         self.assertIn("nixdatifier doctor", self.cli_run("--flake", missing, "update").stderr)
+
+    def test_optimise_command(self):
+        store = self.root / "nixstore"
+        (store / ".links").mkdir(parents=True)
+        (store / "aaa-x").mkdir()
+        (store / "aaa-x" / "f").write_text("content")
+        self.env["NIXDATIFIER_STORE_DIR"] = str(store)
+        self.script(self.bin / "nix", 'case "$*" in "config show auto-optimise-store") echo false ;; esac\n')
+        self.script(self.bin / "systemctl", "exit 1\n")
+        self.script(self.bin / "nix-hash", "shift 3; for f; do echo h; done\n")
+        self.script(
+            self.bin / "nix-store",
+            f"echo \"nix-store $*\" >> '{self.calls}'; echo '3415.45 MiB freed by hard-linking 1234 files' >&2\n",
+        )
+        status = json.loads(self.cli_run("--json", "optimise", "status").stdout)
+        self.assertIs(status["autoOptimise"], False)
+        self.assertEqual(status["timer"], "absent")
+        self.assertEqual(status["estimate"]["totalPaths"], 1)
+        self.assertIsNone(status["lastRun"])
+        text = self.cli_run("--color", "never", "optimise", "status").stdout
+        self.assertIn("auto-optimise  off", text)
+        self.assertIn("nix.settings.auto-optimise-store = true;", text)
+        dry = self.cli_run("--dry-run", "--yes", "--priv", "none", "optimise")
+        self.assertIn("[dry-run]", dry.stdout)
+        self.assertIn("nix-store --optimise", dry.stdout)
+        self.assertFalse(self.calls.exists())
+        # Not without asking.
+        self.assertNotEqual(self.cli_run("--priv", "none", "optimise", stdin=subprocess.DEVNULL).returncode, 0)
+        result = self.cli_run("--yes", "--priv", "none", "optimise")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("nix-store --optimise", self.calls.read_text())
+        entry = json.loads(self.cli_run("--json", "history").stdout)[0]
+        self.assertEqual(entry["action"], "optimise")
+        self.assertEqual(entry["label"], "Optimising Nix store · 3415.45 MiB freed (1234 files)")
+        last = json.loads(self.cli_run("--json", "optimise", "status").stdout)["lastRun"]
+        self.assertEqual(last["freedBytes"], int(3415.45 * 1048576))
+        # clean --optimise runs it after collecting garbage.
+        clean = self.cli_run("--dry-run", "--yes", "--priv", "none", "clean", "--optimise").stdout
+        self.assertLess(clean.index("nix-collect-garbage"), clean.index("nix-store --optimise"))
+        self.assertNotIn("nix-store --optimise", self.cli_run("--dry-run", "--yes", "--priv", "none", "clean").stdout)
 
     def test_why_command_formats(self):
         root = (self.profiles / "system-2-link").resolve().name

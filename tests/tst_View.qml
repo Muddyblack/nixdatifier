@@ -592,6 +592,41 @@ Item {
             core.doctorResult = null;
             core.activeViewMode = "timeline";
         }
+        function test_store_card_shows_deduplication_and_asks_before_optimising() {
+            core.optimiseStatus = {
+                isError: false,
+                autoOptimise: false,
+                timer: "absent"
+            };
+            core.optimiseEstimate = {
+                isError: false,
+                bytes: 3435973837,
+                sampledPaths: 1000,
+                totalPaths: 70000,
+                partial: false,
+                measuredAt: 0
+            };
+            core.activeViewMode = "tools";
+            wait(30);
+            const section = findChild(app, "optimiseSection");
+            verify(section.visible);
+            compare(findChild(section, "optimiseEstimate").text, "≈ 3.2 GB could be freed");
+            verify(findChild(section, "optimiseHint").visible);
+            verify(!findChild(section, "optimiseLastRun").visible);
+            core.optimiseStatus = {
+                isError: false,
+                autoOptimise: false,
+                timer: "enabled"
+            };
+            verify(!findChild(section, "optimiseHint").visible);
+            verify(findChild(section, "optimiseStatus").text.indexOf("Scheduled") === 0);
+            mouseClick(findChild(section, "optimiseButton"));
+            compare(core.pendingCleanup, "optimise");
+            core.pendingCleanup = "";
+            core.optimiseStatus = null;
+            core.optimiseEstimate = null;
+            core.activeViewMode = "timeline";
+        }
         function test_generation_opens_in_larger_window() {
             const list = findChild(app, "generationList");
             const row = list.itemAtIndex(0);

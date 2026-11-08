@@ -935,6 +935,7 @@ disk_rows() {
     printf 'clean\t%s✦ Clean up%s  %sold generations, then garbage (asks first)%s\n' "$B" "$X" "$D" "$X"
     printf 'gc\t%s▤ Collect garbage%s  %sonly what nothing uses; keeps every generation%s\n' "$B" "$X" "$D" "$X"
     printf 'gcall\t%s⚠ Delete every old generation%s  %sand collect garbage (nix-collect-garbage -d)%s\n' "$B" "$X" "$D" "$X"
+    printf 'optimise\t%s⧉ Optimise store%s  %shard-link identical files; keeps everything%s\n' "$B" "$X" "$D" "$X"
     printf 'details\t%s≡ Disk details%s  %sstore size, what could be freed, free space%s\n' "$B" "$X" "$D" "$X"
 }
 disk_preview() {
@@ -942,6 +943,10 @@ disk_preview() {
         clean) home_preview disk ;;
         gc) printf '%sCollect garbage%s\n\nDeletes store paths nothing refers to. Every generation stays.\n\n' "$B" "$X"; "$NXD_CLI" "${clr[@]}" --dry-run --yes gc 2>&1 ;;
         gcall) printf '%s%sDelete every old generation%s\n\nRemoves all generations except the running one, then collects garbage. You cannot roll back to them afterwards.\n\n' "$B" "$R" "$X"; "$NXD_CLI" "${clr[@]}" --dry-run --yes gc --all 2>&1 ;;
+        optimise)
+            printf '%sOptimise the store%s\n\nReplaces identical files with hard links to one copy (nix-store --optimise).\nNothing is deleted and every generation stays. It reads the whole store, so it takes a while.\n\n' "$B" "$X"
+            cli optimise status
+            printf '\n'; "$NXD_CLI" "${clr[@]}" --dry-run --yes optimise 2>&1 | grep -v '^Optimising would' ;;
         details) cli disk ;;
     esac
 }
@@ -950,6 +955,7 @@ disk_act() {
         clean) act clean ;;
         gc) act gc ;;
         gcall) act gc --all ;;
+        optimise) act optimise ;;
         details) working Disk; cli disk | page Disk ;;
     esac
 }
@@ -972,7 +978,7 @@ home_rows() {
     item compare '⇄' "$P" Compare 'pick any two generations' 'Enter: choose two to compare'
     item updates '↑' "$O" Updates 'flake inputs behind upstream' 'Enter: inputs, notes, update'
     item health '✚' "$G" Health 'release, reboot, units, caches' 'Enter: full screen'
-    item disk '▤' "$C" 'Disk & clean up' 'store size, old generations, garbage' 'Enter: details or clean up'
+    item disk '▤' "$C" 'Disk & clean up' 'store size, old generations, garbage, optimise' 'Enter: details or clean up'
     item history '⟲' "$V" History 'what earlier changes did' 'Enter: every run with output'
     item dev 'λ' "$V" 'Dev environments' 'direnv projects and their cache' 'Enter: projects'
     item persist '◐' "$C" Impermanence 'what survives a reboot' 'Enter: status, sizes, scan, cleanup'

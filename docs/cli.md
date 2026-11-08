@@ -29,7 +29,7 @@ Suggestions never run automatically. Missing option values also report a usage e
 | --- | --- |
 | Generations | `generations`, `diff [A [B]]`, `diff --config`, `switch N`, `boot N`, `rollback`, `delete N…` / `--keep N` / `--older-than DAYS`, `profiles` (Home Manager, `nix profile`) |
 | Flake | `updates [--all] [--check]`, `update [INPUT...]`, `preview INPUT` (what the update would cost and which packages would change), `notes INPUT` (upstream releases and commits) |
-| Store | `disk`, `disk STORE-PATH` (GC roots, referrers, closure), `gc [--older-than 14d \| --all]`, `path NAME [VERSION]`, `why NAME\|STORE-PATH [VERSION] [--all]` (the dependency chain that pulls a package into the system, and what pulls it in) |
+| Store | `disk`, `disk STORE-PATH` (GC roots, referrers, closure), `gc [--older-than 14d \| --all]`, `optimise` (hard-link identical files with `nix-store --optimise`; asks first, records what it freed in History), `optimise status` (whether `auto-optimise-store` or the `nix-optimise` timer is on, the last run, and a rough estimate of what a run would free), `clean --optimise`, `path NAME [VERSION]`, `why NAME\|STORE-PATH [VERSION] [--all]` (the dependency chain that pulls a package into the system, and what pulls it in) |
 | System | `status`, `health`, `info`, `history`, `hash`, `doctor` (what was checked when nothing shows up: NixOS, the required tools, the Nix store, the profiles and generation list, the flake path, flake or channels setup, flakes enabled, the flake's git state; each failure with its fix and the failed command's output. Exits 1 when a check fails) |
 | Secrets | `secrets` (names and freshness, never values) |
 | Impermanence | `persist` (`status`, `sizes`, `ls DIR`, `scan`, `cleanup`, `rm PATH…`) |
@@ -77,7 +77,7 @@ every key.
 | Dev environments | direnv projects by cache size. Enter evaluates their shells, Ctrl-O opens a shell there, Ctrl-X clears `.direnv`. |
 | Impermanence, Health, Disk, Secrets, Profiles, System info, Doctor | Live preview; Enter opens it full screen with search. When Generations, Compare or Updates have nothing to show, they show the Doctor checklist instead. |
 | Why is this here? | Type a package name or store path: the chain from the system down to it, then everything that pulls it in. |
-| Clean up, Hash calculator | The preview shows a dry run of what Enter would do. |
+| Clean up, Hash calculator | The preview shows a dry run of what Enter would do. Under Disk & clean up, *Optimise store* shows the deduplication status and estimate first. |
 
 Everywhere: Ctrl-R refreshes, Ctrl-/ hides the preview, Shift-↑↓ scrolls it.
 Anything that changes the system runs the normal command, so it asks first and
