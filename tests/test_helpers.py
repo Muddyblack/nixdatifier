@@ -1459,6 +1459,16 @@ class Cli(HelperCase):
         limited = json.loads(self.cli_run("--json", "--limit", "1", "generations").stdout)
         self.assertEqual(len(limited), 1)
 
+    def test_booted_specialisation_counts_as_its_generation(self):
+        # Booting <generation>/specialisation/<name> must not leave the newest generation "next boot" (#56).
+        special = self.root / "store3" / "specialisation" / "stable"
+        special.mkdir(parents=True)
+        (self.root / "booted").unlink()
+        (self.root / "booted").symlink_to(special)
+        rows = json.loads(self.cli_run("--json", "generations").stdout)
+        self.assertEqual([r["booted"] for r in rows], [True, False, False])
+        self.assertTrue(rows[0]["active"])
+
     def config_file(self):
         return Path(self.cli_run("config", "path").stdout.strip())
 

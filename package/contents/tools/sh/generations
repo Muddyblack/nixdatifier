@@ -3,11 +3,31 @@
 # then "current <store-path>" when /run/current-system resolves.
 # Link lines are: <stat %y> '<link>' -> '<target>'. The target comes from readlink rather than
 # stat's %N, whose quoting varies with QUOTING_STYLE and the installed coreutils (#44).
+# A system booted into a specialisation resolves to <generation>/specialisation/<name>, which is
+# not any generation's own closure. Map it back to that generation, or it would look like the
+# newest generation is still waiting for a reboot (#56).
+generation_of() {
+    local path=$1 link spec
+    [ -n "$path" ] || return 0
+    for link in /nix/var/nix/profiles/system-*-link; do
+        [ -L "$link" ] || continue
+        if [ "$(readlink -f "$link" 2>/dev/null)" = "$path" ]; then echo "$path"; return 0; fi
+    done
+    for link in /nix/var/nix/profiles/system-*-link; do
+        [ -L "$link" ] || continue
+        for spec in "$link"/specialisation/*; do
+            [ -e "$spec" ] || continue
+            if [ "$(readlink -f "$spec" 2>/dev/null)" = "$path" ]; then readlink -f "$link"; return 0; fi
+        done
+    done
+    echo "$path"
+}
 readlink -f /nix/var/nix/profiles/system 2>/dev/null
-readlink -f /run/booted-system 2>/dev/null
+booted=$(readlink -f /run/booted-system 2>/dev/null)
+[ -z "$booted" ] || generation_of "$booted"
 for link in /nix/var/nix/profiles/system-*-link; do
     [ -L "$link" ] || continue
     printf "%s '%s' -> '%s'\n" "$(stat --format=%y "$link" 2>/dev/null)" "$link" "$(readlink "$link")"
 done
-current=$(readlink -e /run/current-system 2>/dev/null) && echo "current $current"
+current=$(readlink -e /run/current-system 2>/dev/null) && echo "current $(generation_of "$current")"
 exit 0
