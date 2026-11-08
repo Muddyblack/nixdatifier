@@ -1,0 +1,38 @@
+name: Bug report
+description: Something does not work or shows nothing
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: dropdown
+    id: host
+    attributes:
+      label: Where
+      options:
+        - Plasma widget
+        - Standalone window
+        - Hyprland / Quickshell
+        - Command line or terminal menu
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: nixdatifier doctor
+      description: >-
+        Run `nixdatifier doctor` and paste its output, or use *Copy report* in an empty
+        Generations or Updates view. It lists your versions, what nixdatifier found, and the
+        exact command that failed with its output. Check it for paths you would rather not share.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: Screenshots, logs, how your configuration is set up.

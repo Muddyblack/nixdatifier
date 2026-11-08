@@ -15,7 +15,7 @@ here=$(dirname "$(realpath "$0")")
 profiles=/nix/var/nix/profiles
 version=$(jq -r '.KPlugin.Version // empty' "$here/../../../metadata.json" 2>/dev/null)
 
-COMMANDS="generations updates diff disk health status history info hash profiles profile secrets persist dev path why preview notes snapshot update rebuild run commands watch switch boot rollback delete clean gc menu config completion help"
+COMMANDS="generations updates diff disk health doctor status history info hash profiles profile secrets persist dev path why preview notes snapshot update rebuild run commands watch switch boot rollback delete clean gc menu config completion help"
 OPTIONS="--json --plain --flake --yes --dry-run --refresh --priv --label --check --limit --all --older-than --keep --quiet --color --roots --secrets --source --host --days --shells --config --updates --generation --help --version"
 
 # One entry per command: "<usage>|<summary>|<detail>". The overview, `help CMD`
@@ -27,6 +27,7 @@ help_entry() {
         diff) echo "diff [--config] [A [B]]#what changed between generations (default: newest vs previous)#Package changes with sizes. --config shows the changes in your .nix files instead (needs recorded snapshots, see: help snapshot)." ;;
         disk) echo "disk [STORE-PATH]#store size and what GC could free; or why a path is kept#With a store path: its GC roots, referrers and closure size. With measure_store off, only free space is shown; --refresh measures once." ;;
         health) echo "health#release/EOL, reboot needed, failed units, binary caches#Read only. Works on any distro with Nix; NixOS-only checks are left out elsewhere." ;;
+        doctor) echo "doctor#why nothing shows up: what was checked, what failed, how to fix it#Checks NixOS, the tools nixdatifier needs, the Nix store, /nix/var/nix/profiles, the generation list, the flake path, the setup type (flake or channels), flakes being enabled and the flake's git state. Each failure says how to fix it and shows the command that failed with its output. Paste the output into bug reports. Exits 1 when a check fails. Read only." ;;
         status) echo "status [--updates]#one-line summary for prompts and status bars#Running generation, reboot needed, failed units. --updates adds a (cached) upstream check. --json for scripts." ;;
         history) echo "history [list|clear]#what earlier switches, cleanups and updates did#Shared with the window: the last 50 runs, including their output (--json). clear forgets them (asks first)." ;;
         info) echo "info#host, NixOS version, uptime#" ;;
@@ -229,7 +230,7 @@ if [[ $cmd == help ]]; then
     else usage; fi
     exit 0
 fi
-[[ $cmd == completion ]] || command -v jq >/dev/null || die 'jq is required'
+[[ $cmd == completion || $cmd == doctor ]] || command -v jq >/dev/null || die 'jq is required'
 
 # ── Output ──────────────────────────────────────────────────────────────────
 # Commands build JSON once. Text and TSV are views of it, so the three formats
@@ -315,14 +316,14 @@ generations_json() {
 need_nixos() {
     local link
     for link in "$profiles"/system-*-link; do [[ -L $link ]] && return 0; done
-    die 'no NixOS system generations found (not NixOS? try: nixdatifier profiles)'
+    die 'no NixOS system generations found (not NixOS? try: nixdatifier profiles; why: nixdatifier doctor)'
 }
 find_flake() { # sets $flake quietly; returns 1 when there is none
     [[ -n $flake ]] || flake=$("$here/flake-context" "" | sed -n 1p)
     [[ -n $flake && -f $flake/flake.nix ]] || return 1
     flake=$(realpath "$flake")
 }
-resolve_flake() { find_flake || die 'no flake found: pass --flake DIR or set NIXDATIFIER_FLAKE'; }
+resolve_flake() { find_flake || die 'no flake found: pass --flake DIR or set NIXDATIFIER_FLAKE (why: nixdatifier doctor)'; }
 running_gen() { generation_rows | awk -F'\t' '$4 == 1 {print $1; exit}'; }
 
 cmd_generations() {
@@ -509,6 +510,46 @@ cmd_health() {
         (.facts | to_entries[] | "\(.key)\t\(.value)"),
         (.failedUnits[] | "failed\t\(.scope) \(.unit) \(.result) \(.reason)"),
         (.caches[] | "cache\t\(.url) \(.status) \(.ms)ms")'
+}
+# ── Doctor ──────────────────────────────────────────────────────────────────
+# The same checklist the window shows when a view is empty (tools/sh/doctor).
+# Text and --plain work without jq, since a missing jq is one of the findings.
+cmd_doctor() {
+    local rows _id status title detail fix fixcmd _action failed output mark colour failures
+    rows=$("$here/doctor" "$flake") || die 'the doctor helper failed'
+    failures=$(cut -f2 <<<"$rows" | grep -cx fail)
+    if [[ $fmt == json ]]; then
+        command -v jq >/dev/null || die 'jq is required for --json'
+        jq -Rn --arg version "${version:-}" '
+            def un: gsub("\\\\(?<c>.)"; if .c == "n" then "\n" elif .c == "t" then "\t" else .c end);
+            [inputs | split("\t") | map(un) | {id: .[0], status: .[1], title: .[2], detail: .[3], fix: .[4],
+                fixCommand: .[5], failedCommand: .[7], output: .[8]}]
+            | {version: $version, ok: (map(select(.status == "fail")) | length == 0), checks: .}' <<<"$rows"
+    elif [[ $fmt == plain ]]; then
+        cut -f1-6,8,9 <<<"$rows"
+    else
+        local width=$((${FZF_PREVIEW_COLUMNS:-${COLUMNS:-$(tput cols 2>/dev/null || echo 100)}} - 25)) R='' G='' Y='' D='' B='' X=''
+        ((width < 40)) && width=40
+        ((paint)) && R=$'\e[31m' G=$'\e[32m' Y=$'\e[33m' D=$'\e[2m' B=$'\e[1m' X=$'\e[0m'
+        # Everything after the title starts in column 24; continuation lines line up with it.
+        wrap() { fold -s -w "$width" <<<"$2" | sed "1!s/^/$(printf '%*s' "$1" '')/"; }
+        while IFS=$'\x1f' read -r _id status title detail fix fixcmd _action failed output; do
+            case $status in
+                ok) mark=✔ colour=$G ;; fail) mark=✘ colour=$R ;; warn) mark=! colour=$Y ;; *) mark=· colour=$D ;;
+            esac
+            printf '%s%s%s %s%-20s%s %s\n' "$colour" "$mark" "$X" "$B" "$title" "$X" "$(wrap 23 "$(printf '%b' "$detail")")"
+            [[ -z $fix ]] || printf '%23s%s→%s %s\n' '' "$colour" "$X" "$(wrap 25 "$(printf '%b' "$fix")")"
+            [[ -z $fixcmd ]] || printf '%25s%s$ %s%s\n' '' "$B" "$(printf '%b' "$fixcmd")" "$X"
+            [[ -z $failed ]] || printf '%25s%sfailed: %s%s\n' '' "$D" "$(printf '%b' "$failed")" "$X"
+            [[ -z $output ]] || printf '%b\n' "$output" | sed "s/^/$(printf '%*s' 25 '')${D}│${X} /"
+        done < <(tr '\t' '\037' <<<"$rows")
+        echo
+        if ((failures == 1)); then printf '%s1 check failed.%s ' "$R" "$X"
+        elif ((failures)); then printf '%s%s checks failed.%s ' "$R" "$failures" "$X"; fi
+        if ((failures)); then echo 'Bug reports: paste this output into https://github.com/Muddyblack/nixdatifier/issues'
+        else printf '%sNothing failed.%s\n' "$G" "$X"; fi
+    fi
+    ((failures == 0))
 }
 cmd_status() {
     local gens health upd=null
@@ -1337,6 +1378,7 @@ case $cmd in
     diff) cmd_diff ;;
     disk) cmd_disk ;;
     health) cmd_health ;;
+    doctor) cmd_doctor ;;
     status) cmd_status ;;
     history) cmd_history ;;
     info) cmd_info ;;

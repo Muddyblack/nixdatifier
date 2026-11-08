@@ -165,6 +165,10 @@ Pane {
     // ── System health tool state ─────────────────────────────────────────────
     property var healthResult: null
     property bool isProbingHealth: false
+    property var doctorResult: null
+    property bool isDiagnosing: false
+    property string doctorReport: ""
+    signal diagnoseRequested
 
     signal viewModeChanged(string mode)
     signal refreshRequested
@@ -712,6 +716,11 @@ Pane {
                 onCompareWithRequested: (a, b) => fullView.openCompareInDiffTab(a, b)
                 onRefreshRequested: () => fullView.refreshRequested()
                 onConfigureRequested: () => fullView.configureRequested()
+                doctorResult: fullView.doctorResult
+                isDiagnosing: fullView.isDiagnosing
+                doctorReport: fullView.doctorReport
+                onDiagnoseRequested: fullView.diagnoseRequested()
+                onToolsRequested: fullView.viewModeChanged("tools")
             }
 
             UpdatesTab {
@@ -729,6 +738,12 @@ Pane {
                 showPackageIcons: fullView.showPackageIcons
                 onCopyToClipboard: text => fullView.copyToClipboard(text)
                 onCheckRequested: fullView.checkFlakeRequested()
+                doctorResult: fullView.doctorResult
+                isDiagnosing: fullView.isDiagnosing
+                doctorReport: fullView.doctorReport
+                onDiagnoseRequested: fullView.diagnoseRequested()
+                onConfigureRequested: fullView.configureRequested()
+                onToolsRequested: fullView.viewModeChanged("tools")
                 uiActive: fullView.uiActive && visible
                 activeViewMode: fullView.activeViewMode
                 accentColor: fullView.accentColor

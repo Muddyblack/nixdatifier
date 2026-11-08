@@ -1043,6 +1043,180 @@ printf 'starting\\nFailed to register: Unable to acquire bus name\\nMain process
         self.assertIn("not a directory", result.stderr)
 
 
+class Doctor(HelperCase):
+    """tools/sh/doctor against a fake system: profiles, /etc and the tools."""
+
+    def setUp(self):
+        super().setUp()
+        tools = self.root / "tools"
+        shutil.copytree(HELPERS, tools)
+        self.profiles = self.root / "profiles"
+        self.etc = self.root / "etc-nixos"
+        self.marker = self.root / "NIXOS"
+        self.os_release = self.root / "os-release"
+        self.home = self.root / "home"
+        self.home.mkdir()
+        for name in ("doctor", "generations", "flake-context"):
+            path = tools / name
+            path.write_text(
+                path.read_text()
+                .replace("/nix/var/nix/profiles", str(self.profiles))
+                .replace("/etc/NIXOS", str(self.marker))
+                .replace("/etc/os-release", str(self.os_release))
+                .replace("/etc/nixos", str(self.etc))
+            )
+        self.doctor = str(tools / "doctor")
+        self.env["HOME"] = str(self.home)
+        self.env.pop("XDG_CONFIG_HOME", None)
+        for name in ("nix-store", "nix-env", "jq", "sudo"):
+            self.script(self.bin / name, "exit 0\n")
+        self.script(
+            self.bin / "nix",
+            'case "$1" in --version) echo "nix (Nix) 2.34.0" ;; *) echo "nix-command flakes" ;; esac\n',
+        )
+
+    def nixos(self):
+        self.marker.touch()
+        self.os_release.write_text('ID=nixos\nPRETTY_NAME="NixOS 26.05 (Test)"\n')
+
+    def generations(self, count):
+        self.profiles.mkdir(exist_ok=True)
+        for number in range(1, count + 1):
+            store = self.root / f"store{number}"
+            store.mkdir()
+            (self.profiles / f"system-{number}-link").symlink_to(store)
+        (self.profiles / "system").symlink_to(f"system-{count}-link")
+
+    def checks(self, *args):
+        result = subprocess.run(
+            [self.doctor, *args], env=self.env, text=True, capture_output=True, timeout=30, check=False
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = {}
+        for line in result.stdout.splitlines():
+            fields = line.split("\t")
+            self.assertEqual(len(fields), 9, line)
+            rows[fields[0]] = dict(
+                zip(
+                    ("id", "status", "title", "detail", "fix", "fixCommand", "action", "failedCommand", "output"),
+                    fields,
+                    strict=True,
+                )
+            )
+        return rows
+
+    def test_working_flake_system_passes(self):
+        self.nixos()
+        self.generations(3)
+        flake = self.home / "nixos-config"
+        flake.mkdir()
+        (flake / "flake.nix").write_text("{}")
+        (flake / "flake.lock").write_text("{}")
+        rows = self.checks()
+        self.assertEqual(rows["about"]["status"], "info")
+        self.assertIn("NixOS 26.05 (Test)", rows["about"]["detail"])
+        for check in ("nixos", "tools", "nix", "profiles", "generations", "flake", "setup", "features"):
+            self.assertEqual(rows[check]["status"], "ok", rows[check])
+        self.assertIn("3 system generations", rows["profiles"]["detail"])
+        self.assertIn("3 of 3", rows["generations"]["detail"])
+        self.assertIn("found automatically", rows["flake"]["detail"])
+        self.assertNotIn("lock", rows)
+
+    def test_nothing_found_says_what_to_do(self):
+        self.nixos()
+        self.profiles.mkdir()
+        rows = self.checks()
+        self.assertEqual(rows["profiles"]["status"], "fail")
+        self.assertIn("nixos-rebuild switch", rows["profiles"]["fix"])
+        self.assertNotIn("generations", rows)
+        self.assertEqual(rows["flake"]["status"], "fail")
+        self.assertEqual(rows["flake"]["action"], "configure")
+        self.assertIn("nixdatifier config set flake", rows["flake"]["fixCommand"])
+        # The flake row already names the problem; no second "setup" failure.
+        self.assertNotIn("setup", rows)
+
+    def test_channels_setup_explains_what_works(self):
+        self.nixos()
+        self.generations(1)
+        self.etc.mkdir()
+        (self.etc / "configuration.nix").write_text("{}")
+        channels = self.profiles / "per-user/root/channels"
+        (channels / "nixos").mkdir(parents=True)
+        (channels / "manifest.nix").write_text("")
+        rows = self.checks()
+        self.assertNotIn("flake", rows)
+        self.assertEqual(rows["setup"]["status"], "warn")
+        self.assertIn("Channels", rows["setup"]["detail"])
+        self.assertIn("with nixos.", rows["setup"]["detail"])
+        self.assertIn("Generations", rows["setup"]["detail"])
+        self.assertIn("need a flake", rows["setup"]["detail"])
+
+    def test_other_distribution_points_to_the_tools_that_work(self):
+        self.os_release.write_text('ID=ubuntu\nPRETTY_NAME="Ubuntu 26.04"\n')
+        rows = self.checks()
+        self.assertEqual(rows["nixos"]["status"], "warn")
+        self.assertEqual(rows["nixos"]["action"], "tools")
+        self.assertIn("Ubuntu 26.04", rows["nixos"]["detail"])
+        self.assertEqual(rows["profiles"]["status"], "skip")
+        self.assertNotIn("setup", rows)
+
+    def test_configured_flake_path_problems(self):
+        self.nixos()
+        self.generations(1)
+        rows = self.checks(str(self.root / "missing"))
+        self.assertEqual(rows["flake"]["status"], "fail")
+        self.assertIn("does not exist", rows["flake"]["detail"])
+        empty = self.root / "empty"
+        empty.mkdir()
+        (empty / "configuration.nix").write_text("{}")
+        rows = self.checks(str(empty))
+        self.assertIn("has no flake.nix", rows["flake"]["detail"])
+        self.assertIn("channels setup", rows["flake"]["fix"])
+        (empty / "flake.nix").write_text("{}")
+        rows = self.checks(str(empty))
+        self.assertEqual(rows["flake"]["status"], "ok")
+        self.assertIn("from your settings", rows["flake"]["detail"])
+        self.assertEqual(rows["lock"]["status"], "warn")
+        self.assertIn("nix flake lock", rows["lock"]["fixCommand"])
+
+    def test_untracked_flake_in_git(self):
+        if not shutil.which("git"):
+            self.skipTest("git is not installed")
+        self.nixos()
+        self.generations(1)
+        flake = self.root / "repo"
+        flake.mkdir()
+        (flake / "flake.nix").write_text("{}")
+        (flake / "flake.lock").write_text("{}")
+        subprocess.run(["git", "init", "-q", str(flake)], check=True, env=self.env)
+        rows = self.checks(str(flake))
+        self.assertEqual(rows["git"]["status"], "warn")
+        self.assertIn("not tracked", rows["git"]["detail"])
+        self.assertIn("git -C", rows["git"]["fixCommand"])
+
+    def test_failed_commands_carry_their_output_and_missing_tools_are_named(self):
+        self.nixos()
+        self.generations(1)
+        self.script(self.bin / "nix", "printf 'error: bad\\tthing\\nsecond line\\n' >&2; exit 1\n")
+        (self.bin / "jq").unlink()
+        rows = self.checks()
+        self.assertEqual(rows["nix"]["status"], "fail")
+        self.assertEqual(rows["nix"]["failedCommand"], "nix --version")
+        # Tabs and newlines inside a field are escaped, so a row stays one line.
+        self.assertEqual(rows["nix"]["output"], "error: bad\\tthing\\nsecond line")
+        # Only checkable where no other jq is on PATH (the helper also adds the NixOS profile paths).
+        elsewhere = [p for p in self.env["PATH"].split(os.pathsep) if p != str(self.bin)]
+        elsewhere += [
+            "/run/current-system/sw/bin",
+            "/nix/var/nix/profiles/default/bin",
+            str(self.home / ".nix-profile/bin"),
+        ]
+        if shutil.which("jq", path=os.pathsep.join(elsewhere)):
+            return
+        self.assertEqual(rows["tools"]["status"], "fail")
+        self.assertIn("jq", rows["tools"]["detail"])
+
+
 class Impermanence(HelperCase):
     """The persistent-folder helper against a fixture that mirrors a btrfs
     rollback setup: /@persist mounted at <root>/persist with entries bound out."""
@@ -1422,7 +1596,7 @@ class Cli(HelperCase):
         tools = self.root / "tools"
         shutil.copytree(HELPERS, tools)
         self.profiles = self.root / "profiles"
-        for name in ("nixdatifier", "generations", "why"):
+        for name in ("nixdatifier", "generations", "why", "doctor"):
             path = tools / name
             path.write_text(
                 path.read_text()
@@ -1518,6 +1692,37 @@ class Cli(HelperCase):
         self.cli_run("config", "unset", "preview_warn")
         later = json.loads(self.cli_run("config", "sync", "pull", json.dumps(window)).stdout)
         self.assertEqual(later["previewWarnMiB"], 2048)  # clearing restores the default in the window
+
+    def test_doctor_command_formats(self):
+        missing = str(self.root / "no-such-flake")
+        result = self.cli_run("--json", "--flake", missing, "doctor")
+        self.assertEqual(result.returncode, 1, result.stderr)  # a failed check
+        report = json.loads(result.stdout)
+        self.assertIs(report["ok"], False)
+        checks = {c["id"]: c for c in report["checks"]}
+        self.assertEqual(
+            set(checks["flake"]),
+            {"id", "status", "title", "detail", "fix", "fixCommand", "failedCommand", "output"},
+        )
+        self.assertEqual(checks["flake"]["status"], "fail")
+        self.assertIn(missing, checks["flake"]["detail"])
+        self.assertEqual(checks["profiles"]["status"], "ok")
+        self.assertIn("3 system generations", checks["profiles"]["detail"])
+        self.assertEqual(checks["generations"]["status"], "ok")
+
+        plain = self.cli_run("--plain", "--flake", missing, "doctor").stdout.splitlines()
+        self.assertTrue(all(len(line.split("\t")) == 8 for line in plain))
+        self.assertIn("flake\tfail", "\n".join(plain))
+
+        text = self.cli_run("--color", "never", "--flake", missing, "doctor").stdout
+        self.assertIn("✔ Profiles readable", text)
+        self.assertIn("✘ Flake path", text)
+        self.assertIn("→ Pick your config folder", text)
+        self.assertIn("$ nixdatifier config set flake", text)
+        self.assertRegex(text, r"\d+ checks? failed")
+        self.assertNotIn("\x1b[", text)
+        # The usual messages point at the doctor.
+        self.assertIn("nixdatifier doctor", self.cli_run("--flake", missing, "update").stderr)
 
     def test_why_command_formats(self):
         root = (self.profiles / "system-2-link").resolve().name

@@ -2,6 +2,10 @@
 
 Bug reports, fixes, and ideas are welcome. For anything large, open an issue first.
 
+When reporting a bug, include the output of `nixdatifier doctor` (or *Copy report* in an
+empty Generations or Updates view). It shows your versions, what nixdatifier found, and the
+exact command that failed with its output.
+
 ## Development setup
 
 ```bash

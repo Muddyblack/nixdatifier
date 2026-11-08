@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+# Usage: doctor [FLAKE-DIR]
+# Why nothing shows up: checks what nixdatifier needs, one row per check, so an
+# empty Generations or Updates view can say what is wrong and how to fix it.
+# The window, `nixdatifier doctor` and bug reports all read this.
+#
+# Rows are tab-separated; tabs, newlines and backslashes inside a field are
+# written as \t, \n and \\:
+#   id  status  title  detail  fix  fixCommand  action  failedCommand  output
+# status:  ok | warn | fail | info | skip   (skip: not relevant on this system)
+# action:  what the window offers next to the fix: configure (pick the flake
+#          folder), tools (open the tools that work without NixOS), or empty.
+# FLAKE-DIR is the configured flake path; empty means "search the usual places".
+set -u
+export LC_ALL=C
+export PATH="$PATH:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:${HOME:-/root}/.nix-profile/bin"
+here=$(dirname "$(realpath "$0")")
+profiles=/nix/var/nix/profiles
+etc_nixos=/etc/nixos
+requested=${1:-}
+# shellcheck disable=SC2088  # a literal "~", not an expansion
+[[ $requested != "~" && $requested != "~/"* ]] || requested="$HOME${requested:1}"
+
+esc() { local s=$1; s=${s//\\/\\\\}; s=${s//$'\t'/\\t}; s=${s//$'\n'/\\n}; printf '%s' "$s"; }
+# row ID STATUS TITLE DETAIL [FIX] [FIX-COMMAND] [ACTION] [FAILED-COMMAND] [OUTPUT]
+row() {
+    local f out=()
+    for f in "$1" "$2" "$3" "$4" "${5:-}" "${6:-}" "${7:-}" "${8:-}" "${9:-}"; do out+=("$(esc "$f")"); done
+    (IFS=$'\t'; printf '%s\n' "${out[*]}")
+}
+# try CMD...: run it with a deadline; $tried is the command line, $said what it printed (last lines).
+try() {
+    tried="$*"
+    said=$(timeout --kill-after=5s 20s "$@" 2>&1)
+    local rc=$?
+    said=$(printf '%s' "$said" | tail -n 20 | cut -c1-400)
+    return "$rc"
+}
+has() { command -v "$1" >/dev/null 2>&1; }
+
+# ── About this system, for bug reports ──────────────────────────────────────
+version=$(sed -n 's/.*"Version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$here/../../../metadata.json" 2>/dev/null | head -n 1)
+distro=$(sed -n 's/^PRETTY_NAME=//p' /etc/os-release 2>/dev/null | tr -d '"' | head -n 1)
+nix_version=$(nix --version 2>/dev/null | head -n 1)
+row about info "This system" "nixdatifier ${version:-unknown} · ${distro:-unknown distribution} · Linux $(uname -r 2>/dev/null) · ${nix_version:-no nix}"
+
+# ── NixOS or Nix on another distribution ────────────────────────────────────
+is_nixos=0
+if [ -e /etc/NIXOS ] || grep -Eqs "^ID=(nixos|\"nixos\"|'nixos')[[:space:]]*$" /etc/os-release; then is_nixos=1; fi
+if ((is_nixos)); then
+    row nixos ok "Running on NixOS" "${distro:-NixOS}"
+else
+    row nixos warn "Running on NixOS" "No: this is Nix on ${distro:-another distribution}. System generations, flake updates and rebuilds are NixOS features." \
+        "Dev environments, Home Manager and nix profile work here: open them under Tools." "nixdatifier profiles" tools
+fi
+
+# ── Tools ───────────────────────────────────────────────────────────────────
+missing=()
+for t in nix nix-store nix-env jq; do has "$t" || missing+=("$t"); done
+root_way=""
+for t in sudo pkexec doas; do has "$t" && { root_way=$t; break; }; done
+if ((${#missing[@]})); then
+    row tools fail "Required tools" "Not found: ${missing[*]} (searched PATH: $PATH)" \
+        "Install them, or start nixdatifier from a session where they are on PATH. jq is in nixpkgs as jq." "command -v ${missing[*]}"
+elif [[ -z $root_way ]]; then
+    row tools fail "Required tools" "No sudo, pkexec or doas: switching, deleting and cleaning need one of them." \
+        "Enable security.sudo or security.polkit (for pkexec)." "command -v sudo pkexec doas"
+else
+    row tools ok "Required tools" "nix, nix-store, nix-env and jq found; runs as root with $root_way"
+fi
+optional=()
+has pkexec || optional+=("pkexec (the window's \"Use pkexec\" option)")
+has git || optional+=("git (config diffs, flakes in a git repository)")
+has curl || optional+=("curl (binary cache check, release notes)")
+has notify-send || optional+=("notify-send (desktop notifications)")
+has fzf || optional+=("fzf (the terminal menu)")
+if ((${#optional[@]})); then
+    printf -v list '%s, ' "${optional[@]}"
+    row optional info "Optional tools" "Not found: ${list%, }. Everything else works without them."
+fi
+
+# ── Nix and its store ───────────────────────────────────────────────────────
+if has nix; then
+    if try nix --version; then
+        row nix ok "Nix runs" "$said"
+    else
+        row nix fail "Nix runs" "nix --version failed." "Check the nix installation; the output below says what went wrong." "" "" "$tried" "$said"
+    fi
+fi
+if has nix-store; then
+    probe=$(readlink -e "$profiles/system" 2>/dev/null || readlink -e "$(command -v nix-store)" 2>/dev/null)
+    probe=${probe%/bin/nix-store}
+    if [[ $probe == /nix/store/* ]]; then
+        if try nix-store --query --hash "$probe"; then
+            row store ok "Nix store reachable" "nix-store answers (through the daemon when there is one)"
+        else
+            row store fail "Nix store reachable" "Could not query the Nix store." \
+                "Is the Nix daemon running? Your user also needs access to its socket (nix.settings.allowed-users)." \
+                "systemctl status nix-daemon.socket nix-daemon.service" "" "$tried" "$said"
+        fi
+    fi
+fi
+
+# ── Profiles and system generations ─────────────────────────────────────────
+links=()
+if [[ ! -e $profiles ]]; then
+    if ((is_nixos)); then
+        row profiles fail "Profiles readable" "$profiles does not exist." "On NixOS it is created by the first nixos-rebuild; the Nix installation looks broken." "ls -ld $profiles"
+    else
+        row profiles skip "Profiles readable" "$profiles does not exist (fine without NixOS)."
+    fi
+elif ! try ls "$profiles" >/dev/null; then
+    row profiles fail "Profiles readable" "$profiles exists but cannot be listed: a permission problem, not a missing system." \
+        "It should be readable by everyone (drwxr-xr-x root). Check the mode and any hardening that hides it." "ls -ld $profiles" "" "$tried" "$said"
+else
+    for link in "$profiles"/system-*-link; do [[ -L $link ]] && links+=("$link"); done
+    if ((${#links[@]})); then
+        newest=$(printf '%s\n' "${links[@]}" | sed -n 's/.*system-\([0-9]*\)-link$/\1/p' | sort -n | tail -n 1)
+        if [[ -e $profiles/system ]] && readlink -e "$profiles/system" >/dev/null 2>&1; then
+            row profiles ok "Profiles readable" "${#links[@]} system generations in $profiles, newest #$newest"
+        else
+            row profiles fail "Profiles readable" "${#links[@]} system generations, but $profiles/system does not resolve to a store path." \
+                "Switch to a generation again so the profile points somewhere: sudo nixos-rebuild switch" "readlink -e $profiles/system"
+        fi
+    elif ((is_nixos)); then
+        row profiles fail "Profiles readable" "$profiles has no system-N-link entries." \
+            "Build and switch once (sudo nixos-rebuild switch), or check whether a cleanup tool removed them." "ls -l $profiles"
+    else
+        row profiles skip "Profiles readable" "No system profile: expected on Nix without NixOS."
+    fi
+fi
+
+# The generation list exactly as the window and the CLI read it (see #44).
+if ((${#links[@]})); then
+    listing=$("$here/generations" 2>&1)
+    parsed=$(grep -cE "^[0-9-]+ [0-9:]+(\.[0-9]+)?( [+-][0-9]+)? '[^']*system-[0-9]+-link' -> '[^']+'" <<<"$listing")
+    if ((parsed > 0)); then
+        row generations ok "Generations listed" "$parsed of ${#links[@]} generations read"
+    else
+        first=${links[0]}
+        if ! try stat --format=%y "$first" || ! try readlink "$first"; then :; else tried="$here/generations"; said=$(head -n 8 <<<"$listing"); fi
+        row generations fail "Generations listed" "The generation links exist but none could be read." \
+            "Please report this with the output below: it is what the reader got." "" "" "$tried" "$said"
+    fi
+fi
+
+# ── Flake path and setup type ───────────────────────────────────────────────
+flake="" flake_status=""
+if [[ -n $requested ]]; then
+    if [[ ! -e $requested ]]; then
+        flake_status=fail
+        row flake fail "Flake path" "The configured folder $requested does not exist." \
+            "Pick your config folder in the settings, or clear the path to search the usual places." "nixdatifier config set flake /path/to/your/flake" configure
+    elif [[ ! -d $requested || ! -x $requested ]]; then
+        flake_status=fail
+        row flake fail "Flake path" "$requested is not a folder you can open." "Pick your config folder in the settings." "ls -ld $requested" configure
+    elif [[ ! -f $requested/flake.nix ]]; then
+        flake_status=fail
+        hint="Pick the folder that holds flake.nix."
+        [[ -f $requested/configuration.nix ]] && hint="$requested holds configuration.nix but no flake.nix: a channels setup. Clear the flake path, or pick your flake folder."
+        row flake fail "Flake path" "$requested has no flake.nix." "$hint" "ls $requested" configure
+    elif [[ ! -r $requested/flake.nix ]]; then
+        flake_status=fail
+        row flake fail "Flake path" "$requested/flake.nix is not readable by you." \
+            "Make the config readable by your user (keep secrets out of the flake), or pick a copy you own." "ls -l $requested/flake.nix" configure
+    else
+        flake=$(realpath "$requested")
+        row flake ok "Flake path" "$flake (from your settings)"
+    fi
+else
+    flake=$("$here/flake-context" "" 2>/dev/null | sed -n 1p)
+    if [[ -n $flake ]]; then
+        row flake ok "Flake path" "$flake (found automatically)"
+    elif ((is_nixos)) && [[ ! -f $etc_nixos/configuration.nix ]]; then
+        flake_status=fail
+        row flake fail "Flake path" "No flake.nix in $etc_nixos, ~/nixos-config or ~/.config/nixos, and no path is set." \
+            "Pick your config folder in the settings." "nixdatifier config set flake /path/to/your/flake" configure
+    fi
+fi
+
+if ((is_nixos)); then
+    root_channels=()
+    for c in "$profiles"/per-user/root/channels/*; do
+        [[ -e $c && $(basename "$c") != manifest.nix && $(basename "$c") != binary-caches ]] && root_channels+=("$(basename "$c")")
+    done
+    if [[ -n $flake ]]; then
+        row setup ok "Setup type" "Flake: every feature works."
+    elif [[ -f $etc_nixos/configuration.nix ]]; then
+        detail="Channels: $etc_nixos/configuration.nix${root_channels:+ with ${root_channels[*]}}."
+        row setup warn "Setup type" "$detail Generations, What changed, Health, Disk, Profiles, Secrets and Dev environments work; flake updates, update previews and release notes need a flake." \
+            "Nothing to fix if you use channels. If you have a flake, pick its folder in the settings." "nix-channel --list" configure
+    elif [[ $flake_status != fail ]]; then
+        row setup fail "Setup type" "Neither a flake nor $etc_nixos/configuration.nix was found." \
+            "Pick your config folder in the settings." "nixdatifier config set flake /path/to/your/flake" configure
+    fi
+fi
+
+# ── The flake itself: what makes Nix refuse it ──────────────────────────────
+if [[ -n $flake ]] && has nix; then
+    if try nix config show experimental-features || try nix show-config; then
+        if [[ $said != *flakes* || $said != *nix-command* ]]; then
+            row features fail "Flakes enabled" "Nix has flakes or nix-command turned off: $(grep -m1 experimental-features <<<"$said" || echo "$said")" \
+                "Add to your configuration and rebuild." 'nix.settings.experimental-features = [ "nix-command" "flakes" ];'
+        else
+            row features ok "Flakes enabled" "nix-command and flakes are on"
+        fi
+    else
+        row features fail "Flakes enabled" "Could not read the Nix configuration." "" "" "" "$tried" "$said"
+    fi
+fi
+if [[ -n $flake ]]; then
+    if [[ ! -f $flake/flake.lock ]]; then
+        row lock warn "flake.lock" "$flake has no flake.lock yet, so there is nothing to compare with upstream." \
+            "Create it once; updates are checked against it." "nix flake lock $flake"
+    fi
+    if has git; then
+        if try git -C "$flake" rev-parse --is-inside-work-tree; then
+            if ! try git -C "$flake" ls-files --error-unmatch flake.nix; then
+                row git warn "Git repository" "flake.nix is not tracked by git. Nix only sees tracked files in a git flake." \
+                    "Add it (and the files it imports)." "git -C $flake add flake.nix" "" "$tried" "$said"
+            fi
+        elif [[ $said == *"dubious ownership"* || $said == *safe.directory* ]]; then
+            row git warn "Git repository" "Git refuses $flake: it belongs to another user." \
+                "Trust the folder for your user." "git config --global --add safe.directory $flake" "" "$tried" "$said"
+        fi
+    fi
+fi
+exit 0

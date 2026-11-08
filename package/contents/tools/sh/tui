@@ -979,6 +979,7 @@ home_rows() {
     item secrets '◇' "$O" Secrets 'sops/agenix names, never values' 'Enter: full screen'
     item profiles '⊞' "$P" Profiles 'your packages, Home Manager and nix profile' 'Enter: install, upgrade, remove'
     item info 'i' "$C" 'System info' 'host, version, uptime' 'Enter: full screen'
+    item doctor '✔' "$G" Doctor 'why a view is empty, and how to fix it' 'Enter: full screen'
     item hash '#' "$O" 'Hash calculator' 'fixed-output hash and SRI' 'Enter: paste what to hash'
     item why '?' "$C" 'Why is this here?' 'what pulls a package into the system' 'Enter: type a package name'
     item about '♥' "$P" 'About & support' 'the project, links, how to support it' 'Enter: full screen'
@@ -993,13 +994,19 @@ home_preview() { # home_preview KEY
             echo
             printf '%s%sRecent generations%s\n' "$B" "$P" "$X"
             gen_rows | head -5 | cut -f2- ;;
-        generations | compare) gen_rows | cut -f2- ;;
+        generations | compare)
+            json=$(gen_rows | cut -f2-)
+            if [[ -n $json ]]; then printf '%s\n' "$json"
+            else printf '%sNo generations found. What was checked:%s\n\n' "$B" "$X"; cli doctor; fi ;;
         settings) settings_rows | cut -f2- ;;
         about) about_card ;;
         diff)
             json=$(diff_json) || { echo "${R}diff failed${X}"; return; }
             change_summary "$json" 'newest vs previous'; echo; change_rows <<<"$json" | cut -f5 ;;
-        updates) cli updates; echo; printf '%sEnter for every input, its release notes and updating it.%s\n' "$D" "$X" ;;
+        updates)
+            if json=$("$NXD_CLI" "${clr[@]}" updates 2>&1); then printf '%s\n' "$json" | tint
+                echo; printf '%sEnter for every input, its release notes and updating it.%s\n' "$D" "$X"
+            else printf '%s\n\n%sWhat was checked:%s\n\n' "$json" "$B" "$X"; cli doctor; fi ;;
         history) history_rows | head -40 | cut -f2- ;;
         dev) dev_rows | cut -f2- ;;
         persist) cli persist status ;;
@@ -1014,15 +1021,22 @@ home_preview() { # home_preview KEY
         *) cli "$1" ;;
     esac
 }
+have_flake() { # a flake.nix where the CLI would look, without checking upstream
+    local dir=${NIXDATIFIER_FLAKE:-$("$NXD_CLI" config get flake 2>/dev/null)}
+    dir=$("$here/flake-context" "$dir" 2>/dev/null | sed -n 1p)
+    [[ -n $dir && -f $dir/flake.nix ]]
+}
 home_enter() { # home_enter KEY
     case $1 in
         overview) working Overview; home_preview overview | page Overview ;;
-        generations) generations_screen ;;
+        generations | compare | updates)
+            # An empty view says why instead: the same checklist as nixdatifier doctor.
+            if [[ $1 == updates ]] && have_flake; then updates_screen
+            elif [[ $1 != updates && -n $(gen_rows) ]]; then if [[ $1 == compare ]]; then compare_screen; else generations_screen; fi
+            else working Doctor; home_preview "$1" | page "Why $1 is empty"; fi ;;
         settings) settings_screen ;;
         about) working About; about_card fetch | page 'About' ;;
-        compare) compare_screen ;;
         diff) changes_screen '' '' 'newest vs previous' ;;
-        updates) updates_screen ;;
         history) history_screen ;;
         dev) dev_screen ;;
         persist) persist_screen ;;
@@ -1084,12 +1098,13 @@ numbered_menu() {
    7  Disk              store size, what GC could free
    8  Dev environments  direnv projects and their cache
    9  History           what earlier changes did
+   d  Doctor            why a view is empty, and how to fix it
    q  Quit              (or type any command, like: diff 3 2)
 MENU
         read -r -p $'\n> ' reply || { echo; return 0; }
         case $reply in
             1) item=health ;; 2) item=generations ;; 3) item=updates ;; 4) item='diff' ;; 5) item=switch ;;
-            6) item=clean ;; r | R) item=rebuild ;; 7) item=disk ;; 8) item='dev list' ;; 9) item=history ;;
+            6) item=clean ;; r | R) item=rebuild ;; 7) item=disk ;; 8) item='dev list' ;; 9) item=history ;; d | D) item=doctor ;;
             q | Q | quit | exit) return 0 ;;
             '') continue ;;
             *) item=$reply ;;
