@@ -1,0 +1,264 @@
+#!/usr/bin/env bash
+# Usage: cve status
+#        cve scan PATH [--refresh]
+#        cve peek PATH
+#        cve delta NEW-SYSTEM-DRV [CURRENT-PATH] [--refresh]  < changes
+#
+# Known vulnerabilities (CVEs) in a closure, read only. Only when a scanner is
+# there: vulnix on PATH, or `nix run nixpkgs#vulnix` when
+# NIXDATIFIER_CVE_NIX_RUN=on (it downloads vulnix). The window and
+# `nixdatifier cve` both read this.
+#
+# status: key=value lines, quick (never runs a scan or a download)
+#   scanner=vulnix|nix-run|     empty: none, the feature stays hidden
+#   whitelist=PATH|URL           NIXDATIFIER_CVE_WHITELIST, else
+#                                ~/.config/vulnix/whitelist.toml (.yaml) when it exists
+#   whitelist_error=TEXT         the configured whitelist does not exist
+#   scanned=1|0                  a scan finished before: the window then scans on its own
+# scan: JSON for PATH's runtime closure (vulnix -C), cached per store path and
+#   whitelist for a day (NIXDATIFIER_CVE_TTL seconds), since the closure never
+#   changes but the NVD database does:
+#   {storePath, scannedAt, stale, scanner, whitelist,
+#    counts: {critical, high, medium, low, unknown}, cves, whitelisted, affectedPackages,
+#    packages: [{name, pname, version, derivation, maxScore, severity,
+#                cves: [{id, score, severity, url, description, whitelisted}]}]}
+#   Counts are distinct CVE ids that are not whitelisted. Severity follows the
+#   CVSS v3 base score: critical >= 9, high >= 7, medium >= 4, low > 0, unknown
+#   without a v3 score.
+# peek: the last scan of PATH from the cache, however old (stale=true when
+#   older than the TTL); exit 1 when there is none. Never scans.
+# delta: what an update would fix or introduce, for the update preview. stdin
+#   has the preview's changed packages, "name<TAB>oldVersion<TAB>newVersion".
+#   The new system is not built yet, so its packages come from the .drv files
+#   of the evaluated system (vulnix reads their patches too): the new versions
+#   of the changed packages, and the same-version rebuilds of packages that are
+#   affected now (a backported CVE patch). The running system's side is its scan.
+#   {storePath, baseScannedAt, checkedPackages, fixed: [...], introduced: [...],
+#    fixedCounts: {...}, introducedCounts: {...}}
+#   Each entry: {id, score, severity, url, package, fromVersion, toVersion}.
+set -u
+export LC_ALL=C
+export PATH="$PATH:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:${HOME:-/root}/.nix-profile/bin"
+cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/nixdatifier"
+ttl=${NIXDATIFIER_CVE_TTL:-86400}
+[[ $ttl =~ ^[0-9]+$ ]] || ttl=86400
+marker=$cache_root/cve-scanned
+# Tests point these at fakes.
+vulnix=${NIXDATIFIER_VULNIX:-vulnix}
+store=${NIXDATIFIER_STORE_DIR:-/nix/store}
+
+scanner='' cmd=()
+find_scanner() {
+    if command -v "$vulnix" >/dev/null 2>&1; then
+        scanner=vulnix cmd=("$vulnix")
+    elif [[ ${NIXDATIFIER_CVE_NIX_RUN:-} == on ]] && command -v nix >/dev/null 2>&1; then
+        scanner=nix-run cmd=(nix --extra-experimental-features 'nix-command flakes' run nixpkgs#vulnix --)
+    else
+        return 1
+    fi
+}
+
+whitelist='' whitelist_error=''
+find_whitelist() {
+    local wl=${NIXDATIFIER_CVE_WHITELIST:-} conf=${XDG_CONFIG_HOME:-$HOME/.config}/vulnix f
+    if [[ -n $wl ]]; then
+        wl=${wl/#\~/$HOME}
+        if [[ $wl == http://* || $wl == https://* || -r $wl ]]; then whitelist=$wl
+        else whitelist_error="whitelist not found: $wl"; fi
+        return 0
+    fi
+    for f in "$conf/whitelist.toml" "$conf/whitelist.yaml" "$conf/whitelist.yml"; do
+        [[ -r $f ]] && { whitelist=$f; return 0; }
+    done
+}
+# Changing the whitelist's content must not serve results from before.
+whitelist_id() {
+    if [[ -z $whitelist ]]; then echo none
+    elif [[ -f $whitelist ]]; then printf '%s:' "$whitelist"; sha256sum <"$whitelist" | cut -c1-16
+    else echo "$whitelist"; fi
+}
+
+die() { printf '%s\n' "$*" >&2; exit 1; }
+need_scanner() {
+    find_scanner || die 'no vulnerability scanner: install vulnix, or allow running it with nix run (NIXDATIFIER_CVE_NIX_RUN=on)'
+    find_whitelist
+    [[ -z $whitelist_error ]] || die "$whitelist_error"
+}
+
+# One vulnix run. Prints its JSON; on failure says why in one line.
+vulnix_json() { # vulnix_json ARGS...
+    local out err rc reason
+    out=$(mktemp "$cache_root/.cve.XXXXXXXX") err=$(mktemp "$cache_root/.cve.XXXXXXXX")
+    local wl=()
+    [[ -z $whitelist ]] || wl=(-w "$whitelist")
+    timeout --kill-after=10s 1200s nice -n 10 "${cmd[@]}" --json -s "${wl[@]}" "$@" >"$out" 2>"$err"
+    rc=$?
+    # 0: nothing found, 2: findings, 1: only whitelisted ones (with -s). A crash
+    # or an error also exits 1 or 2, but prints no JSON list.
+    if jq -e 'type == "array"' "$out" >/dev/null 2>&1; then
+        cat "$out"; rm -f "$out" "$err"; return 0
+    fi
+    if ((rc == 124 || rc == 137)); then reason='the scan took longer than 20 minutes'
+    elif grep -qE 'ConnectionError|NameResolution|Read timed out|Max retries|Temporary failure in name resolution' "$err"; then
+        reason='could not download the vulnerability database from nvd.nist.gov (offline?)'
+    elif grep -qiE "deriver|cannot determine deriver" "$err"; then
+        reason='vulnix needs the .drv files of the system, and they were garbage collected (nix.settings.keep-derivations = true keeps them)'
+    else
+        reason=$(grep -v '^[[:space:]]*$' "$err" | grep -vE '^[[:space:]]+(File|\^|~)' | tail -1)
+        reason=${reason:-vulnix failed (exit $rc)}
+    fi
+    rm -f "$out" "$err"
+    printf 'vulnerability scan failed: %s\n' "$reason" >&2
+    return 1
+}
+
+NORMALIZE='
+def sev: if . == null then "unknown" elif . >= 9 then "critical" elif . >= 7 then "high"
+    elif . >= 4 then "medium" elif . > 0 then "low" else "unknown" end;
+def counts: [.[] | .severity] as $s | reduce ("critical", "high", "medium", "low", "unknown") as $k ({}; .[$k] = ($s | map(select(. == $k)) | length));
+[.[] | . as $p
+ | {name, pname, version, derivation: (.derivation // ""),
+    cves: ([(.affected_by // [])[] | {id: ., whitelisted: false}] + [(.whitelisted // [])[] | {id: ., whitelisted: true}]
+           | map(. + {score: ($p.cvssv3_basescore[.id] // null), url: "https://nvd.nist.gov/vuln/detail/\(.id)",
+                      description: ($p.description[.id] // "")})
+           | map(.severity = (.score | sev)))}]
+# One entry per name: a closure often has a package twice (other outputs, a
+# build variant); a CVE counts as whitelisted only where every copy says so.
+| group_by(.name)
+| [.[] | .[0] + {cves: ([.[].cves[]] | group_by(.id) | map(.[0] + {whitelisted: all(.[]; .whitelisted)})
+                         | sort_by(.whitelisted, -(.score // 0), .id))}
+ | ([.cves[] | select(.whitelisted | not)]) as $active
+ | .maxScore = ([$active[] | .score // 0] | max // 0)
+ | .severity = (if ($active | length) == 0 then "none" else ($active | max_by(.score // 0) | .severity) end)
+] as $pkgs
+| ([$pkgs[].cves[] | select(.whitelisted | not)] | group_by(.id) | map(max_by(.score // 0))) as $active
+| {storePath: $path, scannedAt: $at, stale: false, scanner: $scanner, whitelist: $wl,
+   counts: ($active | counts), cves: ($active | length),
+   whitelisted: ([$pkgs[].cves[] | select(.whitelisted) | .id] | unique - [$active[].id] | length),
+   affectedPackages: ($pkgs | map(select(.severity != "none")) | length),
+   packages: ($pkgs | sort_by(.severity == "none", -.maxScore, .pname))}'
+
+cache_file() { # cache_file KIND PARTS...: where a result for these inputs lives
+    printf '%s/cve-%s-%s.json' "$cache_root" "$1" "$(printf '%s\0' v1 "${@:2}" "$scanner" "$(whitelist_id)" "$(cksum <"$0")" | sha256sum | cut -c1-32)"
+}
+fresh() { # fresh FILE: written within the TTL
+    [[ -s $1 ]] && (($(date +%s) - $(stat -c %Y "$1") < ttl))
+}
+# Writes atomically, so a reader never sees half a result.
+save() { # save FILE (JSON on stdin)
+    local tmp
+    tmp=$(mktemp "$cache_root/.cve.XXXXXXXX") || return 1
+    cat >"$tmp" && mv -f "$tmp" "$1"
+}
+cleanup_old() { find "$cache_root" -maxdepth 1 -type f \( -name 'cve-*.json' -o -name 'cve-*.lock' -o -name '.cve.*' \) -mtime +30 -delete 2>/dev/null || true; }
+
+store_path() { # store_path PATH: the store path a link points at
+    local p
+    p=$(readlink -f -- "$1" 2>/dev/null) || p=''
+    [[ -n $p && -e $p ]] || die "not found: $1"
+    printf '%s' "$p"
+}
+
+scan() { # scan PATH [--refresh]
+    local path file
+    need_scanner
+    path=$(store_path "$1") || exit 1
+    mkdir -p "$cache_root"
+    file=$(cache_file scan "$path")
+    exec 9>"${file%.json}.lock"
+    flock -w 1300 9 || die 'another vulnerability scan is still running'
+    if [[ ${2:-} != --refresh ]] && fresh "$file"; then cat "$file"; return 0; fi
+    local raw version
+    raw=$(vulnix_json -C "$path") || exit 1
+    version='vulnix (nix run nixpkgs#vulnix)'
+    [[ $scanner == vulnix ]] && version=$("$vulnix" --version 2>/dev/null | head -1)
+    jq --arg path "$path" --argjson at "$(date +%s)" --arg scanner "${version:-$scanner}" --arg wl "$whitelist" "$NORMALIZE" <<<"$raw" | save "$file" || die 'could not save the scan'
+    touch "$marker"
+    cleanup_old
+    cat "$file"
+}
+
+peek() { # peek PATH
+    local path file
+    find_scanner || exit 1
+    find_whitelist
+    path=$(readlink -f -- "$1" 2>/dev/null) || exit 1
+    file=$(cache_file scan "$path")
+    [[ -s $file ]] || exit 1
+    jq --argjson stale "$(fresh "$file" && echo false || echo true)" '.stale = $stale' "$file"
+}
+
+delta() { # delta NEW-DRV [CURRENT] [--refresh]   (changes on stdin)
+    local drv=$1 current=/run/current-system refresh='' rows base file
+    shift
+    for a in "$@"; do if [[ $a == --refresh ]]; then refresh=--refresh; else current=$a; fi; done
+    need_scanner
+    [[ $drv == "$store"/*.drv && -e $drv ]] || die "not an evaluated system: $drv"
+    rows=$(cat)
+    base=$(scan "$current" $refresh) || exit 1
+    file=$(cache_file delta "$drv" "$rows" "$(jq -r .scannedAt <<<"$base")")
+    exec 8>"${file%.json}.lock"
+    flock -w 1300 8 || die 'another vulnerability scan is still running'
+    if [[ -z $refresh ]] && fresh "$file"; then cat "$file"; return 0; fi
+    # Wanted names: the new versions of what changes, and today's affected
+    # packages under the same name (rebuilt with a patch, or unchanged).
+    local -A want=()
+    local name new line
+    # Tabs are whitespace to read: an empty old version would shift the columns.
+    while IFS=$'\037' read -r name _ new; do
+        [[ -n $name && -n $new ]] && want["$name-$new"]=1
+    done < <(tr '\t' '\037' <<<"$rows")
+    while IFS= read -r line; do [[ -n $line ]] && want["$line"]=1; done < <(jq -r '.packages[] | select(.severity != "none") | .name' <<<"$base")
+    local -a drvs=() names=()
+    while IFS= read -r line; do
+        name=${line##*/}; name=${name#*-}; name=${name%.drv}
+        [[ -n ${want[$name]:-} ]] && { drvs+=("$line"); names+=("$name"); }
+    done < <(nix-store -qR "$drv" 2>/dev/null | grep '\.drv$')
+    local raw='[]'
+    if ((${#drvs[@]})); then
+        raw=$(vulnix_json -R "${drvs[@]:0:3000}") || exit 1
+    fi
+    jq -n --argjson base "$base" --arg drv "$drv" --arg rows "$rows" --argjson checked "${#drvs[@]}" \
+        --arg found "$(printf '%s\n' "${names[@]}")" \
+        --argjson new "$(jq --arg path "$drv" --argjson at 0 --arg scanner '' --arg wl '' "$NORMALIZE" <<<"$raw")" '
+        def counts: [.[] | .severity] as $s | reduce ("critical", "high", "medium", "low", "unknown") as $k ({}; .[$k] = ($s | map(select(. == $k)) | length));
+        def active($pkgs; $name): [$pkgs[] | select(.name == $name) | .cves[] | select(.whitelisted | not)] | unique_by(.id);
+        def entry($pkg; $from; $to): {id, score, severity, url, package: $pkg, fromVersion: $from, toVersion: $to};
+        ($rows | split("\n") | map(split("\t") | select(length >= 3 and .[0] != "" and .[2] != ""))) as $changed
+        | ($changed | map(.[0] + "-" + .[1])) as $upgradedFrom
+        # Upgrades and additions: the old version (if any) against the new one.
+        | [$changed[] | .[0] as $n | .[1] as $o | .[2] as $v
+           | (if $o == "" then [] else active($base.packages; "\($n)-\($o)") end) as $before
+           | active($new.packages; "\($n)-\($v)") as $after
+           | {fixed: [$before[] | select(.id as $i | $after | all(.id != $i)) | entry($n; $o; $v)],
+              introduced: [$after[] | select(.id as $i | $before | all(.id != $i)) | entry($n; $o; $v)]}] as $up
+        # Same name and version in the new system: patched (or not) rebuilds.
+        # vulnix lists affected derivations only, so "found" is what was read.
+        | ($found | split("\n")) as $read
+        | [$base.packages[] | select(.severity != "none" and (.name as $f | $upgradedFrom | index($f) | not))
+           | . as $p | select($read | index($p.name))
+           | active($base.packages; $p.name) as $before | active($new.packages; $p.name) as $after
+           | {fixed: [$before[] | select(.id as $i | $after | all(.id != $i)) | entry($p.pname; $p.version; $p.version)],
+              introduced: [$after[] | select(.id as $i | $before | all(.id != $i)) | entry($p.pname; $p.version; $p.version)]}] as $same
+        | ([$up[], $same[] | .fixed[]] | sort_by(-(.score // 0), .id)) as $fixed
+        | ([$up[], $same[] | .introduced[]] | sort_by(-(.score // 0), .id)) as $introduced
+        | {storePath: $drv, baseScannedAt: $base.scannedAt, checkedPackages: $checked,
+           fixed: $fixed, introduced: $introduced,
+           fixedCounts: ($fixed | unique_by(.id) | counts), introducedCounts: ($introduced | unique_by(.id) | counts)}' | save "$file" || die 'could not save the comparison'
+    cat "$file"
+}
+
+status() {
+    find_scanner
+    find_whitelist
+    printf 'scanner=%s\nwhitelist=%s\nwhitelist_error=%s\nscanned=%s\n' \
+        "$scanner" "$whitelist" "$whitelist_error" "$([[ -e $marker ]] && echo 1 || echo 0)"
+}
+
+case ${1:-} in
+    status) status ;;
+    scan) [[ -n ${2:-} ]] || die 'usage: cve scan PATH [--refresh]'; scan "$2" "${3:-}" ;;
+    peek) [[ -n ${2:-} ]] || exit 1; peek "$2" ;;
+    delta) [[ -n ${2:-} ]] || die 'usage: cve delta NEW-SYSTEM-DRV [CURRENT-PATH] [--refresh] < changes'; delta "${@:2}" ;;
+    *) echo 'usage: cve status | cve scan PATH [--refresh] | cve peek PATH | cve delta NEW-DRV [CURRENT] [--refresh]' >&2; exit 2 ;;
+esac

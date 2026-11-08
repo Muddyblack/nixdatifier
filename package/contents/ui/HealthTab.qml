@@ -14,17 +14,49 @@ Item {
     required property var healthResult
     required property string activeViewMode
     property bool isProbingHealth: false
+    // Known vulnerabilities (Engine.cveStatus / cveResult); hidden without a scanner.
+    property var cveStatus: null
+    property var cveResult: null
+    property bool isScanningCve: false
+    readonly property bool cveAvailable: !!cveStatus && cveStatus.scanner !== ""
+    readonly property bool cveReady: cveAvailable && !!cveResult && !cveResult.isError
+    readonly property int cveSevere: cveReady ? cveResult.counts.critical + cveResult.counts.high : 0
 
     readonly property var h: healthResult
     readonly property bool ready: !!h && !h.isError
 
     signal healthRequested(bool force)
+    // The last scan, and a new one when it is outdated (once scanned before).
+    signal cveRequested
+    signal cveScanRequested(bool force)
     signal copyToClipboard(string text)
 
     anchors.fill: parent
     visible: activeViewMode === "health"
-    onVisibleChanged: if (visible)
-        healthRequested(false)
+    onVisibleChanged: if (visible) {
+        healthRequested(false);
+        cveRequested();
+    }
+
+    function cveSummary(counts) {
+        const parts = [];
+        if (counts.critical)
+            parts.push(qsTr("%1 critical").arg(counts.critical));
+        if (counts.high)
+            parts.push(qsTr("%1 high").arg(counts.high));
+        if (counts.medium)
+            parts.push(qsTr("%1 medium").arg(counts.medium));
+        if (counts.low)
+            parts.push(qsTr("%1 low").arg(counts.low));
+        if (counts.unknown)
+            parts.push(qsTr("%1 without a score").arg(counts.unknown));
+        return parts.length ? parts.join("  ·  ") : qsTr("None known");
+    }
+    function agoTime(epoch) {
+        const minutes = Math.floor((Date.now() / 1000 - epoch) / 60);
+        const hours = Math.floor(minutes / 60);
+        return minutes < 1 ? qsTr("just now") : minutes === 1 ? qsTr("a minute ago") : minutes < 60 ? qsTr("%1 minutes ago").arg(minutes) : hours === 1 ? qsTr("an hour ago") : minutes < 1440 ? qsTr("%1 hours ago").arg(hours) : ago(epoch);
+    }
 
     function ago(epoch) {
         if (!epoch)
@@ -64,6 +96,11 @@ Item {
                 tone: UI.Theme.negative,
                 text: qsTr("%n unit(s) failed.", "", h.failedUnits.length)
             });
+        if (cveSevere > 0)
+            out.push({
+                tone: UI.Theme.negative,
+                text: cveSevere === 1 ? qsTr("1 critical or high known vulnerability (CVE) in the running system. See Known vulnerabilities below.") : qsTr("%1 critical or high known vulnerabilities (CVEs) in the running system. See Known vulnerabilities below.").arg(cveSevere)
+            });
         return out;
     }
 
@@ -82,7 +119,7 @@ Item {
                 spacing: 12
                 Text {
                     Layout.fillWidth: true
-                    text: qsTr("Checks the things that quietly go wrong: pending reboots, /boot space, release support, binary caches and failed units.")
+                    text: healthTab.cveAvailable ? qsTr("Checks the things that quietly go wrong: pending reboots, /boot space, release support, known vulnerabilities, binary caches and failed units.") : qsTr("Checks the things that quietly go wrong: pending reboots, /boot space, release support, binary caches and failed units.")
                     color: "#9bacc4"
                     font.pixelSize: UI.Theme.fontPx(11, healthTab.fs)
                     wrapMode: Text.Wrap
@@ -94,7 +131,10 @@ Item {
                     glyph: Qt.resolvedUrl("assets/ic_refresh.svg")
                     enabled: !healthTab.isProbingHealth
                     font.pixelSize: UI.Theme.fontPx(10, healthTab.fs)
-                    onClicked: healthTab.healthRequested(true)
+                    onClicked: {
+                        healthTab.healthRequested(true);
+                        healthTab.cveRequested();
+                    }
                 }
             }
 
@@ -185,6 +225,107 @@ Item {
                             value: qsTr("%n generation(s), newest %1", "", h.profileGenerations).arg(healthTab.ago(h.profileNewest))
                         });
                     return out;
+                }
+            }
+
+            Subheading {
+                objectName: "cveHeading"
+                Layout.fillWidth: true
+                Layout.topMargin: 22
+                visible: healthTab.cveAvailable
+                text: qsTr("Known vulnerabilities")
+                detail: healthTab.cveReady ? String(healthTab.cveResult.cves) : ""
+                fs: healthTab.fs
+            }
+            ColumnLayout {
+                objectName: "cveSection"
+                Layout.fillWidth: true
+                Layout.topMargin: 9
+                visible: healthTab.cveAvailable
+                spacing: 8
+                Notice {
+                    Layout.fillWidth: true
+                    visible: !!healthTab.cveStatus && healthTab.cveStatus.whitelistError !== ""
+                    glyph: "ic_warning"
+                    tone: UI.Theme.changed
+                    fs: healthTab.fs
+                    text: healthTab.cveStatus ? healthTab.cveStatus.whitelistError : ""
+                }
+                Text {
+                    objectName: "cveIntro"
+                    Layout.fillWidth: true
+                    visible: !healthTab.cveReady
+                    text: healthTab.isScanningCve ? (healthTab.cveStatus && healthTab.cveStatus.scanned ? qsTr("Scanning the running system with vulnix…") : qsTr("Scanning the running system with vulnix. The first scan downloads the NVD vulnerability database, which takes a few minutes.")) : healthTab.cveResult && healthTab.cveResult.isError ? healthTab.cveResult.value : qsTr("Not scanned yet. vulnix compares the packages of the running system with the NVD vulnerability database. The first scan downloads that database, which takes a few minutes; after that the Health tab scans on its own once a day.")
+                    color: healthTab.cveResult && healthTab.cveResult.isError ? UI.Theme.negative : "#9bacc4"
+                    font.pixelSize: UI.Theme.fontPx(10, healthTab.fs)
+                    wrapMode: Text.Wrap
+                    lineHeight: 1.4
+                }
+                InfoRows {
+                    Layout.fillWidth: true
+                    visible: healthTab.cveReady
+                    textColor: healthTab.textColor
+                    fs: healthTab.fs
+                    rows: {
+                        if (!healthTab.cveReady)
+                            return [];
+                        const r = healthTab.cveResult;
+                        const out = [
+                            {
+                                label: qsTr("Running system"),
+                                value: r.cves === 0 ? qsTr("No known vulnerabilities") : healthTab.cveSummary(r.counts) + "  ·  " + (r.affectedPackages === 1 ? qsTr("1 package") : qsTr("%1 packages").arg(r.affectedPackages)),
+                                tone: healthTab.cveSevere > 0 ? UI.Theme.negative : r.counts.medium > 0 ? UI.Theme.changed : r.cves === 0 ? UI.Theme.positive : undefined
+                            },
+                            {
+                                label: qsTr("Scanned"),
+                                value: healthTab.agoTime(r.scannedAt) + "  ·  " + r.scanner + (r.stale ? "  ·  " + qsTr("outdated") : "")
+                            }
+                        ];
+                        if (r.whitelisted > 0 || r.whitelist)
+                            out.push({
+                                label: qsTr("Whitelist"),
+                                value: (r.whitelisted > 0 ? qsTr("%1 left out").arg(r.whitelisted) + "  ·  " : "") + (r.whitelist || "—")
+                            });
+                        return out;
+                    }
+                }
+                CveList {
+                    objectName: "cveList"
+                    Layout.fillWidth: true
+                    visible: healthTab.cveReady && healthTab.cveResult.affectedPackages > 0
+                    packages: healthTab.cveReady ? healthTab.cveResult.packages.filter(p => p.severity !== "none").map(p => ({
+                                name: p.pname,
+                                version: p.version,
+                                cves: p.cves.filter(c => !c.whitelisted)
+                            })) : []
+                    fs: healthTab.fs
+                    textColor: healthTab.textColor
+                }
+                Text {
+                    Layout.fillWidth: true
+                    visible: healthTab.cveReady && healthTab.cveResult.cves > 0
+                    text: qsTr("vulnix matches package names and versions against the NVD, so some may not apply; patches named after a CVE count as fixed. Add the ones you checked to a vulnix whitelist (Settings → Advanced).")
+                    color: UI.Theme.muted
+                    font.pixelSize: UI.Theme.fontPx(9, healthTab.fs)
+                    wrapMode: Text.Wrap
+                }
+                RowLayout {
+                    spacing: 8
+                    UI.ActionButton {
+                        objectName: "cveScan"
+                        text: healthTab.isScanningCve ? qsTr("Scanning…") : healthTab.cveReady ? qsTr("Scan again") : healthTab.cveResult && healthTab.cveResult.isError ? qsTr("Try again") : qsTr("Scan for vulnerabilities")
+                        glyph: Qt.resolvedUrl("assets/ic_refresh.svg")
+                        enabled: !healthTab.isScanningCve
+                        font.pixelSize: UI.Theme.fontPx(10, healthTab.fs)
+                        onClicked: healthTab.cveScanRequested(healthTab.cveReady)
+                    }
+                    UI.ActionButton {
+                        visible: healthTab.cveReady
+                        glyph: Qt.resolvedUrl("assets/ic_copy.svg")
+                        flatStyle: true
+                        tip: qsTr("Copy: %1").arg("nixdatifier cve")
+                        onClicked: healthTab.copyToClipboard("nixdatifier cve")
+                    }
                 }
             }
 

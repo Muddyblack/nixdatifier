@@ -27,6 +27,8 @@ QtObject {
     property string secretsSourcePath: ""
     property string githubTokenFile: ""
     property bool githubUseGh: false
+    property bool cveNixRun: false
+    property string cveWhitelist: ""
     property string impermanencePaths: ""
     property int impermanenceStaleDays: 180
     property bool impermanenceAllDisks: false

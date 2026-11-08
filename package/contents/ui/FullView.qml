@@ -166,6 +166,13 @@ Pane {
     // ── System health tool state ─────────────────────────────────────────────
     property var healthResult: null
     property bool isProbingHealth: false
+    property var cveStatus: null
+    property var cveResult: null
+    property bool isScanningCve: false
+    property var cveDeltaCache: ({})
+    signal cveRequested
+    signal cveScanRequested(bool force)
+    signal cveDeltaRequested(string inputName)
     property var optimiseStatus: null
     property var optimiseEstimate: null
     property var lastOptimise: null
@@ -761,6 +768,10 @@ Pane {
                 flakeUpdates: fullView.flakeUpdates
                 lastFlakeCheckTime: fullView.lastFlakeCheckTime
                 dryRunCache: fullView.dryRunCache
+                cveStatus: fullView.cveStatus
+                cveDeltaCache: fullView.cveDeltaCache
+                isScanningCve: fullView.isScanningCve
+                onCveDeltaRequested: inputName => fullView.cveDeltaRequested(inputName)
                 releaseNotesCache: fullView.releaseNotesCache
                 isDryRunning: fullView.isDryRunning
                 previewWarnMiB: fullView.previewWarnMiB
@@ -1275,8 +1286,13 @@ Pane {
                     fs: fullView.fs
                     healthResult: fullView.healthResult
                     isProbingHealth: fullView.isProbingHealth
+                    cveStatus: fullView.cveStatus
+                    cveResult: fullView.cveResult
+                    isScanningCve: fullView.isScanningCve
 
                     onHealthRequested: force => fullView.healthRequested(force)
+                    onCveRequested: fullView.cveRequested()
+                    onCveScanRequested: force => fullView.cveScanRequested(force)
                     onCopyToClipboard: t => fullView.copyToClipboard(t)
                 }
                 SecretsTab {

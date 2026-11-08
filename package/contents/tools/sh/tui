@@ -761,6 +761,8 @@ settings_desc() { # settings_desc KEY: what it is
         deep_inputs) echo 'on: check every transitive flake input, not just the root (and wrapper) inputs. Costs one request per input. Empty: off.' ;;
         measure_store) echo 'off: do not measure the Nix store (total and reclaimable size); free space only until you ask (disk --refresh, or Measure in the window). Empty: on.' ;;
         preview_warn) echo 'Update previews warn when a download is larger than this many MiB, here and in the window (metered connection?). 0: never warn. Empty: 2048.' ;;
+        cve_nix_run) echo 'on: without vulnix installed, run it with nix run nixpkgs#vulnix (downloads it) for Vulnerabilities and the CVE comparison in update previews. Empty: off.' ;;
+        cve_whitelist) echo 'A vulnix whitelist (TOML or YAML file, or a URL) with CVEs you have checked; they are left out of the counts. Empty: ~/.config/vulnix/whitelist.toml when it exists.' ;;
         ignored_inputs) echo 'Flake inputs to skip when checking for updates: names separated by commas, globs allowed (nur, my-private/*). Empty: check them all.' ;;
         theme) echo 'Colour theme: deep, marina, midnight, full, plain or your own (see docs/cli.md). Enter cycles.' ;;
         layout) echo 'roomy: boxed sections with the logo. compact: no boxes. Enter switches.' ;;
@@ -978,6 +980,10 @@ home_rows() {
     item compare '⇄' "$P" Compare 'pick any two generations' 'Enter: choose two to compare'
     item updates '↑' "$O" Updates 'flake inputs behind upstream' 'Enter: inputs, notes, update'
     item health '✚' "$G" Health 'release, reboot, units, caches' 'Enter: full screen'
+    # Only with a scanner (vulnix, or cve_nix_run on): otherwise nothing changes.
+    if "$NXD_CLI" --json cve status 2>/dev/null | jq -e '.scanner != ""' >/dev/null 2>&1; then
+        item cve '⚠' "$R" Vulnerabilities 'known CVEs in the running system' 'Enter: scan and list them'
+    fi
     item disk '▤' "$C" 'Disk & clean up' 'store size, old generations, garbage, optimise' 'Enter: details or clean up'
     item history '⟲' "$V" History 'what earlier changes did' 'Enter: every run with output'
     item dev 'λ' "$V" 'Dev environments' 'direnv projects and their cache' 'Enter: projects'
@@ -1014,6 +1020,10 @@ home_preview() { # home_preview KEY
                 echo; printf '%sEnter for every input, its release notes and updating it.%s\n' "$D" "$X"
             else printf '%s\n\n%sWhat was checked:%s\n\n' "$json" "$B" "$X"; cli doctor; fi ;;
         history) history_rows | head -40 | cut -f2- ;;
+        cve)
+            # The last scan only: a preview never starts one (the first downloads the NVD database).
+            cli cve status
+            printf '\n%sEnter scans the running system with vulnix (cached for a day) and lists every affected package with its CVEs.\nThe first scan downloads the NVD vulnerability database, which takes a few minutes.%s\n' "$D" "$X" ;;
         dev) dev_rows | cut -f2- ;;
         persist) cli persist status ;;
         profiles) prof_rows | cut -f2-; echo; cli profiles ;;
@@ -1050,6 +1060,7 @@ home_enter() { # home_enter KEY
         disk) disk_screen ;;
         hash) hash_flow ;;
         why) why_flow ;;
+        cve) working 'Scanning for known vulnerabilities (the first scan downloads the NVD database: a few minutes)'; cli cve | page Vulnerabilities ;;
         *) working "$1"; cli "$1" | page "$1" ;;
     esac
 }

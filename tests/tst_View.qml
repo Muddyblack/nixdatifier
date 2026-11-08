@@ -592,6 +592,183 @@ Item {
             core.doctorResult = null;
             core.activeViewMode = "timeline";
         }
+        function test_health_lists_vulnerabilities_only_with_a_scanner() {
+            core.resetCve();
+            core.activeViewMode = "health";
+            wait(30);
+            const heading = findChild(app, "cveHeading"), section = findChild(app, "cveSection");
+            verify(!heading.visible);
+            verify(!section.visible);
+            core.cveStatus = {
+                scanner: "vulnix",
+                whitelist: "",
+                whitelistError: "",
+                scanned: false
+            };
+            verify(heading.visible);
+            verify(findChild(section, "cveIntro").text.indexOf("Not scanned yet") === 0);
+            const scan = findChild(section, "cveScan");
+            compare(scan.text, "Scan for vulnerabilities");
+            mouseClick(scan);
+            verify(core.isScanningCve);
+            tryVerify(() => !core.isScanningCve); // the fake helper answers nothing: an error
+            verify(core.cveResult.isError);
+            compare(scan.text, "Try again");
+            core.cveResult = {
+                isError: false,
+                storePath: "/nix/store/x",
+                scannedAt: Date.now() / 1000 - 7200,
+                stale: false,
+                scanner: "vulnix 1.12.4",
+                whitelist: "",
+                counts: {
+                    critical: 0,
+                    high: 1,
+                    medium: 1,
+                    low: 0,
+                    unknown: 0
+                },
+                cves: 2,
+                whitelisted: 0,
+                affectedPackages: 1,
+                packages: [
+                    {
+                        name: "curl-8.22.0",
+                        pname: "curl",
+                        version: "8.22.0",
+                        severity: "high",
+                        cves: [
+                            {
+                                id: "CVE-2026-2",
+                                score: 7.5,
+                                severity: "high",
+                                url: "https://nvd.nist.gov/vuln/detail/CVE-2026-2",
+                                description: "x",
+                                whitelisted: false
+                            },
+                            {
+                                id: "CVE-2026-6",
+                                score: 5.0,
+                                severity: "medium",
+                                url: "https://nvd.nist.gov/vuln/detail/CVE-2026-6",
+                                description: "",
+                                whitelisted: false
+                            }
+                        ]
+                    },
+                    {
+                        name: "jq-1.8.2",
+                        pname: "jq",
+                        version: "1.8.2",
+                        severity: "none",
+                        cves: [
+                            {
+                                id: "CVE-2024-5",
+                                score: 2.0,
+                                severity: "low",
+                                url: "u",
+                                whitelisted: true
+                            }
+                        ]
+                    }
+                ]
+            };
+            wait(30);
+            compare(heading.detail, "2");
+            compare(scan.text, "Scan again");
+            const list = findChild(section, "cveList");
+            verify(list.visible);
+            compare(list.packages.length, 1); // only affected packages, without whitelisted CVEs
+            const chip = findChild(list, "cve-CVE-2026-2");
+            verify(chip);
+            fuzzyCompare(chip.tone.r, UI.Theme.negative.r, .02);
+            verify(!findChild(list, "cve-CVE-2024-5"));
+            core.resetCve();
+            core.activeViewMode = "timeline";
+        }
+        function test_update_card_offers_and_shows_the_cve_comparison() {
+            core.activeViewMode = "updates";
+            core.flakeUpdates = [
+                {
+                    input: "nixpkgs",
+                    oldRev: "abc",
+                    newRev: "def",
+                    overrideRef: "github:NixOS/nixpkgs/def",
+                    url: "https://github.com/NixOS/nixpkgs"
+                }
+            ];
+            core.dryRunCache = {
+                nixpkgs: {
+                    status: "ok",
+                    packages: [],
+                    summary: {
+                        downloadBytes: 1,
+                        unpackedBytes: 1,
+                        toBuild: 0,
+                        toFetch: 1
+                    },
+                    toplevel: "/nix/store/t-nixos-system.drv"
+                }
+            };
+            core.cveStatus = null;
+            wait(30);
+            const view = findChild(app, "updatesView");
+            view.openPreviews = {
+                nixpkgs: true
+            };
+            const section = findChild(view, "cveDelta-nixpkgs");
+            verify(!section.visible); // no scanner known: nothing about CVEs
+            core.cveStatus = {
+                scanner: "vulnix",
+                whitelist: "",
+                whitelistError: "",
+                scanned: false
+            };
+            tryVerify(() => section.visible);
+            const compareButton = findChild(section, "cveCompare-nixpkgs");
+            verify(compareButton.visible);
+            core.cveDeltaCache = {
+                nixpkgs: {
+                    status: "ok",
+                    toplevel: "/nix/store/t-nixos-system.drv",
+                    fixed: [],
+                    introduced: [
+                        {
+                            id: "CVE-2026-7",
+                            score: 8.1,
+                            severity: "high",
+                            url: "u",
+                            package: "zstd",
+                            fromVersion: "1.5.7",
+                            toVersion: "1.6.0"
+                        }
+                    ],
+                    fixedCounts: {},
+                    introducedCounts: {
+                        high: 1
+                    }
+                }
+            };
+            wait(30);
+            verify(!compareButton.visible);
+            const summary = findChild(section, "cveDeltaSummary-nixpkgs");
+            verify(summary.visible);
+            compare(summary.text, "This update fixes no known vulnerabilities and introduces 1 (1 high).");
+            verify(findChild(section, "cve-CVE-2026-7"));
+            // A comparison of another evaluation is not this preview's.
+            core.cveDeltaCache = {
+                nixpkgs: Object.assign({}, core.cveDeltaCache.nixpkgs, {
+                    toplevel: "/nix/store/old.drv"
+                })
+            };
+            verify(!summary.visible);
+            verify(compareButton.visible);
+            core.resetCve();
+            view.openPreviews = ({});
+            core.dryRunCache = ({});
+            core.flakeUpdates = [];
+            core.activeViewMode = "timeline";
+        }
         function test_store_card_shows_deduplication_and_asks_before_optimising() {
             core.optimiseStatus = {
                 isError: false,

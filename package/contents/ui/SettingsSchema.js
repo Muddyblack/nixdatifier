@@ -258,6 +258,22 @@ var fields = [
     "type": "Bool"
   },
   {
+    "key": "cveNixRun",
+    "tab": "Behavior",
+    "group": "Vulnerability scan",
+    "label": "Run vulnix with nix run",
+    "help": "Without vulnix installed, the Health tab can still list known vulnerabilities (CVEs) by running nix run nixpkgs#vulnix, which downloads it. Off by default; with vulnix installed this is not needed.",
+    "type": "Bool"
+  },
+  {
+    "key": "cveWhitelist",
+    "tab": "Behavior",
+    "group": "Vulnerability scan",
+    "label": "vulnix whitelist",
+    "help": "A vulnix whitelist file (TOML or YAML) or URL with CVEs you have checked. Leave empty to use ~/.config/vulnix/whitelist.toml when it exists.",
+    "type": "String"
+  },
+  {
     "key": "impermanencePaths",
     "tab": "Behavior",
     "group": "Impermanence",

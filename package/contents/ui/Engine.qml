@@ -322,6 +322,15 @@ Item {
             freedBytes: root.optimiseFreedBytes((run.output || "") + "\n" + (run.label || ""))
         };
     }
+    // Known vulnerabilities (tools/sh/cve, vulnix). Only when a scanner is there:
+    // { scanner, whitelist, whitelistError, scanned } | null (not checked yet)
+    property var cveStatus: null
+    readonly property bool cveAvailable: !!root.cveStatus && root.cveStatus.scanner !== ""
+    // The running system's scan (see tools/sh/cve scan) | { isError, value } | null
+    property var cveResult: null
+    property bool isScanningCve: false
+    // Per input: what its update would fix or introduce, { status, toplevel, fixed, introduced, fixedCounts, introducedCounts, errorMsg }
+    property var cveDeltaCache: ({})
     // Why a view is empty (tools/sh/doctor): { checks: [...], failures } | { isError, value } | null
     property var doctorResult: null
     property bool isDiagnosing: false
@@ -1587,6 +1596,134 @@ Item {
         });
     }
 
+    // ── Known vulnerabilities (CVEs) ──────────────────────────────────────────
+    // Nothing runs without a scanner, and nothing scans on its own until the
+    // person scanned once: the first scan downloads the NVD database.
+    function cveCommand(args) {
+        return (root.settings.cveNixRun ? "NIXDATIFIER_CVE_NIX_RUN=on " : "") + (root.settings.cveWhitelist ? "NIXDATIFIER_CVE_WHITELIST=" + shq(root.settings.cveWhitelist) + " " : "") + shq(root.scriptDir + "cve") + " " + args;
+    }
+    function probeCveStatus(done) {
+        sh(root.cveCommand("status"), function (cmd, out, err, code) {
+            const kv = root.parseKeyValues(out);
+            root.cveStatus = {
+                scanner: code === 0 ? kv.scanner || "" : "",
+                whitelist: kv.whitelist || "",
+                whitelistError: kv.whitelist_error || "",
+                scanned: kv.scanned === "1"
+            };
+            if (done)
+                done();
+        });
+    }
+    function parseCveScan(out) {
+        try {
+            const json = JSON.parse(out);
+            if (json && Array.isArray(json.packages))
+                return Object.assign({
+                    isError: false
+                }, json);
+        } catch (e) {}
+        return null;
+    }
+    // On the Health tab: the last scan at once, and a new one when it is outdated
+    // (a day) or the system changed, once the person scanned before.
+    function refreshCve() {
+        root.probeCveStatus(function () {
+            if (!root.cveAvailable) {
+                root.cveResult = null;
+                return;
+            }
+            sh(root.cveCommand("peek /run/current-system"), function (cmd, out, err, code) {
+                const last = code === 0 ? root.parseCveScan(out) : null;
+                if (last && !root.isScanningCve)
+                    root.cveResult = last;
+                else if (!last && root.cveResult && !root.cveResult.isError && !root.isScanningCve)
+                    root.cveResult = null; // another system: its scan is not this one's
+                if (root.cveStatus.scanned && (!last || last.stale))
+                    root.scanCve(false);
+            });
+        });
+    }
+    function scanCve(force) {
+        if (root.isScanningCve || !root.cveAvailable)
+            return;
+        root.isScanningCve = true;
+        sh(root.cveCommand("scan /run/current-system" + (force ? " --refresh" : "")), function (cmd, out, err, code) {
+            root.isScanningCve = false;
+            const scan = code === 0 ? root.parseCveScan(out) : null;
+            root.cveResult = scan || {
+                isError: true,
+                value: (err || out || qsTr("The vulnerability scan failed")).trim().split("\n").pop()
+            };
+            if (scan && root.cveStatus && !root.cveStatus.scanned)
+                root.cveStatus = Object.assign({}, root.cveStatus, {
+                    scanned: true
+                });
+            // Previews waiting for the first scan can compare now.
+            if (scan)
+                for (const name in root.dryRunCache)
+                    root.maybeCveDelta(name);
+        });
+    }
+    // After a preview: only automatic once the running system was scanned.
+    function maybeCveDelta(inputName) {
+        const entry = root.dryRunCache[inputName];
+        if (!entry || entry.status !== "ok" || !entry.toplevel)
+            return;
+        const go = () => {
+            if (root.cveAvailable && root.cveStatus.scanned)
+                root.runCveDelta(inputName, false);
+        };
+        if (root.cveStatus)
+            go();
+        else
+            root.probeCveStatus(go);
+    }
+    function runCveDelta(inputName, force) {
+        const entry = root.dryRunCache[inputName];
+        if (!entry || entry.status !== "ok" || !entry.toplevel || !root.cveAvailable)
+            return;
+        const current = root.cveDeltaCache[inputName];
+        if (current && current.toplevel === entry.toplevel && (current.status === "loading" || current.status === "ok" && !force))
+            return;
+        const toplevel = entry.toplevel;
+        const setEntry = value => {
+            const next = Object.assign({}, root.cveDeltaCache);
+            next[inputName] = Object.assign({
+                toplevel
+            }, value);
+            root.cveDeltaCache = next;
+        };
+        setEntry({
+            status: "loading"
+        });
+        const rows = (entry.packages || []).map(p => [p.name, p.oldVersion || "", p.newVersion || ""].join("\t")).join("\n");
+        sh("printf '%s\\n' " + shq(rows) + " | " + root.cveCommand("delta " + shq(toplevel) + (force ? " /run/current-system --refresh" : "")), function (cmd, out, err, code) {
+            const latest = root.dryRunCache[inputName];
+            if (!latest || latest.toplevel !== toplevel)
+                return;
+            let delta = null;
+            try {
+                delta = code === 0 ? JSON.parse(out) : null;
+            } catch (e) {
+                delta = null;
+            }
+            if (delta && Array.isArray(delta.fixed))
+                setEntry(Object.assign({
+                    status: "ok"
+                }, delta));
+            else
+                setEntry({
+                    status: "error",
+                    errorMsg: (err || out || qsTr("Could not compare known vulnerabilities")).trim().split("\n").pop()
+                });
+            if (delta && root.cveStatus && !root.cveStatus.scanned)
+                root.cveStatus = Object.assign({}, root.cveStatus, {
+                    scanned: true
+                });
+        });
+    }
+
     // ── Store optimisation: hard-linking identical files ──────────────────────
     // nix-store --optimise ends with "3415.45 MiB freed by hard-linking 1234 files".
     function optimiseFreedBytes(text) {
@@ -2578,11 +2715,17 @@ Item {
 
             const pkgs = [];
             let summary = null;
+            let toplevel = "";
             const lines = text.split("\n");
             for (let i = 0; i < lines.length; i++) {
                 const parts = lines[i].split("\t");
                 if (parts[0] === "SUMMARY") {
                     summary = root.parsePreviewSummary(parts);
+                    continue;
+                }
+                // The evaluated new system, for the vulnerability comparison.
+                if (parts[0] === "TOPLEVEL") {
+                    toplevel = parts[1] || "";
                     continue;
                 }
                 if (parts.length < 2)
@@ -2605,11 +2748,13 @@ Item {
             updated[inputName] = {
                 status: "ok",
                 packages: pkgs,
-                summary
+                summary,
+                toplevel
             };
             root.dryRunCache = updated;
             root.loadIcons(pkgs);
             root.loadMeta(pkgs);
+            root.maybeCveDelta(inputName);
         });
     }
 
@@ -3061,7 +3206,7 @@ Item {
     property bool syncSettings: false
     property bool _syncReady: false
     property bool _syncApplying: false
-    readonly property var _syncKeys: ["flakePath", "configRepoPath", "secretsPath", "secretsSourcePath", "githubTokenFile", "githubUseGh", "checkTarballs", "deepInputCheck", "measureStore", "previewWarnMiB", "ignoredInputs", "impermanencePaths", "checkInterval", "customCommands", "showNotifications"]
+    readonly property var _syncKeys: ["flakePath", "configRepoPath", "secretsPath", "secretsSourcePath", "githubTokenFile", "githubUseGh", "checkTarballs", "deepInputCheck", "measureStore", "previewWarnMiB", "cveNixRun", "cveWhitelist", "ignoredInputs", "impermanencePaths", "checkInterval", "customCommands", "showNotifications"]
     function _syncSnapshot() {
         const values = {};
         for (const key of root._syncKeys)
@@ -3162,6 +3307,27 @@ Item {
             root.schedulePushSharedSettings();
             root.recheckAfterListChange();
         }
+        function onCveNixRunChanged() {
+            root.schedulePushSharedSettings();
+        }
+        function onCveWhitelistChanged() {
+            root.schedulePushSharedSettings();
+        }
+    }
+    // Another scanner or whitelist: what was found no longer applies.
+    Connections {
+        target: root.settings
+        function onCveNixRunChanged() {
+            root.resetCve();
+        }
+        function onCveWhitelistChanged() {
+            root.resetCve();
+        }
+    }
+    function resetCve() {
+        root.cveStatus = null;
+        root.cveResult = null;
+        root.cveDeltaCache = ({});
     }
 
     // ── Init & timers ─────────────────────────────────────────────────────────

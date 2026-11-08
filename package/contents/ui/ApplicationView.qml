@@ -164,6 +164,14 @@ FullView {
     onMeasureSpaceRequested: engine.measureDevSpace()
     onClearCacheRequested: dir => engine.clearDevCache(dir)
     healthResult: engine.healthResult
+    cveStatus: engine.cveStatus
+    cveResult: engine.cveResult
+    isScanningCve: engine.isScanningCve
+    cveDeltaCache: engine.cveDeltaCache
+    onCveRequested: engine.refreshCve()
+    onCveScanRequested: force => engine.scanCve(force)
+    // A comparison asked for by hand: the first scan of the running system comes with it.
+    onCveDeltaRequested: inputName => engine.runCveDelta(inputName, false)
     optimiseStatus: engine.optimiseStatus
     optimiseEstimate: engine.optimiseEstimate
     lastOptimise: engine.lastOptimise

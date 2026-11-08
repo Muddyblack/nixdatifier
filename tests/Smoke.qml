@@ -297,7 +297,132 @@ Window {
             }
             if (stage === 31)
                 win.capture("doctor-updates");
-            if (stage === 32)
+            if (stage === 32) {
+                win.width = 600;
+                win.height = 900;
+                core.activeViewMode = "health";
+            }
+            if (stage === 33) {
+                // After the tab's own probes (the fake helpers answer nothing).
+                core.healthResult = core.parseHealth("nixos=1\nrelease=26.05\neol=2026-12-31\nreboot_required=0\nkernel_running=6.12.42\nkernel_next=6.12.42\nnix=nix (Nix) 2.34.0\x1e\x1ehttps://cache.nixos.org\tok\t120\n");
+                core.cveStatus = {
+                    scanner: "vulnix",
+                    whitelist: "",
+                    whitelistError: "",
+                    scanned: true
+                };
+                const cve = (id, score, severity) => ({
+                            id,
+                            score,
+                            severity,
+                            url: "https://nvd.nist.gov/vuln/detail/" + id,
+                            description: "A heap overflow in the parser allows remote attackers to execute code.",
+                            whitelisted: false
+                        });
+                core.cveResult = {
+                    isError: false,
+                    storePath: "/nix/store/x-nixos-system-host-26.05",
+                    scannedAt: Date.now() / 1000 - 5400,
+                    stale: false,
+                    scanner: "vulnix 1.12.4",
+                    whitelist: "/home/me/.config/vulnix/whitelist.toml",
+                    counts: {
+                        critical: 1,
+                        high: 2,
+                        medium: 3,
+                        low: 0,
+                        unknown: 1
+                    },
+                    cves: 7,
+                    whitelisted: 2,
+                    affectedPackages: 4,
+                    packages: [
+                        {
+                            pname: "openssl",
+                            version: "3.6.5",
+                            severity: "critical",
+                            cves: [cve("CVE-2026-31789", 9.8, "critical"), cve("CVE-2026-28390", 5.9, "medium")]
+                        },
+                        {
+                            pname: "curl",
+                            version: "8.22.0",
+                            severity: "high",
+                            cves: [cve("CVE-2026-1965", 7.5, "high"), cve("CVE-2026-3784", 7.4, "high"), cve("CVE-2026-0167", 4.3, "medium")]
+                        },
+                        {
+                            pname: "zstd",
+                            version: "1.5.7",
+                            severity: "medium",
+                            cves: [cve("CVE-2025-49002", 5.3, "medium")]
+                        },
+                        {
+                            pname: "libtiff",
+                            version: "4.7.0",
+                            severity: "unknown",
+                            cves: [cve("CVE-2025-8176", null, "unknown")]
+                        }
+                    ]
+                };
+            }
+            if (stage === 34)
+                win.capture("health-cve");
+            if (stage === 35) {
+                core.flakeUpdates = [
+                    {
+                        input: "nixpkgs",
+                        oldRev: "abcdef0",
+                        newRev: "1234567",
+                        overrideRef: "github:NixOS/nixpkgs/1234567",
+                        url: "https://github.com/NixOS/nixpkgs"
+                    }
+                ];
+                core.dryRunCache = {
+                    nixpkgs: {
+                        status: "ok",
+                        packages: [],
+                        summary: {
+                            downloadBytes: 734003200,
+                            unpackedBytes: 2147483648,
+                            toBuild: 0,
+                            toFetch: 120
+                        },
+                        toplevel: "/nix/store/t-nixos-system-host-26.05.drv"
+                    }
+                };
+                const entry = (id, score, severity, pkg, from, to) => ({
+                            id,
+                            score,
+                            severity,
+                            url: "https://nvd.nist.gov/vuln/detail/" + id,
+                            package: pkg,
+                            fromVersion: from,
+                            toVersion: to
+                        });
+                core.cveDeltaCache = {
+                    nixpkgs: {
+                        status: "ok",
+                        toplevel: "/nix/store/t-nixos-system-host-26.05.drv",
+                        fixed: [entry("CVE-2026-31789", 9.8, "critical", "openssl", "3.6.5", "3.6.6"), entry("CVE-2026-1965", 7.5, "high", "curl", "8.22.0", "8.23.0"), entry("CVE-2026-28390", 5.9, "medium", "openssl", "3.6.5", "3.6.6")],
+                        introduced: [entry("CVE-2026-40001", 6.1, "medium", "zstd", "1.5.7", "1.6.0")],
+                        fixedCounts: {
+                            critical: 1,
+                            high: 1,
+                            medium: 1
+                        },
+                        introducedCounts: {
+                            medium: 1
+                        }
+                    }
+                };
+                core.activeViewMode = "updates";
+                const view = win.findObject(app, "updatesView");
+                view.openPreviews = {
+                    nixpkgs: true
+                };
+            }
+            if (stage === 36)
+                win.capture("updates-cve");
+            if (stage === 37)
                 Qt.quit();
         }
     }

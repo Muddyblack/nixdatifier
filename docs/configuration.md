@@ -64,6 +64,8 @@ reason; the widget also shows a notification when an upstream cannot be reached.
 | **Encrypted source secrets path** | `""` | Empty detects a SOPS file in the flake directory. |
 | **Use the GitHub CLI login** | off | Borrows the token of a signed-in `gh` when no token file is set. Off by default because that token often has wide scopes. Nix modules: `githubUseGh`. |
 | **GitHub token file** | `""` | File holding a GitHub token (a sops-nix or agenix secret path) that lifts the rate limit for release notes. Only the path is stored. Empty stays anonymous unless **Use the GitHub CLI login** is on. Nix modules: `programs.nixdatifier.githubTokenFile`. |
+| **Run vulnix with nix run** | off | Without vulnix installed, the Health tab and update previews can still show known vulnerabilities (CVEs) by running `nix run nixpkgs#vulnix`, which downloads it. With vulnix installed this is not needed; with neither, nothing about CVEs is shown. Also `cve_nix_run` in the CLI/TUI config. |
+| **vulnix whitelist** | `""` | A vulnix whitelist (TOML or YAML file, or a URL) with CVEs you have checked; they are left out of the counts. Empty uses `~/.config/vulnix/whitelist.toml` when it exists. Also `cve_whitelist` in the CLI/TUI config. |
 | **Extra persistent folders** | `""` | Colon-separated roots (for example `/persist:/mnt/data`) added to the ones detected from the mounts for the Persistent folders tool. |
 | **Offer cleanup for folders untouched for (days)** | `180` | How long nothing inside a home folder may change before the Persistent folders cleanup suggests it. |
 | **Show package search/filter** | `true` | Filter box above package lists. |
