@@ -3,6 +3,7 @@ import QtQuick.Layouts
 import QtQuick.Controls
 import QtQuick.Effects
 import "shared" as UI
+import "components"
 
 Pane {
     id: fullView
@@ -165,6 +166,13 @@ Pane {
     // ── System health tool state ─────────────────────────────────────────────
     property var healthResult: null
     property bool isProbingHealth: false
+    property var optimiseStatus: null
+    property var optimiseEstimate: null
+    property var lastOptimise: null
+    property bool isProbingOptimise: false
+    property bool isEstimatingOptimise: false
+    signal optimiseStatusRequested
+    signal optimiseEstimateRequested(bool force)
     property var doctorResult: null
     property bool isDiagnosing: false
     property string doctorReport: ""
@@ -575,7 +583,7 @@ Pane {
                         wrapMode: Text.WordWrap
                         color: fullView.textColor
                         font.pixelSize: fullView.fpx(9)
-                        text: fullView.pendingCleanup ? (fullView.pendingCleanup === "gc" ? qsTr("Collect unused store paths? Existing generations are kept.") : fullView.pendingCleanup === "gc-14d" ? qsTr("Remove generations older than 14 days from the profiles Nix can access, then collect unused paths? Each profile’s current generation is kept.") : fullView.pendingCleanup === "gc-all" ? qsTr("Remove all non-current generations from the profiles Nix can access, then collect unused paths? Removed rollback points cannot be restored by this app.") : qsTr("Run custom cleanup: %1").arg(fullView.gcCustomCommand)) : qsTr("%1 generation #%2?").arg(fullView.pendingAction === "delete" ? qsTr("Delete") : fullView.pendingAction === "switch" ? qsTr("Activate now") : qsTr("Set next boot to")).arg(fullView.pendingGenNum)
+                        text: fullView.pendingCleanup ? (fullView.pendingCleanup === "gc" ? qsTr("Collect unused store paths? Existing generations are kept.") : fullView.pendingCleanup === "gc-14d" ? qsTr("Remove generations older than 14 days from the profiles Nix can access, then collect unused paths? Each profile’s current generation is kept.") : fullView.pendingCleanup === "gc-all" ? qsTr("Remove all non-current generations from the profiles Nix can access, then collect unused paths? Removed rollback points cannot be restored by this app.") : fullView.pendingCleanup === "optimise" ? qsTr("Replace identical files in the Nix store with hard links to one copy? Nothing is deleted; it reads the whole store and can take a while.") : qsTr("Run custom cleanup: %1").arg(fullView.gcCustomCommand)) : qsTr("%1 generation #%2?").arg(fullView.pendingAction === "delete" ? qsTr("Delete") : fullView.pendingAction === "switch" ? qsTr("Activate now") : qsTr("Set next boot to")).arg(fullView.pendingGenNum)
                     }
                     UI.ActionButton {
                         text: qsTr("Cancel")
@@ -921,6 +929,26 @@ Pane {
                                     color: UI.Theme.changed
                                     font.pixelSize: 9 * fullView.fs
                                 }
+                            }
+                            OptimiseSection {
+                                objectName: "optimiseSection"
+                                Layout.fillWidth: true
+                                Layout.topMargin: 8
+                                wanted: fullView.uiActive && fullView.activeViewMode === "tools"
+                                autoEstimate: fullView.measureStore
+                                status: fullView.optimiseStatus
+                                estimate: fullView.optimiseEstimate
+                                lastRun: fullView.lastOptimise
+                                probing: fullView.isProbingOptimise
+                                estimating: fullView.isEstimatingOptimise
+                                busy: fullView.isBusy
+                                fs: fullView.fs
+                                textColor: fullView.textColor
+                                accentColor: fullView.accentColor
+                                onStatusRequested: fullView.optimiseStatusRequested()
+                                onEstimateRequested: force => fullView.optimiseEstimateRequested(force)
+                                onOptimiseRequested: fullView.cleanupVariantPicked("optimise")
+                                onCopyRequested: text => fullView.copyToClipboard(text)
                             }
                             UI.ActionButton {
                                 Layout.topMargin: 13
@@ -1333,6 +1361,11 @@ Pane {
             text: qsTr("Remove all non-current generations")
             enabled: !fullView.isBusy
             onTriggered: fullView.cleanupVariantPicked("gc-all")
+        }
+        MenuItem {
+            text: qsTr("Hard-link identical files (optimise)")
+            enabled: !fullView.isBusy
+            onTriggered: fullView.cleanupVariantPicked("optimise")
         }
         MenuItem {
             visible: fullView.gcCustomCommand !== ""

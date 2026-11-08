@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Usage: optimise status | optimise estimate [SAMPLE]
+# Store optimisation (hard-linking identical files), read only. The window and
+# `nixdatifier optimise` both read this; running it is `nix-store --optimise`.
+#
+# status: key=value lines, quick
+#   auto_optimise=true|false|   nix.settings.auto-optimise-store (empty: unknown)
+#   timer=enabled|disabled|absent   nix-optimise.timer (nix.optimise.automatic)
+# estimate: key=value lines; a sample of SAMPLE store paths (default 1000):
+#   paths, sampled          store paths in total, and how many were looked at
+#   unlinked_files, unlinked_bytes   sampled files not yet hard-linked
+#   hashed_bytes            how much of that was hashed (a budget caps it)
+#   duplicate_bytes         of those, bytes optimising would free (their content
+#                           is already in /nix/store/.links or twice in the sample)
+#   estimate_bytes          duplicate_bytes scaled to the whole store: a rough
+#                           estimate (a few large files make samples noisy); files
+#                           past the hashing budget count as not duplicated
+#   partial=1               the hashing budget ran out before the sample did
+# Every file in /nix/store/.links is named by the NAR hash of its content, the
+# same nix-hash prints, so a sampled file can be checked without changing anything.
+set -u
+export LC_ALL=C
+export PATH="$PATH:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:${HOME:-/root}/.nix-profile/bin"
+store=${NIXDATIFIER_STORE_DIR:-/nix/store}
+
+status() {
+    local auto='' timer=absent state
+    if command -v nix >/dev/null 2>&1; then
+        auto=$(nix config show auto-optimise-store 2>/dev/null) ||
+            auto=$(nix show-config 2>/dev/null | sed -n 's/^auto-optimise-store = //p')
+    fi
+    case $auto in true | false) ;; *) auto='' ;; esac
+    if command -v systemctl >/dev/null 2>&1; then
+        state=$(systemctl is-enabled nix-optimise.timer 2>/dev/null)
+        case $state in enabled | enabled-runtime | static | linked*) timer=enabled ;; disabled | masked*) timer=disabled ;; esac
+    fi
+    printf 'auto_optimise=%s\ntimer=%s\n' "$auto" "$timer"
+}
+
+estimate() {
+    local sample=${1:-1000} budget=$((1024 * 1024 * 1024)) max_files=10000
+    local -a names picked files=() sizes=() chunk hashes
+    local -A seen=()
+    local total sampled=0 unlinked=0 unlinked_bytes=0 dup=0 hashed=0 partial=0 size path i j h
+    command -v nix-hash >/dev/null || { echo 'nix-hash not found' >&2; return 1; }
+    [[ -d $store/.links ]] || { echo "$store/.links does not exist: the store was never optimised, every duplicate would be freed" >&2; }
+    mapfile -t names < <(find "$store" -mindepth 1 -maxdepth 1 ! -name '.*' -printf '%f\n' 2>/dev/null)
+    total=${#names[@]}
+    ((total)) || { echo "nothing in $store" >&2; return 1; }
+    mapfile -t picked < <(printf '%s\n' "${names[@]}" | shuf -n "$sample")
+    sampled=${#picked[@]}
+    while IFS=$'\t' read -r size path; do
+        unlinked=$((unlinked + 1)) unlinked_bytes=$((unlinked_bytes + size))
+        ((${#files[@]} >= max_files || hashed + size > budget)) && { partial=1; continue; }
+        files+=("$path"); sizes+=("$size")
+        hashed=$((hashed + size))
+    done < <(for name in "${picked[@]}"; do find "$store/$name" -type f -links 1 -printf '%s\t%p\n' 2>/dev/null; done)
+    for ((i = 0; i < ${#files[@]}; i += 200)); do
+        chunk=("${files[@]:i:200}")
+        mapfile -t hashes < <(nice -n 19 nix-hash --type sha256 --base32 "${chunk[@]}" 2>/dev/null)
+        for ((j = 0; j < ${#chunk[@]}; j++)); do
+            size=${sizes[i + j]}
+            h=${hashes[j]:-}
+            [[ -n $h ]] || continue
+            # Empty files are never linked; the content is already there, or twice in the sample.
+            if ((size == 0)); then continue; fi
+            if [[ -e $store/.links/$h || -n ${seen[$h]:-} ]]; then dup=$((dup + size)); else seen[$h]=1; fi
+        done
+    done
+    printf 'paths=%s\nsampled=%s\nunlinked_files=%s\nunlinked_bytes=%s\nhashed_bytes=%s\nduplicate_bytes=%s\nestimate_bytes=%s\npartial=%s\nmeasured_at=%s\n' \
+        "$total" "$sampled" "$unlinked" "$unlinked_bytes" "$hashed" "$dup" "$((dup * total / sampled))" "$partial" "$(date +%s)"
+}
+
+case ${1:-} in
+    status) status ;;
+    estimate) estimate "${2:-}" ;;
+    *) echo 'usage: optimise status | optimise estimate [SAMPLE]' >&2; exit 2 ;;
+esac

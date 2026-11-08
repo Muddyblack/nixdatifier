@@ -306,6 +306,22 @@ Item {
     property bool isMeasuringSpace: false
     property var healthResult: null
     property bool isProbingHealth: false
+    // Store optimisation (tools/sh/optimise): { autoOptimise: true|false|null, timer } | { isError, value } | null
+    property var optimiseStatus: null
+    // { bytes, sampledPaths, totalPaths, partial, measuredAt } | { isError, value } | null; a rough, sampled estimate
+    property var optimiseEstimate: null
+    property bool isProbingOptimise: false
+    property bool isEstimatingOptimise: false
+    // The newest successful run in history: { timestamp, freedBytes (-1: unknown) } | null
+    readonly property var lastOptimise: {
+        const run = root.actionHistory.find(e => e.action === "optimise" && e.success);
+        if (!run)
+            return null;
+        return {
+            timestamp: run.timestamp,
+            freedBytes: root.optimiseFreedBytes((run.output || "") + "\n" + (run.label || ""))
+        };
+    }
     // Why a view is empty (tools/sh/doctor): { checks: [...], failures } | { isError, value } | null
     property var doctorResult: null
     property bool isDiagnosing: false
@@ -1571,6 +1587,92 @@ Item {
         });
     }
 
+    // ── Store optimisation: hard-linking identical files ──────────────────────
+    // nix-store --optimise ends with "3415.45 MiB freed by hard-linking 1234 files".
+    function optimiseFreedBytes(text) {
+        const m = String(text || "").match(/([\d.]+) ([KMGT]?)i?B freed/);
+        if (!m)
+            return -1;
+        const unit = {
+            "": 1,
+            K: 1024,
+            M: 1048576,
+            G: 1073741824,
+            T: 1099511627776
+        }[m[2]];
+        return Math.floor(parseFloat(m[1]) * unit);
+    }
+    function parseKeyValues(text) {
+        const out = {};
+        for (const line of String(text || "").split("\n")) {
+            const i = line.indexOf("=");
+            if (i > 0)
+                out[line.slice(0, i)] = line.slice(i + 1).trim();
+        }
+        return out;
+    }
+    function probeOptimiseStatus() {
+        if (root.isProbingOptimise)
+            return;
+        root.isProbingOptimise = true;
+        sh(shq(root.scriptDir + "optimise") + " status", function (cmd, out, err, code) {
+            root.isProbingOptimise = false;
+            const kv = root.parseKeyValues(out);
+            root.optimiseStatus = code === 0 ? {
+                isError: false,
+                autoOptimise: kv.auto_optimise === "true" ? true : kv.auto_optimise === "false" ? false : null,
+                timer: kv.timer || "absent"
+            } : {
+                isError: true,
+                value: (err || out || qsTr("Could not read the Nix settings")).trim()
+            };
+        });
+    }
+    // Samples the store (seconds). Shares its cache with `nixdatifier optimise status`;
+    // every system change starts a new estimate.
+    function estimateOptimise(force) {
+        if (root.isEstimatingOptimise)
+            return;
+        root.isEstimatingOptimise = true;
+        sh(shq(root.scriptDir + "run") + " cached " + shq("storeusage:optimise-estimate:v1") + " " + (force ? 0 : 21600) + " -- " + shq(root.scriptDir + "optimise") + " estimate", function (cmd, out, err, code) {
+            root.isEstimatingOptimise = false;
+            const kv = root.parseKeyValues(out);
+            root.optimiseEstimate = code === 0 && /^\d+$/.test(kv.estimate_bytes || "") ? {
+                isError: false,
+                bytes: Number(kv.estimate_bytes),
+                sampledPaths: Number(kv.sampled) || 0,
+                totalPaths: Number(kv.paths) || 0,
+                partial: kv.partial === "1",
+                measuredAt: Number(kv.measured_at) || 0
+            } : {
+                isError: true,
+                value: (err || out || qsTr("Could not estimate the savings")).trim()
+            };
+        });
+    }
+    function executeOptimise() {
+        if (root.isBusy) {
+            root.pushToast(qsTr("Already running another action — please wait."), true);
+            return;
+        }
+        root.isBusy = true;
+        root.currentActionType = qsTr("Optimising Nix store…");
+        sh(cli("optimise"), function (c, out, err, code) {
+            root.isBusy = false;
+            root.loadHistory();
+            root.probeDiskUsage(true);
+            root.optimiseEstimate = null;
+            if (code !== 0) {
+                root.pushToast(qsTr("Optimise failed: ") + (err || out || "").trim(), true);
+                return;
+            }
+            const freed = root.optimiseFreedBytes((out || "") + "\n" + (err || ""));
+            const msg = freed >= 0 ? qsTr("Store optimised — %1 freed.").arg(UI.Theme.formatBytes(freed) || "0 B") : qsTr("Store optimised.");
+            root.pushToast(msg, false);
+            root.notify(qsTr("Nix — store optimised"), msg, false);
+        });
+    }
+
     // ── Doctor: what was checked when a view stays empty ──────────────────────
     // Fields are tab-separated with \t, \n and \\ escaped (see tools/sh/doctor).
     function parseDoctor(text) {
@@ -2680,6 +2782,11 @@ Item {
     }
 
     function executeCleanup(mode) {
+        // Optimising is plain Nix: it works without NixOS too.
+        if (mode === "optimise") {
+            root.executeOptimise();
+            return;
+        }
         if (!root.isNixOS)
             return;
         if (mode === "gc-custom") {

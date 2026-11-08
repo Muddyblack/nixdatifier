@@ -176,8 +176,31 @@ Window {
             }
             if (stage === 3)
                 win.capture("updates");
-            if (stage === 4)
+            if (stage === 4) {
+                core.optimiseStatus = {
+                    isError: false,
+                    autoOptimise: false,
+                    timer: "absent"
+                };
+                core.optimiseEstimate = {
+                    isError: false,
+                    bytes: 3435973837,
+                    sampledPaths: 1000,
+                    totalPaths: 69690,
+                    partial: false,
+                    measuredAt: 0
+                };
+                core.actionHistory = [
+                    {
+                        timestamp: "2026-11-01T09:00:00Z",
+                        action: "optimise",
+                        label: "Optimising Nix store · 4096.00 MiB freed (52011 files)",
+                        success: true,
+                        output: "4096.00 MiB freed by hard-linking 52011 files"
+                    }
+                ];
                 core.activeViewMode = "tools";
+            }
             if (stage === 5)
                 win.capture("tools");
             if (stage === 6) {

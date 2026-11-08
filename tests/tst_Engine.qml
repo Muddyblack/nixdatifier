@@ -610,6 +610,75 @@ Item {
             core.isDiagnosing = false;
         }
 
+        function test_optimise_status_estimate_and_run() {
+            core.optimiseStatus = null;
+            core.optimiseEstimate = null;
+            core.isProbingOptimise = false;
+            core.isEstimatingOptimise = false;
+            core.probeOptimiseStatus();
+            core.probeOptimiseStatus();
+            compare(jobs.length, 1);
+            verify(jobs[0].cmd.endsWith("/optimise' status"));
+            jobs[0].callback(jobs[0].cmd, "auto_optimise=false\ntimer=absent\n", "", 0);
+            compare(core.optimiseStatus.autoOptimise, false);
+            compare(core.optimiseStatus.timer, "absent");
+
+            core.estimateOptimise(true);
+            compare(jobs.length, 2);
+            verify(jobs[1].cmd.indexOf("cached 'storeusage:optimise-estimate:v1' 0 --") >= 0);
+            verify(jobs[1].cmd.endsWith("/optimise' estimate"));
+            jobs[1].callback(jobs[1].cmd, "paths=70000\nsampled=1000\nunlinked_files=5\nunlinked_bytes=10\nhashed_bytes=10\nduplicate_bytes=7\nestimate_bytes=490\npartial=0\nmeasured_at=5\n", "", 0);
+            compare(core.optimiseEstimate.bytes, 490);
+            compare(core.optimiseEstimate.sampledPaths, 1000);
+            core.estimateOptimise(false);
+            verify(jobs[2].cmd.indexOf(" 21600 --") >= 0);
+            jobs[2].callback(jobs[2].cmd, "", "nothing in /nix/store", 1);
+            verify(core.optimiseEstimate.isError);
+            compare(core.optimiseEstimate.value, "nothing in /nix/store");
+
+            compare(core.optimiseFreedBytes("x\n3415.45 MiB freed by hard-linking 1234 files"), Math.floor(3415.45 * 1048576));
+            compare(core.optimiseFreedBytes("1.50 GiB freed by hard-linking 2 files"), Math.floor(1.5 * 1073741824));
+            compare(core.optimiseFreedBytes("nothing"), -1);
+            core.actionHistory = [
+                {
+                    action: "gc",
+                    success: true,
+                    timestamp: "2026-11-02T00:00:00Z",
+                    output: "9 MiB freed"
+                },
+                {
+                    action: "optimise",
+                    success: false,
+                    timestamp: "2026-11-01T00:00:00Z",
+                    output: ""
+                },
+                {
+                    action: "optimise",
+                    success: true,
+                    timestamp: "2026-10-01T00:00:00Z",
+                    label: "Optimising Nix store · 2.00 MiB freed (3 files)",
+                    output: ""
+                }
+            ];
+            compare(core.lastOptimise.timestamp, "2026-10-01T00:00:00Z");
+            compare(core.lastOptimise.freedBytes, 2097152);
+
+            // Plain Nix: it runs without NixOS too, through the CLI like every change.
+            core.isNixOS = false;
+            jobs = [];
+            core.executeCleanup("optimise");
+            verify(core.isBusy);
+            compare(jobs.length, 1);
+            verify(jobs[0].cmd.indexOf("--yes") >= 0);
+            verify(jobs[0].cmd.endsWith(" optimise"));
+            jobs[0].callback(jobs[0].cmd, "", "4096.00 MiB freed by hard-linking 9 files", 0);
+            verify(!core.isBusy);
+            compare(core.optimiseEstimate, null);
+            verify(core.toasts.some(t => t.msg === "Store optimised — 4.0 GB freed."));
+            core.isNixOS = true;
+            core.actionHistory = [];
+        }
+
         function test_why_loads_once_and_parses_chains() {
             const pkg = {
                 name: "zstd",
