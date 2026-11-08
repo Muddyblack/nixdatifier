@@ -27,9 +27,9 @@ QQC.Pane {
     readonly property var tabs: [qsTr("System"), qsTr("Commands"), qsTr("Generations"), qsTr("Appearance"), qsTr("Info"), qsTr("Panel"), qsTr("Advanced")]
     readonly property var tabKeys: ["General", "Commands", "Behavior", "Design", "Info", "Panel", "Advanced"]
     readonly property var tabIcons: ["settings", "terminal", "activate", "grid", "info", "grid", "settings"]
-    readonly property var descriptions: [qsTr("Your system flake, update checks and default view."), qsTr("Your rebuild shortcuts, terminal and cleanup commands."), qsTr("Generation actions, notifications and package comparisons."), qsTr("Fine-tune the colours, typography and feel of your widget."), qsTr("Project information, releases and ways to contribute."), qsTr("Choose how Nixdatifier lives on your desktop."), qsTr("Permissions, secrets, GitHub access and persistent storage.")]
+    readonly property var descriptions: [qsTr("Your system flake, update checks and default view."), qsTr("Your rebuild shortcuts, terminal and cleanup commands."), qsTr("Generation actions, notifications and package comparisons."), qsTr("Fine-tune the colours, typography and feel of your widget."), qsTr("Project information, releases and ways to contribute."), qsTr("Choose how Nixdatifier lives on your desktop."), qsTr("Permissions, secrets, GitHub access, persistent storage and vulnerability scans.")]
     function sectionFor(field) {
-        if (["Secrets", "Impermanence", "Permissions"].includes(field.group))
+        if (["Secrets", "Impermanence", "Permissions", "Vulnerability scan"].includes(field.group))
             return "Advanced";
         if (["Panel", "Popup size", "Hyprland panel"].includes(field.group))
             return "Panel";

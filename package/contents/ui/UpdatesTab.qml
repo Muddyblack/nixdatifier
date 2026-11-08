@@ -47,6 +47,46 @@ Item {
             parts.push(qsTr("%1 unpacked").arg(UI.Theme.formatBytes(summary.unpackedBytes)));
         return parts.length ? parts.join("  ·  ") : qsTr("Nothing to download or build");
     }
+    // Known vulnerabilities an update would fix or introduce (Engine.cveDeltaCache).
+    property var cveStatus: null
+    property var cveDeltaCache: ({})
+    property bool isScanningCve: false
+    readonly property bool cveAvailable: !!cveStatus && cveStatus.scanner !== ""
+    signal cveDeltaRequested(string inputName)
+    function cveCountText(counts) {
+        const parts = [];
+        for (const [key, label] of [["critical", qsTr("%1 critical")], ["high", qsTr("%1 high")], ["medium", qsTr("%1 medium")], ["low", qsTr("%1 low")], ["unknown", qsTr("%1 without a score")]])
+            if (counts && counts[key])
+                parts.push(label.arg(counts[key]));
+        return parts.join(", ");
+    }
+    function distinctIds(entries) {
+        return new Set((entries || []).map(e => e.id)).size;
+    }
+    function cveDeltaText(delta) {
+        const fixed = distinctIds(delta.fixed), introduced = distinctIds(delta.introduced);
+        const fixedText = fixed === 1 ? qsTr("fixes 1 known vulnerability (%1)").arg(cveCountText(delta.fixedCounts)) : fixed ? qsTr("fixes %1 known vulnerabilities (%2)").arg(fixed).arg(cveCountText(delta.fixedCounts)) : qsTr("fixes no known vulnerabilities");
+        const newText = introduced ? qsTr("introduces %1 (%2)").arg(introduced).arg(cveCountText(delta.introducedCounts)) : qsTr("introduces none");
+        return qsTr("This update %1 and %2.").arg(fixedText).arg(newText);
+    }
+    // CveList rows: one per package, its CVEs as chips.
+    function cveDeltaPackages(entries) {
+        const byPackage = {};
+        const order = [];
+        for (const e of entries || []) {
+            const key = e.package + "\n" + e.fromVersion + "\n" + e.toVersion;
+            if (!byPackage[key]) {
+                byPackage[key] = {
+                    name: e.package,
+                    version: e.fromVersion === e.toVersion ? qsTr("%1, rebuilt").arg(e.toVersion) : e.fromVersion ? e.fromVersion + " → " + e.toVersion : qsTr("%1, new").arg(e.toVersion),
+                    cves: []
+                };
+                order.push(key);
+            }
+            byPackage[key].cves.push(e);
+        }
+        return order.map(k => byPackage[k]);
+    }
     function overWarnSize(summary) {
         return !!summary && previewWarnMiB > 0 && summary.downloadBytes > previewWarnMiB * 1048576;
     }
@@ -305,6 +345,12 @@ Item {
                     readonly property var summary: entry && entry.status === "ok" && entry.summary ? entry.summary : null
                     readonly property bool localBuilds: !!summary && summary.toBuild > 0
                     readonly property bool largeDownload: root.overWarnSize(summary)
+                    // Only the comparison for this very preview (the same evaluated system).
+                    readonly property var cveDelta: {
+                        const d = root.cveDeltaCache[modelData.input];
+                        return d && summary && entry.toplevel && d.toplevel === entry.toplevel ? d : null;
+                    }
+                    readonly property bool cveDeltaOk: !!cveDelta && cveDelta.status === "ok"
                     readonly property bool opened: !!root.openPreviews[modelData.input]
                     readonly property bool updating: root.updatingInputs.indexOf(modelData.input) >= 0
                     Layout.fillWidth: true
@@ -589,6 +635,86 @@ Item {
                                     tone: UI.Theme.changed
                                     fs: root.fs
                                     text: card.summary ? qsTr("Large download: %1, above your %2 warning threshold.").arg(UI.Theme.formatBytes(card.summary.downloadBytes)).arg(UI.Theme.formatBytes(root.previewWarnMiB * 1048576)) : ""
+                                }
+                                ColumnLayout {
+                                    objectName: "cveDelta-" + card.modelData.input
+                                    Layout.fillWidth: true
+                                    visible: root.cveAvailable && !!card.summary && !!card.entry.toplevel
+                                    spacing: 7
+                                    Text {
+                                        visible: !!card.cveDelta && card.cveDelta.status === "loading"
+                                        Layout.fillWidth: true
+                                        text: root.cveStatus && root.cveStatus.scanned ? qsTr("Comparing known vulnerabilities (CVEs)…") : qsTr("Scanning the running system for known vulnerabilities first. The first scan downloads the NVD database, which takes a few minutes…")
+                                        color: root.accentColor
+                                        font.pixelSize: 10 * root.fs
+                                        wrapMode: Text.Wrap
+                                    }
+                                    Notice {
+                                        objectName: "cveDeltaSummary-" + card.modelData.input
+                                        Layout.fillWidth: true
+                                        visible: card.cveDeltaOk
+                                        emphasis: card.cveDeltaOk && card.cveDelta.introduced.length > 0
+                                        glyph: card.cveDeltaOk && card.cveDelta.introduced.length > 0 ? "ic_warning" : card.cveDeltaOk && card.cveDelta.fixed.length > 0 ? "ic_check" : "ic_info"
+                                        tone: card.cveDeltaOk && card.cveDelta.introduced.length > 0 ? UI.Theme.changed : card.cveDeltaOk && card.cveDelta.fixed.length > 0 ? UI.Theme.positive : "#8c9db5"
+                                        fs: root.fs
+                                        text: card.cveDeltaOk ? root.cveDeltaText(card.cveDelta) : ""
+                                    }
+                                    Text {
+                                        visible: card.cveDeltaOk && card.cveDelta.fixed.length > 0
+                                        text: qsTr("Fixed")
+                                        color: UI.Theme.positive
+                                        font.pixelSize: 9 * root.fs
+                                    }
+                                    CveList {
+                                        Layout.fillWidth: true
+                                        visible: card.cveDeltaOk && card.cveDelta.fixed.length > 0
+                                        packages: card.cveDeltaOk ? root.cveDeltaPackages(card.cveDelta.fixed) : []
+                                        resolved: true
+                                        limit: 5
+                                        fs: root.fs
+                                        textColor: root.textColor
+                                    }
+                                    Text {
+                                        visible: card.cveDeltaOk && card.cveDelta.introduced.length > 0
+                                        text: qsTr("Introduced")
+                                        color: UI.Theme.changed
+                                        font.pixelSize: 9 * root.fs
+                                    }
+                                    CveList {
+                                        Layout.fillWidth: true
+                                        visible: card.cveDeltaOk && card.cveDelta.introduced.length > 0
+                                        packages: card.cveDeltaOk ? root.cveDeltaPackages(card.cveDelta.introduced) : []
+                                        limit: 5
+                                        fs: root.fs
+                                        textColor: root.textColor
+                                    }
+                                    Text {
+                                        visible: !!card.cveDelta && card.cveDelta.status === "error"
+                                        Layout.fillWidth: true
+                                        wrapMode: Text.Wrap
+                                        text: card.cveDelta && card.cveDelta.errorMsg ? card.cveDelta.errorMsg : ""
+                                        color: UI.Theme.negative
+                                        font.pixelSize: 10 * root.fs
+                                    }
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        visible: !card.cveDelta || card.cveDelta.status === "error"
+                                        spacing: 8
+                                        UI.ActionButton {
+                                            objectName: "cveCompare-" + card.modelData.input
+                                            text: card.cveDelta ? qsTr("Try again") : qsTr("Compare known vulnerabilities")
+                                            enabled: !root.isScanningCve
+                                            onClicked: root.cveDeltaRequested(card.modelData.input)
+                                        }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            visible: !card.cveDelta
+                                            text: qsTr("Scans the running system with vulnix first; the first scan downloads the NVD database (a few minutes).")
+                                            color: UI.Theme.muted
+                                            font.pixelSize: 9 * root.fs
+                                            wrapMode: Text.Wrap
+                                        }
+                                    }
                                 }
                                 UI.ActionButton {
                                     visible: !card.entry

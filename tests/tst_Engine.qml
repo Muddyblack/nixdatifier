@@ -564,6 +564,179 @@ Item {
             verify(!updates.overWarnSize(entry.summary));
         }
 
+        function cveScanJson(stale) {
+            return JSON.stringify({
+                storePath: "/nix/store/x-nixos-system",
+                scannedAt: 1700000000,
+                stale: stale,
+                scanner: "vulnix 1.12.4",
+                whitelist: "",
+                counts: {
+                    critical: 1,
+                    high: 0,
+                    medium: 1,
+                    low: 0,
+                    unknown: 0
+                },
+                cves: 2,
+                whitelisted: 0,
+                affectedPackages: 2,
+                packages: [
+                    {
+                        name: "openssl-3.6.5",
+                        pname: "openssl",
+                        version: "3.6.5",
+                        severity: "critical",
+                        cves: [
+                            {
+                                id: "CVE-2026-1",
+                                score: 9.8,
+                                severity: "critical",
+                                url: "https://nvd.nist.gov/vuln/detail/CVE-2026-1",
+                                whitelisted: false
+                            }
+                        ]
+                    }
+                ]
+            });
+        }
+        function test_cve_hidden_without_scanner_and_scans_only_once_opted_in() {
+            core.resetCve();
+            core.isScanningCve = false;
+            core.refreshCve();
+            compare(jobs.length, 1);
+            verify(jobs[0].cmd.endsWith("/cve' status"));
+            verify(jobs[0].cmd.indexOf("NIXDATIFIER_CVE_NIX_RUN") < 0);
+            jobs[0].callback(jobs[0].cmd, "scanner=\nwhitelist=\nwhitelist_error=\nscanned=0\n", "", 0);
+            verify(!core.cveAvailable);
+            compare(jobs.length, 1); // no scanner: nothing else runs
+            compare(core.cveResult, null);
+
+            // A scanner, never scanned: the last scan is read, but nothing starts on its own.
+            core.refreshCve();
+            jobs[1].callback(jobs[1].cmd, "scanner=vulnix\nwhitelist=\nwhitelist_error=\nscanned=0\n", "", 0);
+            verify(core.cveAvailable);
+            compare(jobs.length, 3);
+            verify(jobs[2].cmd.endsWith("/cve' peek /run/current-system"));
+            jobs[2].callback(jobs[2].cmd, "", "", 1);
+            compare(jobs.length, 3);
+
+            core.scanCve(false);
+            core.scanCve(false);
+            compare(jobs.length, 4);
+            verify(core.isScanningCve);
+            verify(jobs[3].cmd.endsWith("/cve' scan /run/current-system"));
+            jobs[3].callback(jobs[3].cmd, cveScanJson(false), "", 0);
+            verify(!core.isScanningCve);
+            compare(core.cveResult.cves, 2);
+            compare(core.cveResult.packages[0].cves[0].id, "CVE-2026-1");
+            verify(core.cveStatus.scanned);
+
+            // Scanned before and the last scan is outdated: shown at once, then scanned again.
+            core.refreshCve();
+            jobs[4].callback(jobs[4].cmd, "scanner=vulnix\nwhitelist=\nwhitelist_error=\nscanned=1\n", "", 0);
+            jobs[5].callback(jobs[5].cmd, cveScanJson(true), "", 0);
+            verify(core.cveResult.stale);
+            compare(jobs.length, 7);
+            verify(jobs[6].cmd.indexOf("scan /run/current-system") >= 0);
+            jobs[6].callback(jobs[6].cmd, "", "vulnerability scan failed: could not download the vulnerability database from nvd.nist.gov (offline?)", 1);
+            verify(core.cveResult.isError);
+            verify(core.cveResult.value.indexOf("could not download") >= 0);
+
+            core.scanCve(true);
+            verify(jobs[7].cmd.endsWith(" --refresh"));
+            jobs[7].callback(jobs[7].cmd, "", "", 1);
+
+            // The settings reach the helper, and changing them forgets what was found.
+            cfg.cveNixRun = true;
+            cfg.cveWhitelist = "/etc/it's.toml";
+            compare(core.cveStatus, null);
+            compare(core.cveResult, null);
+            verify(core.cveCommand("status").indexOf("NIXDATIFIER_CVE_NIX_RUN=on NIXDATIFIER_CVE_WHITELIST='/etc/it'\\''s.toml' ") === 0);
+            cfg.cveNixRun = false;
+            cfg.cveWhitelist = "";
+            core.resetCve();
+        }
+        function test_preview_compares_vulnerabilities_once_scanned() {
+            core.resetCve();
+            const input = fixtureInput();
+            core.flakeUpdates = [input];
+            core.runDryPreview(input.input, input.overrideRef);
+            const drv = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-nixos-system-host-26.11.drv";
+            jobs[0].callback(jobs[0].cmd, "SUMMARY\t1\t2\t1\t1\nTOPLEVEL\t" + drv + "\nfetch\topenssl\t3.6.5\t3.6.6\nfetch\thello\t\t2.12", "", 0);
+            const entry = core.dryRunCache[input.input];
+            compare(entry.toplevel, drv);
+            compare(entry.packages.map(p => p.name), ["openssl", "hello"]);
+            // Not scanned before: only the status is read, no comparison starts.
+            const cveJobs = () => jobs.filter(j => j.cmd.indexOf("/cve' ") >= 0);
+            compare(cveJobs().length, 1);
+            verify(cveJobs()[0].cmd.endsWith("/cve' status"));
+            cveJobs()[0].callback(cveJobs()[0].cmd, "scanner=vulnix\nwhitelist=\nwhitelist_error=\nscanned=0\n", "", 0);
+            compare(cveJobs().length, 1);
+            compare(core.cveDeltaCache[input.input], undefined);
+
+            // Asked for by hand (the card's button): the changed packages go to the helper.
+            core.runCveDelta(input.input, false);
+            compare(cveJobs().length, 2);
+            const job = cveJobs()[1];
+            verify(job.cmd.indexOf("printf '%s\\n' 'openssl\t3.6.5\t3.6.6\nhello\t\t2.12' | ") === 0);
+            verify(job.cmd.endsWith("/cve' delta '" + drv + "'"));
+            compare(core.cveDeltaCache[input.input].status, "loading");
+            core.runCveDelta(input.input, false);
+            compare(cveJobs().length, 2);
+            job.callback(job.cmd, JSON.stringify({
+                storePath: drv,
+                baseScannedAt: 1,
+                checkedPackages: 2,
+                fixed: [
+                    {
+                        id: "CVE-2026-1",
+                        score: 9.8,
+                        severity: "critical",
+                        url: "u",
+                        package: "openssl",
+                        fromVersion: "3.6.5",
+                        toVersion: "3.6.6"
+                    }
+                ],
+                introduced: [],
+                fixedCounts: {
+                    critical: 1,
+                    high: 0,
+                    medium: 0,
+                    low: 0,
+                    unknown: 0
+                },
+                introducedCounts: {
+                    critical: 0,
+                    high: 0,
+                    medium: 0,
+                    low: 0,
+                    unknown: 0
+                }
+            }), "", 0);
+            const delta = core.cveDeltaCache[input.input];
+            compare(delta.status, "ok");
+            compare(delta.toplevel, drv);
+            compare(delta.fixed[0].id, "CVE-2026-1");
+            verify(core.cveStatus.scanned);
+            compare(updates.cveDeltaText(delta), "This update fixes 1 known vulnerability (1 critical) and introduces none.");
+            compare(updates.cveDeltaPackages(delta.fixed)[0].version, "3.6.5 → 3.6.6");
+
+            // Once scanned, the next preview compares on its own.
+            core.dryRunCache = ({});
+            jobs = [];
+            core.runDryPreview(input.input, input.overrideRef);
+            jobs[0].callback(jobs[0].cmd, "SUMMARY\t1\t2\t1\t1\nTOPLEVEL\t" + drv.replace("26.11", "26.12") + "\nfetch\topenssl\t3.6.5\t3.6.7", "", 0);
+            compare(cveJobs().length, 1);
+            verify(cveJobs()[0].cmd.indexOf("/cve' delta ") >= 0);
+            cveJobs()[0].callback(cveJobs()[0].cmd, "", "vulnerability scan failed: offline", 1);
+            compare(core.cveDeltaCache[input.input].status, "error");
+            compare(core.cveDeltaCache[input.input].errorMsg, "vulnerability scan failed: offline");
+            core.resetCve();
+            core.dryRunCache = ({});
+        }
+
         function doctorRows() {
             return ["about\tinfo\tThis system\tnixdatifier 2 · NixOS\t\t\t\t\t", "profiles\tok\tProfiles readable\t3 system generations\t\t\t\t\t", "flake\tfail\tFlake path\t/x has no flake.nix.\tPick your config folder.\tnixdatifier config set flake DIR\tconfigure\t\t", "nix\tfail\tNix runs\tnix --version failed.\t\t\t\tnix --version\terror: bad\\tthing\\nsecond \\\\ line"].join("\n");
         }

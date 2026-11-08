@@ -684,6 +684,9 @@ printf 403
         self.assertEqual(lines[0], "SUMMARY\t520932557\t1610612736\t2\t2")
         self.assertIn("build\tfoo\t\t1.2", lines)
         self.assertIn("fetch\tfirefox\t\t150.0", lines)
+        # The evaluated system, for the vulnerability comparison; never a package row.
+        self.assertIn("TOPLEVEL\t/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-nixos-system-host-26.05.drv", lines)
+        self.assertFalse(any(line.split("\t")[1:2] == ["nixos-system-host"] for line in lines))
 
         # A single path, no size nix could print: sizes stay unknown, counts do not.
         (self.root / "dry-run.txt").write_text(
@@ -1288,6 +1291,197 @@ class Optimise(HelperCase):
         self.script(self.bin / "nix-hash", "exit 1\n")
         self.assertEqual(self.fields("estimate")["duplicate_bytes"], "0")
         self.assertEqual(self.run_helper("optimise", "bogus").returncode, 2)
+
+
+def vulnix_entry(name, affected=(), whitelisted=(), scores=None, drv=None):
+    """One package as vulnix --json prints it."""
+    pname, version = re.match(r"^(\S+?)-([0-9]\S*)$", name).groups()
+    return {
+        "name": name,
+        "pname": pname,
+        "version": version,
+        "derivation": drv or f"/nix/store/{'x' * 32}-{name}.drv",
+        "affected_by": list(affected),
+        "whitelisted": list(whitelisted),
+        "cvssv3_basescore": scores or {},
+        "description": {cve: f"About {cve}" for cve in [*affected, *whitelisted]},
+    }
+
+
+class Cve(HelperCase):
+    """tools/sh/cve against a fake vulnix: what it prints for -C (a closure) and -R (derivations)."""
+
+    SYSTEM = (
+        vulnix_entry("openssl-3.6.5", ["CVE-2026-1"], scores={"CVE-2026-1": 9.8}),
+        vulnix_entry("curl-8.22.0", ["CVE-2026-2"], scores={"CVE-2026-2": 7.5}),
+        # The same package from another derivation: one entry, CVEs merged.
+        vulnix_entry("curl-8.22.0", ["CVE-2026-2", "CVE-2026-6"], scores={"CVE-2026-2": 7.5, "CVE-2026-6": 3.1}),
+        vulnix_entry("zstd-1.5.7", ["CVE-2025-3", "CVE-2025-4"], scores={"CVE-2025-3": 5.3}),
+        vulnix_entry("jq-1.8.2", whitelisted=["CVE-2024-5"], scores={"CVE-2024-5": 2.0}),
+    )
+
+    def setUp(self):
+        super().setUp()
+        self.calls = self.root / "vulnix-calls"
+        self.system_json = self.root / "system.json"
+        self.drv_json = self.root / "drv.json"
+        self.system_json.write_text(json.dumps(list(self.SYSTEM)))
+        self.drv_json.write_text("[]")
+        # Exit like vulnix: 2 with findings, 0 without.
+        self.vulnix = self.script(
+            self.bin / "fake-vulnix",
+            f"""echo "$*" >> '{self.calls}'
+[[ $1 == --version ]] && {{ echo 'vulnix 1.12.4'; exit 0; }}
+case " $* " in *" -C "*) cat '{self.system_json}' ;; *) cat '{self.drv_json}' ;; esac
+exit 2
+""",
+        )
+        self.env["NIXDATIFIER_VULNIX"] = self.vulnix
+        self.env["XDG_CONFIG_HOME"] = str(self.root / "config")
+        self.system = self.root / "system"
+        self.system.mkdir()
+
+    def cve(self, *args, stdin=None, env=None):
+        return subprocess.run(
+            [str(HELPERS / "cve"), *args],
+            env={**self.env, **(env or {})},
+            input=stdin,
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+
+    def status(self, env=None):
+        return dict(line.split("=", 1) for line in self.cve("status", env=env).stdout.splitlines())
+
+    def test_hidden_without_a_scanner(self):
+        none = {"NIXDATIFIER_VULNIX": str(self.root / "no-vulnix")}
+        self.assertEqual(self.status(none)["scanner"], "")
+        result = self.cve("scan", str(self.system), env=none)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no vulnerability scanner", result.stderr)
+        self.assertEqual(self.cve("peek", str(self.system), env=none).returncode, 1)
+        # nix run only when allowed: it downloads vulnix.
+        self.script(self.bin / "nix", f"echo \"nix $*\" >> '{self.calls}'; cat '{self.system_json}'\n")
+        allowed = {**none, "NIXDATIFIER_CVE_NIX_RUN": "on"}
+        self.assertEqual(self.status(allowed)["scanner"], "nix-run")
+        scan = json.loads(self.cve("scan", str(self.system), env=allowed).stdout)
+        self.assertEqual(scan["cves"], 5)
+        self.assertIn("run nixpkgs#vulnix -- --json -s -C", self.calls.read_text())
+
+    def test_scan_counts_merges_and_caches(self):
+        self.assertEqual(self.status()["scanned"], "0")
+        result = self.cve("scan", str(self.system))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        scan = json.loads(result.stdout)
+        self.assertEqual(scan["storePath"], str(self.system))
+        self.assertEqual(scan["scanner"], "vulnix 1.12.4")
+        self.assertEqual(scan["counts"], {"critical": 1, "high": 1, "medium": 1, "low": 1, "unknown": 1})
+        self.assertEqual((scan["cves"], scan["whitelisted"], scan["affectedPackages"]), (5, 1, 3))
+        names = [p["name"] for p in scan["packages"]]
+        self.assertEqual(names, ["openssl-3.6.5", "curl-8.22.0", "zstd-1.5.7", "jq-1.8.2"])  # worst first
+        curl = scan["packages"][1]
+        self.assertEqual([c["id"] for c in curl["cves"]], ["CVE-2026-2", "CVE-2026-6"])
+        self.assertEqual(curl["severity"], "high")
+        zstd = {c["id"]: c for c in scan["packages"][2]["cves"]}
+        self.assertEqual(zstd["CVE-2025-4"]["severity"], "unknown")
+        self.assertIsNone(zstd["CVE-2025-4"]["score"])
+        self.assertEqual(zstd["CVE-2025-3"]["url"], "https://nvd.nist.gov/vuln/detail/CVE-2025-3")
+        self.assertEqual(scan["packages"][3]["severity"], "none")
+        self.assertTrue(scan["packages"][3]["cves"][0]["whitelisted"])
+        self.assertEqual(self.status()["scanned"], "1")
+        # A closure never changes: the second scan is the cached one, --refresh scans again.
+        self.cve("scan", str(self.system))
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)  # the scan and --version
+        self.cve("scan", str(self.system), "--refresh")
+        self.assertEqual(self.calls.read_text().count(" -C "), 2)
+        self.assertIs(json.loads(self.cve("peek", str(self.system)).stdout)["stale"], False)
+        self.assertIs(
+            json.loads(self.cve("peek", str(self.system), env={"NIXDATIFIER_CVE_TTL": "0"}).stdout)["stale"], True
+        )
+        self.assertEqual(self.cve("peek", str(self.root)).returncode, 1)  # never scanned
+
+    def test_whitelist_is_passed_and_keys_the_cache(self):
+        self.cve("scan", str(self.system))
+        whitelist = self.root / "config/vulnix/whitelist.toml"
+        whitelist.parent.mkdir(parents=True)
+        whitelist.write_text('["curl"]\n')
+        self.assertEqual(self.status()["whitelist"], str(whitelist))
+        self.cve("scan", str(self.system))
+        self.assertIn(f"-w {whitelist} -C", self.calls.read_text())
+        whitelist.write_text('["zstd"]\n')  # new content: scanned again
+        self.cve("scan", str(self.system))
+        self.assertEqual(self.calls.read_text().count(" -C "), 3)
+        missing = {"NIXDATIFIER_CVE_WHITELIST": str(self.root / "nope.toml")}
+        self.assertIn("whitelist not found", self.status(missing)["whitelist_error"])
+        self.assertIn("whitelist not found", self.cve("scan", str(self.system), env=missing).stderr)
+
+    def test_scan_failures_say_why(self):
+        self.script(
+            self.bin / "fake-vulnix",
+            "echo 'Traceback (most recent call last):' >&2\n"
+            "echo \"requests.exceptions.ConnectionError: HTTPSConnectionPool(host='nvd.nist.gov', port=443): Read timed out.\" >&2\n"
+            "exit 1\n",
+        )
+        result = self.cve("scan", str(self.system))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("could not download the vulnerability database", result.stderr)
+        self.assertEqual(self.status()["scanned"], "0")
+        self.assertEqual(self.cve("scan", str(self.root / "missing")).returncode, 1)
+
+    def test_delta_compares_the_update_with_the_running_system(self):
+        store = self.root / "store"
+        store.mkdir()
+        self.env["NIXDATIFIER_STORE_DIR"] = str(store)
+        drv = store / ("t" * 32 + "-nixos-system-host-26.11.drv")
+        drv.write_text("Derive()")
+        closure = [
+            f"{store}/{c * 32}-{name}.drv"
+            for c, name in (
+                ("a", "curl-8.23.0"),
+                ("b", "openssl-3.6.5"),  # same version, rebuilt with a patch
+                ("c", "zstd-1.6.0"),
+                ("d", "unrelated-1.0"),
+                ("e", "hello-2.12"),
+            )
+        ] + [f"{store}/{'f' * 32}-source"]
+        self.script(self.bin / "nix-store", "printf '%s\\n' " + " ".join(f"'{p}'" for p in closure) + "\n")
+        self.drv_json.write_text(
+            json.dumps(
+                [
+                    vulnix_entry("zstd-1.6.0", ["CVE-2026-7"], scores={"CVE-2026-7": 8.1}),
+                    vulnix_entry("hello-2.12"),
+                ]
+            )
+        )
+        changes = "curl\t8.22.0\t8.23.0\nzstd\t1.5.7\t1.6.0\nhello\t\t2.12\n"
+        result = self.cve("delta", str(drv), str(self.system), stdin=changes)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        delta = json.loads(result.stdout)
+        fixed = {(e["package"], e["id"], e["fromVersion"], e["toVersion"]) for e in delta["fixed"]}
+        self.assertEqual(
+            fixed,
+            {
+                ("openssl", "CVE-2026-1", "3.6.5", "3.6.5"),
+                ("curl", "CVE-2026-2", "8.22.0", "8.23.0"),
+                ("curl", "CVE-2026-6", "8.22.0", "8.23.0"),
+                ("zstd", "CVE-2025-3", "1.5.7", "1.6.0"),
+                ("zstd", "CVE-2025-4", "1.5.7", "1.6.0"),
+            },
+        )
+        self.assertEqual(
+            [(e["package"], e["id"], e["severity"]) for e in delta["introduced"]], [("zstd", "CVE-2026-7", "high")]
+        )
+        self.assertEqual(delta["introducedCounts"]["high"], 1)
+        self.assertEqual(delta["fixedCounts"], {"critical": 1, "high": 1, "medium": 1, "low": 1, "unknown": 1})
+        self.assertEqual(delta["checkedPackages"], 4)
+        # Only the changed packages and today's affected ones are read, never the rest.
+        derivations = self.calls.read_text().splitlines()[-1]
+        self.assertIn(" -R ", " " + derivations + " ")
+        self.assertNotIn("unrelated", derivations)
+        self.assertNotIn("-source", derivations)
+        self.assertNotEqual(self.cve("delta", str(self.root / "x.drv"), str(self.system), stdin="").returncode, 0)
 
 
 class Impermanence(HelperCase):
@@ -2221,6 +2415,129 @@ class Cli(HelperCase):
     def test_unknown_command_is_a_usage_error(self):
         self.assertEqual(self.cli_run("frobnicate").returncode, 2)
         self.assertIn("Usage:", self.cli_run("--help").stdout)
+
+    def cve_setup(self):
+        """A fake vulnix, and the running system pointed at generation 3."""
+        tools = Path(self.cli).parent
+        current = self.root / "current"
+        current.symlink_to(self.root / "store3")
+        for name in ("nixdatifier", "cve"):
+            path = tools / name
+            path.write_text(path.read_text().replace("/run/current-system", str(current)))
+        found = [
+            vulnix_entry("openssl-3.6.5", ["CVE-2026-1"], scores={"CVE-2026-1": 9.8}),
+            vulnix_entry("zstd-1.5.7", ["CVE-2025-3"], scores={"CVE-2025-3": 5.3}),
+            vulnix_entry("jq-1.8.2", whitelisted=["CVE-2024-5"], scores={"CVE-2024-5": 2.0}),
+        ]
+        (self.root / "found.json").write_text(json.dumps(found))
+        self.env["NIXDATIFIER_VULNIX"] = self.script(
+            self.bin / "fake-vulnix",
+            f"echo \"$*\" >> '{self.root / 'vulnix-calls'}'; [[ $1 == --version ]] && {{ echo 'vulnix 1.12.4'; exit 0; }}\n"
+            f"case \" $* \" in *' -C '*) cat '{self.root / 'found.json'}' ;; *) echo '[]' ;; esac; exit 2\n",
+        )
+
+    def test_cve_command_formats(self):
+        self.cve_setup()
+        status = json.loads(self.cli_run("--json", "cve", "status").stdout)
+        self.assertEqual((status["scanner"], status["scanned"], status["last"]), ("vulnix", False, None))
+        self.assertIn("none yet", self.cli_run("--color", "never", "cve", "status").stdout)
+        result = self.cli_run("--json", "cve")
+        self.assertEqual(result.returncode, 2, result.stderr)  # a critical one
+        report = json.loads(result.stdout)
+        self.assertIsNone(report["generation"])
+        self.assertEqual(report["counts"]["critical"], 1)
+        self.assertEqual(report["cves"], 2)
+        self.assertEqual(
+            set(report),
+            {
+                "generation",
+                "storePath",
+                "scannedAt",
+                "stale",
+                "scanner",
+                "whitelist",
+                "counts",
+                "cves",
+                "whitelisted",
+                "affectedPackages",
+                "packages",
+            },
+        )
+        text = self.cli_run("--color", "never", "cve").stdout
+        self.assertIn("(running system)", text)
+        self.assertIn("1 critical, 1 medium: 2 CVEs in 2 packages (1 whitelisted, --all lists them)", text)
+        self.assertRegex(text, r"openssl +3\.6\.5 +CVE-2026-1 +9\.8 +critical")
+        self.assertNotIn("CVE-2024-5", text)
+        self.assertIn("CVE-2024-5", self.cli_run("--color", "never", "cve", "--all").stdout)
+        plain = self.cli_run("--plain", "cve").stdout.splitlines()
+        self.assertEqual(plain[0].split("\t"), ["openssl", "3.6.5", "CVE-2026-1", "9.8", "critical"])
+        self.assertEqual(len(plain), 2)
+        generation = json.loads(self.cli_run("--json", "--generation", "2", "cve").stdout)
+        self.assertEqual(generation["generation"], 2)
+        self.assertEqual(generation["storePath"], str(self.root / "store2"))
+        self.assertEqual(self.cli_run("--generation", "9", "cve").returncode, 1)
+        last = json.loads(self.cli_run("--json", "cve", "status").stdout)["last"]
+        self.assertEqual(last["counts"]["critical"], 1)
+        # Only medium and lower: exit 0.
+        (self.root / "found.json").write_text(
+            json.dumps([vulnix_entry("zstd-1.5.7", ["CVE-2025-3"], scores={"CVE-2025-3": 5.3})])
+        )
+        self.assertEqual(self.cli_run("--refresh", "--quiet", "cve").returncode, 0)
+        # No scanner: an error with the way to get one, and nothing in status.
+        self.env["NIXDATIFIER_VULNIX"] = str(self.root / "no-vulnix")
+        missing = self.cli_run("cve")
+        self.assertEqual(missing.returncode, 1)
+        self.assertIn("cve_nix_run on", missing.stderr)
+        self.assertEqual(json.loads(self.cli_run("--json", "cve", "status").stdout)["scanner"], "")
+
+    def test_cve_settings_are_shared_and_validated(self):
+        self.assertIn("on or off", self.cli_run("config", "set", "cve_nix_run", "maybe").stderr)
+        window = {"cveNixRun": True, "cveWhitelist": "/etc/vulnix.toml"}
+        self.cli_run("config", "sync", "pull", json.dumps(window))
+        self.assertEqual(self.cli_run("config", "get", "cve_nix_run").stdout.strip(), "on")
+        self.assertEqual(self.cli_run("config", "get", "cve_whitelist").stdout.strip(), "/etc/vulnix.toml")
+        self.cli_run("config", "unset", "cve_nix_run")
+        later = json.loads(self.cli_run("config", "sync", "pull", json.dumps(window)).stdout)
+        self.assertIs(later["cveNixRun"], False)  # clearing restores the default in the window
+        self.assertEqual(later["cveWhitelist"], "/etc/vulnix.toml")
+        # The saved key reaches the helper: nix run is allowed.
+        self.cli_run("config", "set", "cve_nix_run", "on")
+        self.env["NIXDATIFIER_VULNIX"] = str(self.root / "no-vulnix")
+        self.assertEqual(json.loads(self.cli_run("--json", "cve", "status").stdout)["scanner"], "nix-run")
+
+    def test_preview_compares_vulnerabilities_once_scanned(self):
+        self.cve_setup()
+        tools = Path(self.cli).parent
+        flake = self.root / "flake"
+        flake.mkdir()
+        (flake / "flake.nix").write_text("{}")
+        (flake / "flake.lock").write_text("{}")
+        store = self.root / "nixstore"
+        store.mkdir()
+        self.env["NIXDATIFIER_STORE_DIR"] = str(store)
+        drv = store / ("t" * 32 + "-nixos-system-host-26.11.drv")
+        drv.write_text("Derive()")
+        self.script(
+            tools / "flake-probe",
+            "printf 'nixpkgs\\tok\\taaaaaaa\\tbbbbbbb\\t1700000000\\thttps://github.com/NixOS/nixpkgs\\tgithub:NixOS/nixpkgs/bbbbbbb\\t\\n'\n",
+        )
+        self.script(
+            tools / "dry-run-preview",
+            f"printf 'SUMMARY\\t100\\t200\\t1\\t1\\nTOPLEVEL\\t{drv}\\nfetch\\topenssl\\t3.6.5\\t3.6.6\\n'\n",
+        )
+        self.script(self.bin / "nix-store", f"echo '{store}/{'o' * 32}-openssl-3.6.6.drv'\n")
+        before = json.loads(self.cli_run("--json", "--flake", str(flake), "preview", "nixpkgs").stdout)
+        self.assertIsNone(before["cve"])  # never the first, long scan on its own
+        self.assertEqual([p["name"] for p in before["packages"]], ["openssl"])
+        hint = self.cli_run("--color", "never", "--flake", str(flake), "preview", "nixpkgs").stdout
+        self.assertIn("Scan the running system once (nixdatifier cve)", hint)
+        self.cli_run("--quiet", "cve")
+        after = json.loads(self.cli_run("--json", "--flake", str(flake), "preview", "nixpkgs").stdout)
+        self.assertEqual([(e["package"], e["id"]) for e in after["cve"]["fixed"]], [("openssl", "CVE-2026-1")])
+        self.assertEqual(after["cve"]["introduced"], [])
+        text = self.cli_run("--color", "never", "--flake", str(flake), "preview", "nixpkgs").stdout
+        self.assertIn("Known vulnerabilities (CVEs): fixes 1 (1 critical) · introduces 0", text)
+        self.assertIn("fixed       CVE-2026-1  critical 9.8  openssl 3.6.5 → 3.6.6", text)
 
 
 if __name__ == "__main__":

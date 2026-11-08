@@ -15,7 +15,7 @@ here=$(dirname "$(realpath "$0")")
 profiles=/nix/var/nix/profiles
 version=$(jq -r '.KPlugin.Version // empty' "$here/../../../metadata.json" 2>/dev/null)
 
-COMMANDS="generations updates diff disk health doctor status history info hash profiles profile secrets persist dev path why preview notes snapshot update rebuild run commands watch switch boot rollback delete clean gc optimise menu config completion help"
+COMMANDS="generations updates diff disk health cve doctor status history info hash profiles profile secrets persist dev path why preview notes snapshot update rebuild run commands watch switch boot rollback delete clean gc optimise menu config completion help"
 OPTIONS="--json --plain --flake --yes --dry-run --refresh --priv --label --check --limit --all --older-than --keep --quiet --color --roots --secrets --source --host --days --shells --config --updates --optimise --generation --help --version"
 
 # One entry per command: "<usage>|<summary>|<detail>". The overview, `help CMD`
@@ -27,6 +27,7 @@ help_entry() {
         diff) echo "diff [--config] [A [B]]#what changed between generations (default: newest vs previous)#Package changes with sizes. --config shows the changes in your .nix files instead (needs recorded snapshots, see: help snapshot)." ;;
         disk) echo "disk [STORE-PATH]#store size and what GC could free; or why a path is kept#With a store path: its GC roots, referrers and closure size. With measure_store off, only free space is shown; --refresh measures once." ;;
         health) echo "health#release/EOL, reboot needed, failed units, binary caches#Read only. Works on any distro with Nix; NixOS-only checks are left out elsewhere." ;;
+        cve) echo "cve [status] [--generation N] [--all]#known vulnerabilities (CVEs) in the running system, when vulnix is there#Scans the runtime closure of the running system (or generation N) with vulnix and lists each affected package with its CVEs, their CVSS v3 score and severity (critical 9+, high 7+, medium 4+, low; unknown without a v3 score). Details: https://nvd.nist.gov/vuln/detail/CVE-ID. Needs vulnix on PATH, or cve_nix_run on to run it with nix run nixpkgs#vulnix (downloads it). The first scan downloads the NVD database (~/.cache/vulnix), which takes a few minutes. Results are cached for a day per closure and shared with the window; --refresh scans again. A vulnix whitelist is respected: cve_whitelist, else ~/.config/vulnix/whitelist.toml; --all also lists whitelisted CVEs. Exits 2 when a critical or high CVE is found (not whitelisted), for cron and CI. status: whether a scanner is there, the whitelist and a summary of the last scan, without scanning. vulnix matches package names and versions against the NVD, so expect some false positives; patches named after a CVE count as fixed." ;;
         doctor) echo "doctor#why nothing shows up: what was checked, what failed, how to fix it#Checks NixOS, the tools nixdatifier needs, the Nix store, /nix/var/nix/profiles, the generation list, the flake path, the setup type (flake or channels), flakes being enabled and the flake's git state. Each failure says how to fix it and shows the command that failed with its output. Paste the output into bug reports. Exits 1 when a check fails. Read only." ;;
         status) echo "status [--updates]#one-line summary for prompts and status bars#Running generation, reboot needed, failed units. --updates adds a (cached) upstream check. --json for scripts." ;;
         history) echo "history [list|clear]#what earlier switches, cleanups and updates did#Shared with the window: the last 50 runs, including their output (--json). clear forgets them (asks first)." ;;
@@ -39,7 +40,7 @@ help_entry() {
         dev) echo "dev [list|show DIR|shells DIR|pkgs DIR SHELL|clear DIR]#direnv/flake dev environments#list shows projects direnv knows with their .direnv cache size; show describes one (--shells also evaluates its devShells); clear removes DIR/.direnv (asks first)." ;;
         path) echo "path NAME [VERSION] [--generation N]#store paths of a package in a generation's closure#Default generation: the running system." ;;
         why) echo "why NAME|STORE-PATH [VERSION] [--generation N] [--all]#why a package is in the system: the dependency chain that pulls it in#Shows the shortest chain from the system down to the package (like nix why-depends) and what pulls it in: an environment.systemPackages entry, a service, Home Manager, /etc or a part of the system itself. --all lists one chain per thing that pulls it in, shortest first. Default generation: the running system. NAME matches name-VERSION in the closure; a store path is exact." ;;
-        preview) echo "preview INPUT#which packages would change if INPUT were updated#Dry-run build with the input overridden; downloads only the flake source. --host NAME picks the configuration (default: this host)." ;;
+        preview) echo "preview INPUT#which packages would change if INPUT were updated#Dry-run build with the input overridden; downloads only the flake source. --host NAME picks the configuration (default: this host). Once the running system was scanned for CVEs (see: help cve), it also says which known vulnerabilities the update would fix or introduce." ;;
         notes) echo "notes INPUT#upstream releases and commits between your lock and latest#GitHub only; set GITHUB_TOKEN or github_token_file to lift the rate limit." ;;
         snapshot) echo "snapshot [REPO]#remember which config commit built the running generation#Run it after a rebuild (the window does it automatically) so 'diff --config' can compare your .nix files. 'generations' records it too when a flake is found." ;;
         update) echo "update [INPUT...]#nix flake update (all inputs, or only the named ones) in the flake directory#Asks first; recorded in history." ;;
@@ -54,7 +55,7 @@ help_entry() {
         clean) echo "clean [--keep N] [--older-than DAYS] [--optimise]#one step: delete old generations, then collect garbage#Defaults: keep the 5 newest and delete generations older than 14 days (never the running or booted one), then run gc. --optimise also hard-links identical files afterwards (see: help optimise). Asks once per step; --yes for none. On non-NixOS it only collects garbage." ;;
         gc) echo "gc [--older-than 14d | --all]#collect garbage#--all also deletes every old generation (nix-collect-garbage -d)." ;;
         optimise) echo "optimise [status]#hard-link identical files in the store (nix-store --optimise)#Without an argument: shows what it would free, asks, then runs nix-store --optimise as root (see --priv) and records the space it freed in history. It reads every file in the store, so it can take a while. --dry-run shows the estimate and the command only. status: whether nix.settings.auto-optimise-store is on, whether the nix-optimise timer (nix.optimise.automatic) runs, the last run, and a rough estimate of what optimising would free, from a sample of store paths (cached for 6 hours and after every change; --refresh samples again)." ;;
-        config) echo "config [list|get KEY|set KEY VALUE|unset KEY|path]#paths and preferences kept between runs#Saved in ~/.config/nixdatifier/config (NIXDATIFIER_CONFIG moves it) and read before every command; an environment variable or option still wins. Keys: flake (system flake directory), config_repo (git repository recording each generation), secrets (sops/agenix directory), secrets_source (the secrets file in the flake), persist (impermanence roots, colon separated), priv (sudo, doas or pkexec), commands (quick-run commands, see: help commands), check_interval (how often update checks run, like 6h), notifications (on or off: desktop notifications for found updates; default on), github_token_file (file holding a GitHub token for release notes), github_use_gh (on: borrow the GitHub CLI's login for release notes; default off), check_tarballs (off: skip tarball flake inputs when checking for updates; default on), deep_inputs (on: check every transitive flake input; default off). The window keeps these and the paths above in step with its own settings." ;;
+        config) echo "config [list|get KEY|set KEY VALUE|unset KEY|path]#paths and preferences kept between runs#Saved in ~/.config/nixdatifier/config (NIXDATIFIER_CONFIG moves it) and read before every command; an environment variable or option still wins. Keys: flake (system flake directory), config_repo (git repository recording each generation), secrets (sops/agenix directory), secrets_source (the secrets file in the flake), persist (impermanence roots, colon separated), priv (sudo, doas or pkexec), commands (quick-run commands, see: help commands), check_interval (how often update checks run, like 6h), notifications (on or off: desktop notifications for found updates; default on), github_token_file (file holding a GitHub token for release notes), github_use_gh (on: borrow the GitHub CLI's login for release notes; default off), check_tarballs (off: skip tarball flake inputs when checking for updates; default on), deep_inputs (on: check every transitive flake input; default off), cve_nix_run (on: run vulnix with nix run nixpkgs#vulnix when it is not installed; default off), cve_whitelist (a vulnix whitelist file or URL; default ~/.config/vulnix/whitelist.toml when it exists). The window keeps these and the paths above in step with its own settings." ;;
         menu) echo "menu#interactive view: browse, compare and act without flags#What a bare 'nixdatifier' opens in a terminal: sections with live previews, generations you can open and compare, updates with release notes, keys for switch, boot, delete and update (F1 lists them). Needs fzf 0.70+, else a numbered menu (or set NIXDATIFIER_NO_FZF=1). Set NIXDATIFIER_MODE=cli to make a bare 'nixdatifier' print the help instead; 'nixdatifier menu' always opens it." ;;
         completion) echo "completion <bash|zsh|fish|install>#print a shell completion script, or set it up for you#'completion install' detects your shell and adds completion to its startup file (fish: its completions folder); safe to repeat. Manual: source <(nixdatifier completion bash)" ;;
         help) echo "help [COMMAND]#this help#" ;;
@@ -132,7 +133,7 @@ unknown_name() {
 # Saved settings (nixdatifier config): they fill in what the environment leaves
 # empty, so a variable or option on the command line still wins.
 CONFIG_FILE=${NIXDATIFIER_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/nixdatifier/config}
-CONFIG_KEYS="flake config_repo secrets secrets_source persist priv commands check_interval notifications github_token_file github_use_gh check_tarballs deep_inputs ignored_inputs measure_store preview_warn"
+CONFIG_KEYS="flake config_repo secrets secrets_source persist priv commands check_interval notifications github_token_file github_use_gh check_tarballs deep_inputs ignored_inputs measure_store preview_warn cve_nix_run cve_whitelist"
 config_var() { # config_var KEY: the environment variable a key stands for
     case $1 in flake) echo NIXDATIFIER_FLAKE ;; config_repo) echo NIXDATIFIER_CONFIG_REPO ;; secrets) echo NIXDATIFIER_SECRETS ;;
         secrets_source) echo NIXDATIFIER_SECRETS_SOURCE ;; persist) echo NIXDATIFIER_PERSIST ;; priv) echo NIXDATIFIER_PRIV ;;
@@ -140,7 +141,8 @@ config_var() { # config_var KEY: the environment variable a key stands for
         github_token_file) echo NIXDATIFIER_GITHUB_TOKEN_FILE ;; github_use_gh) echo NIXDATIFIER_GITHUB_USE_GH ;;
         check_tarballs) echo NIXDATIFIER_CHECK_TARBALLS ;; deep_inputs) echo NIXDATIFIER_DEEP_INPUTS ;;
         ignored_inputs) echo NIXDATIFIER_IGNORE_INPUTS ;; measure_store) echo NIXDATIFIER_MEASURE_STORE ;;
-        preview_warn) echo NIXDATIFIER_PREVIEW_WARN ;; esac
+        preview_warn) echo NIXDATIFIER_PREVIEW_WARN ;; cve_nix_run) echo NIXDATIFIER_CVE_NIX_RUN ;;
+        cve_whitelist) echo NIXDATIFIER_CVE_WHITELIST ;; esac
 }
 config_file_get() { [[ -f $CONFIG_FILE ]] && sed -n "s/^$1=//p" "$CONFIG_FILE" | tail -1; return 0; }
 COMMANDS_FROM_ENV=${NIXDATIFIER_COMMANDS:+1}
@@ -269,7 +271,7 @@ view() {
     if ((paint)); then
         [[ -z ${warn_sed:-} ]] || out=$(sed -E "$warn_sed" <<<"$out")
         ((hdr)) && out=$(sed '1s/.*/\x1b[1m&\x1b[0m/' <<<"$out")
-        out=$(sed -E 's/\b(failed|unreachable|high|dead|stale)\b/\x1b[31m&\x1b[0m/g; s/\b(update|slow|medium|reboot)\b/\x1b[33m&\x1b[0m/g; s/\b(ok|yes|fresh|unchanged)\b/\x1b[32m&\x1b[0m/g' <<<"$out")
+        out=$(sed -E 's/\b(failed|unreachable|critical|high|dead|stale)\b/\x1b[31m&\x1b[0m/g; s/\b(update|slow|medium|reboot)\b/\x1b[33m&\x1b[0m/g; s/\b(ok|yes|fresh|unchanged)\b/\x1b[32m&\x1b[0m/g' <<<"$out")
     fi
     [[ -n $out ]] && printf '%s\n' "$out"
     return 0
@@ -391,8 +393,14 @@ cmd_preview() {
            toBuild: (($s[3] | n) // 0), toFetch: (($s[4] | n) // 0)}
         | .localBuilds = (.toBuild > 0)
         | .largeDownload = ($warn > 0 and (.downloadBytes // 0) > $warn * 1048576)
-        | .packages = [$rows[] | select(.[0] != "SUMMARY" and length > 1 and .[1] != "") |
+        | .packages = [$rows[] | select(.[0] != "SUMMARY" and .[0] != "TOPLEVEL" and length > 1 and .[1] != "") |
             {action: .[0], name: .[1], oldVersion: .[2], newVersion: .[3], kind: (if (.[2] // "") == "" then "added" else "upgrade" end)}]' <<<"$out")
+    # Known vulnerabilities it would fix or introduce: null until the running
+    # system was scanned once (nixdatifier cve), or when nothing changes.
+    local toplevel delta
+    toplevel=$(sed -n 's/^TOPLEVEL\t//p' <<<"$out" | head -1)
+    delta=$(cve_delta "$json" "$toplevel")
+    json=$(jq --argjson cve "${delta:-null}" '.cve = $cve' <<<"$json")
     if [[ $fmt == json ]]; then jq . <<<"$json"; return; fi
     if [[ $fmt != plain ]]; then
         local y='' x=''
@@ -405,7 +413,18 @@ cmd_preview() {
              | if length == 0 then "Nothing to download or build" else join(" · ") end),
             (if .localBuilds then "\($y)! \(.toBuild) derivation\(if .toBuild == 1 then "" else "s" end) must be built locally (not in the binary cache): this can take a while.\($x)" else empty end),
             (if .largeDownload then "\($y)! Large download: above preview_warn (\($warn) MiB).\($x)" else empty end),
+            (.cve | if . == null then empty
+                elif .error then "\($y)! Could not compare known vulnerabilities: \(.error)\($x)"
+                else "Known vulnerabilities (CVEs): fixes \(.fixed | unique_by(.id) | length)\(if (.fixed | length) > 0 then " (\(.fixedCounts | cve_counts))" else "" end)"
+                    + " · introduces \(.introduced | unique_by(.id) | length)\(if (.introduced | length) > 0 then " (\(.introducedCounts | cve_counts))" else "" end)",
+                    (((.fixed | map(. + {how: "fixed"})) + (.introduced | map(. + {how: "introduced"})))[:12][]
+                     | "  \(if .how == "fixed" then "fixed     " else "\($y)introduced\($x)" end)  \(.id)  \(.severity)\(if .score then " \(.score)" else "" end)  \(.package) \(if .fromVersion == .toVersion then "\(.toVersion) (rebuilt)" elif .fromVersion == "" then "\(.toVersion) (new)" else "\(.fromVersion) → \(.toVersion)" end)"),
+                    (((.fixed | length) + (.introduced | length)) as $n | if $n > 12 then "  … and \($n - 12) more (--json lists them)" else empty end)
+                end),
             ""' <<<"$json"
+        if [[ $(jq '.cve' <<<"$json") == null && -n $(cve_scanner) ]] && ! "$here/cve" status 2>/dev/null | grep -qx 'scanned=1'; then
+            printf 'Scan the running system once (nixdatifier cve) to also see which known vulnerabilities this would fix.\n\n'
+        fi
     fi
     jq '.packages' <<<"$json" | warn_sed='s/^build\b/\x1b[33m&\x1b[0m/' render action,kind,name,oldVersion,newVersion
 }
@@ -508,10 +527,105 @@ health_json() {
            caches: ($p[2] // "" | split("\n") | map(select(length > 0) | split("\t") | {url: .[0], status: .[1], ms: (.[2] | tonumber? // null)}))}'
 }
 cmd_health() {
-    health_json | kv '
+    health_json | jq --argjson v "$(cve_summary)" '. + {vulnerabilities: $v}' | kv '
         (.facts | to_entries[] | "\(.key)\t\(.value)"),
         (.failedUnits[] | "failed\t\(.scope) \(.unit) \(.result) \(.reason)"),
-        (.caches[] | "cache\t\(.url) \(.status) \(.ms)ms")'
+        (.caches[] | "cache\t\(.url) \(.status) \(.ms)ms"),
+        (.vulnerabilities | if . == null then empty
+            elif .scannedAt == null then "vulnerabilities\tnot scanned yet  (nixdatifier cve)"
+            else "vulnerabilities\t\(.counts | cve_counts)  (scanned \(.scannedAt | tm)\(if .stale then ", outdated" else "" end); nixdatifier cve)" end)'
+}
+
+# ── Vulnerabilities ─────────────────────────────────────────────────────────
+# Known CVEs in a closure (tools/sh/cve runs vulnix), cached per closure and
+# shared with the window. Only when a scanner is there; nothing changes otherwise.
+JQ_DEFS+='
+def cve_counts: [("critical", "high", "medium", "low", "unknown") as $k | select((.[$k] // 0) > 0) | "\(.[$k]) \($k)"]
+    | if length == 0 then "none known" else join(", ") end;'
+cve_scanner() { "$here/cve" status 2>/dev/null | sed -n 's/^scanner=//p'; }
+# The health summary: null without a scanner; the last scan of the running
+# system, never a new one (that is nixdatifier cve).
+cve_summary() {
+    [[ -n $(cve_scanner) ]] || { echo null; return; }
+    "$here/cve" peek /run/current-system 2>/dev/null | jq -c '{scanner, scannedAt, stale, counts, cves}' 2>/dev/null ||
+        jq -nc --arg s "$(cve_scanner)" '{scanner: $s, scannedAt: null, stale: false, counts: null, cves: null}'
+}
+cve_no_scanner() { die 'no vulnerability scanner: install vulnix (environment.systemPackages = [ pkgs.vulnix ];), or let nixdatifier run it with nix run: nixdatifier config set cve_nix_run on'; }
+cve_status_json() {
+    local st last
+    st=$("$here/cve" status 2>/dev/null)
+    last=$(cve_summary)
+    jq -Rn --arg st "$st" --argjson last "$last" '
+        ($st | split("\n") | map(select(contains("=")) | {key: split("=")[0], value: (split("=")[1:] | join("="))}) | from_entries) as $s
+        | {scanner: ($s.scanner // ""), whitelist: ($s.whitelist // ""), whitelistError: ($s.whitelist_error // ""),
+           scanned: ($s.scanned == "1"), last: (if $last == null or $last.scannedAt == null then null else $last | del(.scanner) end)}'
+}
+cmd_cve() {
+    local target=/run/current-system json rc again=()
+    ((refresh)) && again=(--refresh)
+    case ${args[0]:-scan} in
+        status)
+            cve_status_json | kv '
+                "scanner\t\(if .scanner == "" then "none (install vulnix, or: nixdatifier config set cve_nix_run on)" elif .scanner == "nix-run" then "vulnix through nix run nixpkgs#vulnix" else .scanner end)",
+                (if .whitelistError != "" then "whitelist\t\(.whitelistError)" elif .whitelist != "" then "whitelist\t\(.whitelist)" else empty end),
+                (if .scanner == "" then empty elif .last == null then "last scan\tnone yet (nixdatifier cve scans)"
+                 else "last scan\t\(.last.scannedAt | tm)\(if .last.stale then ", outdated" else "" end): \(.last.counts | cve_counts)" end)'
+            return ;;
+        scan) ;;
+        *) unknown_name 'cve subcommand' "${args[0]}" 'status' ;;
+    esac
+    [[ -n $(cve_scanner) ]] || cve_no_scanner
+    if [[ -n $generation ]]; then
+        need_nixos
+        target="$profiles/system-$generation-link"
+        [[ -e $target ]] || die "no generation $generation"
+    fi
+    [[ -e $target ]] || die 'no running NixOS system to scan (/run/current-system); why: nixdatifier doctor'
+    note 'Scanning for known vulnerabilities (the first scan downloads the NVD database: a few minutes)…'
+    json=$("$here/cve" scan "$target" "${again[@]}")
+    rc=$?
+    unnote
+    ((rc == 0)) || exit 1
+    json=$(jq --arg g "$generation" '{generation: (if $g == "" then null else ($g | tonumber) end)} + .' <<<"$json")
+    if [[ $fmt == json ]]; then jq . <<<"$json"
+    else
+        if [[ $fmt == text ]]; then
+            jq -r --argjson all "$all" "$JQ_DEFS"'
+                "\(.storePath | sub("^/nix/store/[a-z0-9]+-"; ""))\(if .generation then " (generation \(.generation))" else " (running system)" end) · scanned \(.scannedAt | tm) · \(.scanner)",
+                (if .cves == 0 then "No known vulnerabilities (CVEs) found."
+                 else "\(.counts | cve_counts): \(.cves) CVE\(if .cves == 1 then "" else "s" end) in \(.affectedPackages) package\(if .affectedPackages == 1 then "" else "s" end)" end)
+                + (if .whitelisted > 0 then " (\(.whitelisted) whitelisted\(if $all == 1 then "" else ", --all lists them" end))" else "" end),
+                (if .whitelist != "" then "Whitelist: \(.whitelist)" else empty end),
+                ""' <<<"$json"
+        fi
+        local cols=pname::PACKAGE,version,id::CVE,score,severity
+        ((all)) && cols+=,whitelisted
+        jq --argjson all "$all" '[.packages[] | . as $p | .cves[] | select($all == 1 or (.whitelisted | not))
+            | {pname: $p.pname, version: $p.version, id, score, severity, whitelisted}] | sort_by(.whitelisted, -(.score // 0), .pname)' <<<"$json" | render "$cols"
+        if [[ $fmt == text ]] && jq -e '.cves > 0' <<<"$json" >/dev/null; then
+            printf '\nDetails: https://nvd.nist.gov/vuln/detail/<CVE>. vulnix matches names and versions, so some may not apply.\n'
+        fi
+    fi
+    if [[ $(jq '.counts.critical + .counts.high' <<<"$json") != 0 ]]; then exit 2; fi
+    return 0
+}
+# What an update would fix or introduce (tools/sh/cve delta), for the preview:
+# only once the running system was scanned, so a preview never starts the
+# first, long database download on its own. Prints JSON or nothing.
+cve_delta() { # cve_delta PREVIEW-JSON TOPLEVEL-DRV
+    [[ -n $2 ]] && "$here/cve" status 2>/dev/null | grep -qx 'scanned=1' || return 0
+    [[ -n $(cve_scanner) ]] || return 0
+    local out err again=()
+    ((refresh)) && again=(--refresh)
+    err=$(mktemp "${TMPDIR:-/tmp}/nixdatifier-cve.XXXXXXXX") || return 0
+    note 'Comparing known vulnerabilities…'
+    if out=$(jq -r '.packages[] | [.name, .oldVersion, .newVersion] | @tsv' <<<"$1" | "$here/cve" delta "$2" "${again[@]}" 2>"$err"); then
+        printf '%s' "$out"
+    else
+        jq -Rnc --arg e "$(tail -1 "$err")" '{error: ($e | sub("^vulnerability scan failed: "; ""))}'
+    fi
+    unnote
+    rm -f "$err"
 }
 # ── Doctor ──────────────────────────────────────────────────────────────────
 # The same checklist the window shows when a view is empty (tools/sh/doctor).
@@ -1156,7 +1270,7 @@ cmd_persist() {
 # The window keeps these settings in its own store (KDE config, a JSON file),
 # so it mirrors them into the config file through `config sync`: the terminal
 # view and the window then show and change the same values. GUI name:file key.
-GUI_MAP="flakePath:flake configRepoPath:config_repo secretsPath:secrets secretsSourcePath:secrets_source impermanencePaths:persist checkInterval:check_interval customCommands:commands showNotifications:notifications githubTokenFile:github_token_file githubUseGh:github_use_gh checkTarballs:check_tarballs deepInputCheck:deep_inputs ignoredInputs:ignored_inputs measureStore:measure_store previewWarnMiB:preview_warn"
+GUI_MAP="flakePath:flake configRepoPath:config_repo secretsPath:secrets secretsSourcePath:secrets_source impermanencePaths:persist checkInterval:check_interval customCommands:commands showNotifications:notifications githubTokenFile:github_token_file githubUseGh:github_use_gh checkTarballs:check_tarballs deepInputCheck:deep_inputs ignoredInputs:ignored_inputs measureStore:measure_store previewWarnMiB:preview_warn cveNixRun:cve_nix_run cveWhitelist:cve_whitelist"
 config_file_put() { # config_file_put KEY VALUE: set it, or remove it when empty
     mkdir -p "$(dirname "$CONFIG_FILE")" || die "cannot create $(dirname "$CONFIG_FILE")"
     { grep -v "^$1=" "$CONFIG_FILE" 2>/dev/null; [[ -z $2 ]] || echo "$1=$2"; } >"$CONFIG_FILE.new" && mv "$CONFIG_FILE.new" "$CONFIG_FILE"
@@ -1188,7 +1302,7 @@ gui_sync() { # gui_sync pull|push JSON: JSON holds the window's current values
                     [[ $mode == pull && $v == 1h ]] && v='' ;; # the window's default is not a choice
                 showNotifications) case $v in true) v=on ;; false) v=off ;; *) v='' ;; esac
                     [[ $mode == pull && $v == on ]] && v='' ;; # on is the default everywhere
-                githubUseGh | deepInputCheck) case $v in true) v=on ;; *) v='' ;; esac ;; # off is the default
+                githubUseGh | deepInputCheck | cveNixRun) case $v in true) v=on ;; *) v='' ;; esac ;; # off is the default
                 checkTarballs | measureStore) case $v in false) v=off ;; *) v='' ;; esac ;; # on is the default
                 previewWarnMiB) [[ $v =~ ^[0-9]+$ && $v != 2048 ]] || v='' ;; # 2048 is the default
                 customCommands) v=$(commands_normalize "$v") || v=''
@@ -1209,7 +1323,7 @@ gui_sync() { # gui_sync pull|push JSON: JSON holds the window's current values
             checkInterval) [[ $v =~ ^[1-9][0-9]*[mhd]$ ]] || continue; v=$(interval_to_secs "$v"); out=$(jq -c --arg g "$g" --argjson v "$v" '.[$g] = $v' <<<"$out") ;;
             showNotifications) [[ $v == on || $v == off ]] || continue; out=$(jq -c --arg g "$g" --argjson v "$([[ $v == on ]] && echo true || echo false)" '.[$g] = $v' <<<"$out") ;;
             # Always answer these, so clearing the file's value restores the default in the window.
-            githubUseGh | deepInputCheck) out=$(jq -c --arg g "$g" --argjson v "$([[ $v == on ]] && echo true || echo false)" '.[$g] = $v' <<<"$out") ;;
+            githubUseGh | deepInputCheck | cveNixRun) out=$(jq -c --arg g "$g" --argjson v "$([[ $v == on ]] && echo true || echo false)" '.[$g] = $v' <<<"$out") ;;
             checkTarballs | measureStore) out=$(jq -c --arg g "$g" --argjson v "$([[ $v == off ]] && echo false || echo true)" '.[$g] = $v' <<<"$out") ;;
             previewWarnMiB) [[ $v =~ ^[0-9]+$ ]] || v=2048; out=$(jq -c --arg g "$g" --argjson v "$((10#$v))" '.[$g] = $v' <<<"$out") ;;
             customCommands) [[ -n $v ]] || continue; out=$(jq -c --arg g "$g" --arg v "$v" '.[$g] = $v' <<<"$out") ;;
@@ -1237,6 +1351,7 @@ cmd_config() {
             [[ $key != commands ]] || v=$(commands_normalize "$v") || usage_error 'commands is a JSON list: [{"label":"update","cmd":"nix flake update"}]'
             [[ $key != notifications || -z $v || $v =~ ^(on|off)$ ]] || usage_error 'notifications takes on or off'
             [[ $key != github_use_gh || -z $v || $v =~ ^(on|off)$ ]] || usage_error 'github_use_gh takes on or off'
+            [[ $key != cve_nix_run || -z $v || $v =~ ^(on|off)$ ]] || usage_error 'cve_nix_run takes on or off'
             [[ $key != check_tarballs && $key != deep_inputs && $key != measure_store || -z $v || $v =~ ^(on|off)$ ]] || usage_error "$key takes on or off"
             [[ $key != preview_warn || -z $v || $v =~ ^[0-9]+$ ]] || usage_error 'preview_warn takes a download size in MiB (0 turns the warning off)'
             [[ $key != check_interval || -z $v || $v =~ ^[1-9][0-9]*[mhd]$ ]] || usage_error 'check_interval takes minutes, hours or days: 30m, 6h, 1d'
@@ -1341,7 +1456,7 @@ completion_candidates() {
                     commands) ((${#positional[@]} == 0)) && choices='list add rm' ;;
                     profile) if ((${#positional[@]} == 0)); then choices='list install remove upgrade clean'; elif [[ ${positional[0]} =~ ^(remove|rm|upgrade|update)$ ]]; then choices=$(profile_json 2>/dev/null | jq -r '.[].name'); fi ;;
                     history) ((${#positional[@]} == 0)) && choices='list clear' ;;
-                    optimise) ((${#positional[@]} == 0)) && choices='status' ;;
+                    optimise | cve) ((${#positional[@]} == 0)) && choices='status' ;;
                     run) ((${#positional[@]} == 0)) && choices=$(commands_json | jq -r '.[] | select(.label != "") | .label') ;;
                     persist) ((${#positional[@]} == 0)) && choices='status sizes ls scan cleanup rm' ;;
                     dev) ((${#positional[@]} == 0)) && choices='list show shells pkgs clear' ;;
@@ -1436,6 +1551,7 @@ case $cmd in
     diff) cmd_diff ;;
     disk) cmd_disk ;;
     health) cmd_health ;;
+    cve) cmd_cve ;;
     doctor) cmd_doctor ;;
     status) cmd_status ;;
     history) cmd_history ;;

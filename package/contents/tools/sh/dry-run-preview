@@ -10,6 +10,11 @@
 #
 #   SUMMARY<TAB>downloadBytes<TAB>unpackedBytes<TAB>toBuild<TAB>toFetch
 #
+# and, when the system itself has to be built (any change does that), one line
+# with its evaluated derivation, for the vulnerability comparison (tools/sh/cve):
+#
+#   TOPLEVEL<TAB>/nix/store/<hash>-nixos-system-<host>-<version>.drv
+#
 # downloadBytes/unpackedBytes are empty when nix printed no parseable size.
 # toBuild/toFetch count every derivation/path nix listed, including the
 # system-level ones the package lines below leave out.
@@ -113,6 +118,10 @@ while IFS= read -r line; do
     esac
 done <<< "$DRY_OUT"
 printf 'SUMMARY\t%s\t%s\t%s\t%s\n' "$DL_BYTES" "$UNP_BYTES" "$TO_BUILD" "$TO_FETCH"
+toplevel_re='^[[:space:]]*(/nix/store/[a-z0-9]{32}-nixos-system-[^[:space:]]*\.drv)$'
+while IFS= read -r line; do
+    if [[ "$line" =~ $toplevel_re ]]; then printf 'TOPLEVEL\t%s\n' "${BASH_REMATCH[1]}"; break; fi
+done <<< "$DRY_OUT"
 
 # ── Parse and emit results ────────────────────────────────────────────────────
 SKIP_PATTERNS="^nixos-system-|^nixos-configuration-|^etc-|^system-path$|-man$|-info$|-doc$|-dev$|-lib$"

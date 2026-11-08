@@ -104,6 +104,14 @@
             <!-- borrow the GitHub CLI login (gh auth token) for release notes -->
             <default>false</default>
         </entry>
+        <entry name="cveNixRun" type="Bool">
+            <!-- run vulnix with `nix run nixpkgs#vulnix` when it is not installed (downloads it) -->
+            <default>false</default>
+        </entry>
+        <entry name="cveWhitelist" type="String">
+            <!-- vulnix whitelist file or URL — empty = ~/.config/vulnix/whitelist.toml when it exists -->
+            <default></default>
+        </entry>
         <entry name="impermanencePaths" type="String">
             <!-- extra persistent roots, colon-separated, e.g. /persist:/mnt/data — empty = auto-detect -->
             <default></default>

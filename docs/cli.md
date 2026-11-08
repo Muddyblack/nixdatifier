@@ -28,9 +28,10 @@ Suggestions never run automatically. Missing option values also report a usage e
 | Commands |
 | --- | --- |
 | Generations | `generations`, `diff [A [B]]`, `diff --config`, `switch N`, `boot N`, `rollback`, `delete N…` / `--keep N` / `--older-than DAYS`, `profiles` (Home Manager, `nix profile`) |
-| Flake | `updates [--all] [--check]`, `update [INPUT...]`, `preview INPUT` (what the update would cost and which packages would change), `notes INPUT` (upstream releases and commits) |
+| Flake | `updates [--all] [--check]`, `update [INPUT...]`, `preview INPUT` (what the update would cost, which packages would change and, once you ran `cve`, which known vulnerabilities it would fix or introduce), `notes INPUT` (upstream releases and commits) |
 | Store | `disk`, `disk STORE-PATH` (GC roots, referrers, closure), `gc [--older-than 14d \| --all]`, `optimise` (hard-link identical files with `nix-store --optimise`; asks first, records what it freed in History), `optimise status` (whether `auto-optimise-store` or the `nix-optimise` timer is on, the last run, and a rough estimate of what a run would free), `clean --optimise`, `path NAME [VERSION]`, `why NAME\|STORE-PATH [VERSION] [--all]` (the dependency chain that pulls a package into the system, and what pulls it in) |
 | System | `status`, `health`, `info`, `history`, `hash`, `doctor` (what was checked when nothing shows up: NixOS, the required tools, the Nix store, the profiles and generation list, the flake path, flake or channels setup, flakes enabled, the flake's git state; each failure with its fix and the failed command's output. Exits 1 when a check fails) |
+| Vulnerabilities | `cve [--generation N] [--all]`: known vulnerabilities (CVEs) in the running system (or generation N), found by [vulnix](https://github.com/nix-community/vulnix): each affected package with its CVE ids, CVSS v3 score and severity. Exits 2 when a critical or high one is found, for cron and CI. `cve status` shows whether a scanner is there and the last scan, without scanning. Only when vulnix is installed, or with `cve_nix_run on` (runs `nix run nixpkgs#vulnix`); see [Vulnerability scan](#vulnerability-scan) |
 | Secrets | `secrets` (names and freshness, never values) |
 | Impermanence | `persist` (`status`, `sizes`, `ls DIR`, `scan`, `cleanup`, `rm PATH…`) |
 | Dev environments | `dev` (`list`, `show DIR`, `shells DIR`, `pkgs DIR SHELL`, `clear DIR`) |
@@ -75,6 +76,7 @@ every key.
 | Updates | Every flake input with its status. The preview has the release notes. Enter lists the packages an update would change. Ctrl-U updates one input, Alt-U updates all. |
 | History | Every switch, cleanup and update, with its full output. |
 | Dev environments | direnv projects by cache size. Enter evaluates their shells, Ctrl-O opens a shell there, Ctrl-X clears `.direnv`. |
+| Vulnerabilities | Only with a scanner. The preview shows the last scan without starting one; Enter scans and lists every affected package with its CVEs. Health shows the last scan's counts, and an update's preview the CVEs it would fix or introduce. |
 | Impermanence, Health, Disk, Secrets, Profiles, System info, Doctor | Live preview; Enter opens it full screen with search. When Generations, Compare or Updates have nothing to show, they show the Doctor checklist instead. |
 | Why is this here? | Type a package name or store path: the chain from the system down to it, then everything that pulls it in. |
 | Clean up, Hash calculator | The preview shows a dry run of what Enter would do. Under Disk & clean up, *Optimise store* shows the deduplication status and estimate first. |
@@ -154,6 +156,57 @@ There is no config file; it is flags and environment, so it works the same in a 
 | `NIXDATIFIER_PREVIEW_WARN` | `preview` warns when an update downloads more than this many MiB (config key `preview_warn`, shared with the window; `0` never warns; 2048 by default) |
 | `NIXDATIFIER_MEASURE_STORE` | `off` skips the slow store measurement; `disk` and the window then show only free space until you ask (`disk --refresh`, or Measure in the window; config key `measure_store`; on by default) |
 | `NIXDATIFIER_IGNORE_INPUTS` | comma-separated input names (globs allowed) to leave out of update checks (config key `ignored_inputs`; empty by default) |
+| `NIXDATIFIER_CVE_NIX_RUN` | `on` runs vulnix with `nix run nixpkgs#vulnix` when it is not installed, which downloads it (config key `cve_nix_run`, shared with the window; off by default) |
+| `NIXDATIFIER_CVE_WHITELIST` | a vulnix whitelist file (TOML or YAML) or URL (config key `cve_whitelist`, shared with the window; empty uses `~/.config/vulnix/whitelist.toml` when it exists) |
 | `NIXDATIFIER_GITHUB_USE_GH` | `on` borrows the login of a signed-in `gh` when there is no token (config key `github_use_gh`; off by default, its token often has wide scopes) |
+
+## Vulnerability scan
+
+`nixdatifier cve` lists known vulnerabilities in the running system. It only
+works when a scanner is there: [vulnix](https://github.com/nix-community/vulnix)
+installed (`environment.systemPackages = [ pkgs.vulnix ];`), or `cve_nix_run on`
+to run `nix run nixpkgs#vulnix`, which downloads vulnix first. Without either,
+nothing changes: the window and the interactive view show nothing about CVEs.
+
+```console
+$ nixdatifier cve
+nixos-system-host-26.05.20261101.9bb5222 (running system) · scanned 2026-11-08 19:26 · vulnix 1.12.4
+1 critical, 1 high, 1 medium: 3 CVEs in 3 packages (1 whitelisted, --all lists them)
+
+PACKAGE  VERSION  CVE             SCORE  SEVERITY
+openssl  3.6.5    CVE-2026-00001  9.8    critical
+curl     8.22.0   CVE-2026-00002  7.5    high
+zstd     1.5.7    CVE-2025-00003  5.3    medium
+```
+
+- vulnix reads the runtime closure (`vulnix -C`) and matches package names and
+  versions against the NVD database, so some findings may not apply. Patches
+  named after a CVE count as fixed. Packages whose `.drv` files were garbage
+  collected are skipped.
+- The first scan downloads the NVD database into `~/.cache/vulnix`, which takes
+  a few minutes. vulnix refreshes it at most every two hours.
+- Results are cached for a day per closure and whitelist, and shared between
+  the CLI, the interactive view and the window. `--refresh` scans again.
+- Severity follows the CVSS v3 base score: critical from 9, high from 7,
+  medium from 4, low below that. CVEs without a v3 score are listed as unknown
+  (*no score* in the window).
+- A vulnix whitelist leaves CVEs you have checked out of the counts:
+  `cve_whitelist`, else `~/.config/vulnix/whitelist.toml` (or `.yaml`) when it
+  exists. `--all` lists the whitelisted ones too.
+- `--json` has `counts` (`critical`, `high`, `medium`, `low`, `unknown`: distinct
+  CVE ids that are not whitelisted), `cves`, `whitelisted`, `affectedPackages`,
+  `scannedAt`, `stale`, and `packages[]` with `name`, `pname`, `version`,
+  `derivation` and `cves[]` (`id`, `score`, `severity`, `url`, `description`,
+  `whitelisted`). `--plain` prints package, version, CVE, score and severity.
+- Exit status 2 means a critical or high CVE was found (not whitelisted).
+
+Once the running system was scanned, `preview INPUT` also compares the update's
+packages with that scan: which CVEs the update fixes and which it introduces
+(text, and `cve` in `--json`: `fixed[]` and `introduced[]` with `id`, `score`,
+`severity`, `url`, `package`, `fromVersion` and `toVersion`, plus `fixedCounts`
+and `introducedCounts`). The new system is not built for a preview, so its
+packages are read from their `.drv` files, including the same-version rebuilds
+of packages that are affected now (a backported CVE patch). Before the first
+scan, `cve` is `null`, so a preview never starts the database download.
 
 `diff --config` needs to know which config commit built each generation. `generations` and the window record it; run `nixdatifier snapshot` from a post-rebuild hook if you only rebuild from a terminal.
