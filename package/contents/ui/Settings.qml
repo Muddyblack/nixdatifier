@@ -30,6 +30,7 @@ QtObject {
     property bool githubUseGh: false
     property bool cveNixRun: false
     property string cveWhitelist: ""
+    property string hostTargets: ""
     property string impermanencePaths: ""
     property int impermanenceStaleDays: 180
     property bool impermanenceAllDisks: false

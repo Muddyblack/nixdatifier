@@ -15,7 +15,7 @@ here=$(dirname "$(realpath "$0")")
 profiles=/nix/var/nix/profiles
 version=$(jq -r '.KPlugin.Version // empty' "$here/../../../metadata.json" 2>/dev/null)
 
-COMMANDS="generations updates diff disk health cve doctor status history info hash profiles profile secrets persist dev path why preview notes snapshot update rebuild run commands watch switch boot rollback delete clean gc optimise menu config completion help"
+COMMANDS="generations updates diff disk health cve doctor hosts status history info hash profiles profile secrets persist dev path why preview notes snapshot update rebuild run commands watch switch boot rollback delete clean gc optimise menu config completion help"
 OPTIONS="--json --plain --flake --yes --dry-run --refresh --priv --label --check --limit --all --older-than --keep --quiet --color --roots --secrets --source --host --days --shells --config --updates --optimise --generation --help --version"
 
 # One entry per command: "<usage>|<summary>|<detail>". The overview, `help CMD`
@@ -29,6 +29,7 @@ help_entry() {
         health) echo "health#release/EOL, reboot needed, failed units, binary caches#Read only. Works on any distro with Nix; NixOS-only checks are left out elsewhere." ;;
         cve) echo "cve [status] [--generation N] [--all]#known vulnerabilities (CVEs) in the running system, when vulnix is there#Scans the runtime closure of the running system (or generation N) with vulnix and lists each affected package with its CVEs, their CVSS v3 score and severity (critical 9+, high 7+, medium 4+, low; unknown without a v3 score). Details: https://nvd.nist.gov/vuln/detail/CVE-ID. Needs vulnix on PATH, or cve_nix_run on to run it with nix run nixpkgs#vulnix (downloads it). The first scan downloads the NVD database (~/.cache/vulnix), which takes a few minutes. Results are cached for a day per closure and shared with the window; --refresh scans again. A vulnix whitelist is respected: cve_whitelist, else ~/.config/vulnix/whitelist.toml; --all also lists whitelisted CVEs. Exits 2 when a critical or high CVE is found (not whitelisted), for cron and CI. status: whether a scanner is there, the whitelist and a summary of the last scan, without scanning. vulnix matches package names and versions against the NVD, so expect some false positives; patches named after a CVE count as fixed." ;;
         doctor) echo "doctor#why nothing shows up: what was checked, what failed, how to fix it#Checks NixOS, the tools nixdatifier needs, the Nix store, /nix/var/nix/profiles, the generation list, the flake path, the setup type (flake or channels), flakes being enabled and the flake's git state. Each failure says how to fix it and shows the command that failed with its output. Paste the output into bug reports. Exits 1 when a check fails. Read only." ;;
+        hosts) echo "hosts [status|list|add NAME TARGET|rm NAME]#the machines of your flake: status of each, and the ssh target to reach it#Lists the flake's nixosConfigurations and the ones you mapped to an ssh target (config key hosts: name=user@address,other=address; a flake host whose name already resolves needs no mapping). status (the default) asks each over ssh, in parallel, with a timeout: online, offline, unreachable or auth (ssh needs a key or agent login: no passwords are asked or stored), the running and booted generation, reboot needed, the flake revision it runs and how many commits behind your flake HEAD that is, and when it was last seen (an offline host shows its last answer). list only reads the configuration. add and rm change the mapping. Put --host NAME before generations, diff, disk, health, status, info, switch, boot, rollback, delete, gc, clean or rebuild to run that command on the host instead of this machine. Changes ask first and name the host in the question." ;;
         status) echo "status [--updates]#one-line summary for prompts and status bars#Running generation, reboot needed, failed units. --updates adds a (cached) upstream check. --json for scripts." ;;
         history) echo "history [list|clear]#what earlier switches, cleanups and updates did#Shared with the window: the last 50 runs, including their output (--json). clear forgets them (asks first)." ;;
         info) echo "info#host, NixOS version, uptime#" ;;
@@ -40,7 +41,7 @@ help_entry() {
         dev) echo "dev [list|show DIR|shells DIR|pkgs DIR SHELL|clear DIR]#direnv/flake dev environments#list shows projects direnv knows with their .direnv cache size; show describes one (--shells also evaluates its devShells); clear removes DIR/.direnv (asks first)." ;;
         path) echo "path NAME [VERSION] [--generation N]#store paths of a package in a generation's closure#Default generation: the running system." ;;
         why) echo "why NAME|STORE-PATH [VERSION] [--generation N] [--all]#why a package is in the system: the dependency chain that pulls it in#Shows the shortest chain from the system down to the package (like nix why-depends) and what pulls it in: an environment.systemPackages entry, a service, Home Manager, /etc or a part of the system itself. --all lists one chain per thing that pulls it in, shortest first. Default generation: the running system. NAME matches name-VERSION in the closure; a store path is exact." ;;
-        preview) echo "preview INPUT#which packages would change if INPUT were updated#Dry-run build with the input overridden; downloads only the flake source. --host NAME picks the configuration (default: this host). Once the running system was scanned for CVEs (see: help cve), it also says which known vulnerabilities the update would fix or introduce." ;;
+        preview) echo "preview INPUT#which packages would change if INPUT were updated#Dry-run build with the input overridden; downloads only the flake source. --host NAME picks the configuration (default: this host; see: help hosts). Once the running system was scanned for CVEs (see: help cve), it also says which known vulnerabilities the update would fix or introduce." ;;
         notes) echo "notes INPUT#upstream releases and commits between your lock and latest#GitHub only; set GITHUB_TOKEN or github_token_file to lift the rate limit." ;;
         snapshot) echo "snapshot [REPO]#remember which config commit built the running generation#Run it after a rebuild (the window does it automatically) so 'diff --config' can compare your .nix files. 'generations' records it too when a flake is found." ;;
         update) echo "update [INPUT...]#nix flake update (all inputs, or only the named ones) in the flake directory#Asks first; recorded in history." ;;
@@ -55,7 +56,7 @@ help_entry() {
         clean) echo "clean [--keep N] [--older-than DAYS] [--optimise]#one step: delete old generations, then collect garbage#Defaults: keep the 5 newest and delete generations older than 14 days (never the running or booted one), then run gc. --optimise also hard-links identical files afterwards (see: help optimise). Asks once per step; --yes for none. On non-NixOS it only collects garbage." ;;
         gc) echo "gc [--older-than 14d | --all]#collect garbage#--all also deletes every old generation (nix-collect-garbage -d)." ;;
         optimise) echo "optimise [status]#hard-link identical files in the store (nix-store --optimise)#Without an argument: shows what it would free, asks, then runs nix-store --optimise as root (see --priv) and records the space it freed in history. It reads every file in the store, so it can take a while. --dry-run shows the estimate and the command only. status: whether nix.settings.auto-optimise-store is on, whether the nix-optimise timer (nix.optimise.automatic) runs, the last run, and a rough estimate of what optimising would free, from a sample of store paths (cached for 6 hours and after every change; --refresh samples again)." ;;
-        config) echo "config [list|get KEY|set KEY VALUE|unset KEY|path]#paths and preferences kept between runs#Saved in ~/.config/nixdatifier/config (NIXDATIFIER_CONFIG moves it) and read before every command; an environment variable or option still wins. Keys: flake (system flake directory), config_repo (git repository recording each generation), secrets (sops/agenix directory), secrets_source (the secrets file in the flake), persist (impermanence roots, colon separated), priv (sudo, doas or pkexec), commands (quick-run commands, see: help commands), check_interval (how often update checks run, like 6h), notifications (on or off: desktop notifications for found updates; default on), github_token_file (file holding a GitHub token for release notes), github_use_gh (on: borrow the GitHub CLI's login for release notes; default off), check_tarballs (off: skip tarball flake inputs when checking for updates; default on), deep_inputs (on: check every transitive flake input; default off), cve_nix_run (on: run vulnix with nix run nixpkgs#vulnix when it is not installed; default off), cve_whitelist (a vulnix whitelist file or URL; default ~/.config/vulnix/whitelist.toml when it exists). The window keeps these and the paths above in step with its own settings." ;;
+        config) echo "config [list|get KEY|set KEY VALUE|unset KEY|path]#paths and preferences kept between runs#Saved in ~/.config/nixdatifier/config (NIXDATIFIER_CONFIG moves it) and read before every command; an environment variable or option still wins. Keys: flake (system flake directory), config_repo (git repository recording each generation), secrets (sops/agenix directory), secrets_source (the secrets file in the flake), persist (impermanence roots, colon separated), priv (sudo, doas or pkexec), commands (quick-run commands, see: help commands), check_interval (how often update checks run, like 6h), notifications (on or off: desktop notifications for found updates; default on), github_token_file (file holding a GitHub token for release notes), github_use_gh (on: borrow the GitHub CLI's login for release notes; default off), check_tarballs (off: skip tarball flake inputs when checking for updates; default on), deep_inputs (on: check every transitive flake input; default off), cve_nix_run (on: run vulnix with nix run nixpkgs#vulnix when it is not installed; default off), cve_whitelist (a vulnix whitelist file or URL; default ~/.config/vulnix/whitelist.toml when it exists), hosts (ssh targets of other machines of your flake: name=user@address,other=address; see: help hosts). The window keeps these and the paths above in step with its own settings." ;;
         menu) echo "menu#interactive view: browse, compare and act without flags#What a bare 'nixdatifier' opens in a terminal: sections with live previews, generations you can open and compare, updates with release notes, keys for switch, boot, delete and update (F1 lists them). Needs fzf 0.70+, else a numbered menu (or set NIXDATIFIER_NO_FZF=1). Set NIXDATIFIER_MODE=cli to make a bare 'nixdatifier' print the help instead; 'nixdatifier menu' always opens it." ;;
         completion) echo "completion <bash|zsh|fish|install>#print a shell completion script, or set it up for you#'completion install' detects your shell and adds completion to its startup file (fish: its completions folder); safe to repeat. Manual: source <(nixdatifier completion bash)" ;;
         help) echo "help [COMMAND]#this help#" ;;
@@ -84,6 +85,7 @@ Options (anywhere on the line):
       --refresh         ignore cached results
       --priv WAY        sudo (default), doas, pkexec or none; root needs nothing
       --label TEXT      history label (the window passes its translated one)
+      --host NAME       run the command on another machine of your flake (see: hosts)
   -V, --version
 
 Exit status: 0 ok, 1 failed, 2 usage error (or --check found updates),
@@ -133,7 +135,7 @@ unknown_name() {
 # Saved settings (nixdatifier config): they fill in what the environment leaves
 # empty, so a variable or option on the command line still wins.
 CONFIG_FILE=${NIXDATIFIER_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/nixdatifier/config}
-CONFIG_KEYS="flake config_repo secrets secrets_source persist priv commands check_interval notifications github_token_file github_use_gh check_tarballs deep_inputs ignored_inputs measure_store preview_warn cve_nix_run cve_whitelist"
+CONFIG_KEYS="flake config_repo secrets secrets_source persist priv commands check_interval notifications github_token_file github_use_gh check_tarballs deep_inputs ignored_inputs measure_store preview_warn cve_nix_run cve_whitelist hosts"
 config_var() { # config_var KEY: the environment variable a key stands for
     case $1 in flake) echo NIXDATIFIER_FLAKE ;; config_repo) echo NIXDATIFIER_CONFIG_REPO ;; secrets) echo NIXDATIFIER_SECRETS ;;
         secrets_source) echo NIXDATIFIER_SECRETS_SOURCE ;; persist) echo NIXDATIFIER_PERSIST ;; priv) echo NIXDATIFIER_PRIV ;;
@@ -142,10 +144,11 @@ config_var() { # config_var KEY: the environment variable a key stands for
         check_tarballs) echo NIXDATIFIER_CHECK_TARBALLS ;; deep_inputs) echo NIXDATIFIER_DEEP_INPUTS ;;
         ignored_inputs) echo NIXDATIFIER_IGNORE_INPUTS ;; measure_store) echo NIXDATIFIER_MEASURE_STORE ;;
         preview_warn) echo NIXDATIFIER_PREVIEW_WARN ;; cve_nix_run) echo NIXDATIFIER_CVE_NIX_RUN ;;
-        cve_whitelist) echo NIXDATIFIER_CVE_WHITELIST ;; esac
+        cve_whitelist) echo NIXDATIFIER_CVE_WHITELIST ;; hosts) echo NIXDATIFIER_HOSTS ;; esac
 }
 config_file_get() { [[ -f $CONFIG_FILE ]] && sed -n "s/^$1=//p" "$CONFIG_FILE" | tail -1; return 0; }
 COMMANDS_FROM_ENV=${NIXDATIFIER_COMMANDS:+1}
+NIXDATIFIER_HOSTS_ENV=${NIXDATIFIER_HOSTS:+1}
 if [[ -f $CONFIG_FILE ]]; then
     for _k in $CONFIG_KEYS; do
         _v=$(config_file_get "$_k"); _e=$(config_var "$_k")
@@ -156,7 +159,7 @@ fi
 
 fmt=text yes=0 dry=0 refresh=0 quiet=0 priv=${NIXDATIFIER_PRIV:-sudo} flake=${NIXDATIFIER_FLAKE:-} label='' check=0 all=0 limit=0
 older='' keep='' roots=${NIXDATIFIER_PERSIST:-} secrets_dir=${NIXDATIFIER_SECRETS:-} secrets_src=${NIXDATIFIER_SECRETS_SOURCE:-}
-host=auto days=180 shells=0 config=0 generation='' want_help=0 want_updates=0 want_optimise=0 color=auto args=()
+host=auto host_explicit=0 days=180 shells=0 config=0 generation='' want_help=0 want_updates=0 want_optimise=0 color=auto args=()
 # Shells call this private, read-only endpoint with the words being completed.
 completion_words=()
 if [[ ${1:-} == _complete ]]; then
@@ -188,7 +191,7 @@ while (($#)); do
         --roots) roots=${2:?--roots needs /path:/path}; shift ;;
         --secrets) secrets_dir=${2:?--secrets needs a path}; shift ;;
         --source) secrets_src=${2:?--source needs a path}; shift ;;
-        --host) host=${2:?--host needs a name}; shift ;;
+        --host) host=${2:?--host needs a name}; host_explicit=1; shift ;;
         --days) days=${2:?--days needs a number}; shift ;;
         --generation | -g) generation=${2:?--generation needs a number}; shift ;;
         --shells) shells=1 ;;
@@ -203,6 +206,12 @@ while (($#)); do
     esac
     shift
 done
+# Without --host the choice of a running view applies (the TUI keeps it in a file).
+if ((!host_explicit)); then
+    host=${NIXDATIFIER_HOST:-auto}
+    if [[ $host == auto && -n ${NIXDATIFIER_HOST_FILE:-} ]]; then host=$(cat "$NIXDATIFIER_HOST_FILE" 2>/dev/null); fi
+    host=${host:-auto}
+fi
 for n in limit days; do [[ ${!n} =~ ^[0-9]+$ ]] || usage_error "--${n} needs a number"; done
 [[ $priv =~ ^(sudo|doas|pkexec|none)$ ]] || usage_error '--priv takes sudo, doas, pkexec or none'
 [[ -z $keep || $keep =~ ^[0-9]+$ ]] || usage_error '--keep needs a number'
@@ -297,28 +306,39 @@ cached() { # cached <scope> <ttl> -- command...
 # ── Generations ─────────────────────────────────────────────────────────────
 # Rows: number, date, store path, active, booted, nixos version, kernel.
 # Active/booted go to the newest generation with that closure, as in the UI.
+# Reading helpers run on the chosen host (--host) over ssh, else here.
+src() { if [[ -n $remote_target ]]; then "$here/remote" "$remote_target" "$@"; else "$here/$1" "${@:2}"; fi; }
 generation_rows() {
-    local raw active booted line num date path link kernel
-    raw=$("$here/generations") || return 1
+    local raw sums active booted line num date path k v
+    declare -A ver=() kern=()
+    raw=$(src generations) || { [[ -z $remote_name ]] || printf 'nixdatifier: cannot read the generations of %s (try: nixdatifier hosts)\n' "$remote_name" >&2; return 1; }
+    sums=$(src gen-summaries 2>/dev/null)
+    while IFS=$'\x1e' read -r -d $'\x1d' num v k; do
+        num=${num//[$'\n ']/}
+        [[ $num =~ ^[0-9]+$ ]] && { ver[$num]=$v; kern[$num]=$k; }
+    done <<<"$sums"
     active=$(sed -n 1p <<<"$raw"); booted=$(sed -n 2p <<<"$raw")
     while IFS= read -r line; do
         [[ $line =~ ^([0-9-]+\ [0-9:]+)\.[0-9]+\ [+-][0-9]+\ \'[^\']*system-([0-9]+)-link\'\ -\>\ \'([^\']+)\' ]] || continue
-        date=${BASH_REMATCH[1]} num=${BASH_REMATCH[2]} path=${BASH_REMATCH[3]} link="$profiles/system-${BASH_REMATCH[2]}-link"
-        kernel=$(readlink -f "$link/kernel" 2>/dev/null)
-        kernel=$(basename -- "$(dirname -- "${kernel:-/}")" | sed -n 's/.*-\([0-9][0-9.]*\)$/\1/p')
+        date=${BASH_REMATCH[1]} num=${BASH_REMATCH[2]} path=${BASH_REMATCH[3]}
+        k=$(basename -- "$(dirname -- "${kern[$num]:-/}")" | sed -n 's/.*-\([0-9][0-9.]*\)$/\1/p')
         printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$num" "$date" "$path" "$([[ $path == "$active" ]] && echo 1 || echo 0)" \
-            "$([[ $path == "$booted" ]] && echo 1 || echo 0)" "$(tr -d '\0' <"$link/nixos-version" 2>/dev/null)" "$kernel"
+            "$([[ $path == "$booted" ]] && echo 1 || echo 0)" "$(tr -d '\0' <<<"${ver[$num]:-}")" "$k"
     done <<<"$raw" | sort -t$'\t' -k1,1nr | awk -F'\t' -v OFS='\t' '
         $4 == 1 && seenA++ { $4 = 0 } $5 == 1 && seenB++ { $5 = 0 } { print }'
 }
 generations_json() {
-    generation_rows | jq -Rn --argjson limit "$limit" '
+    local rows
+    rows=$(generation_rows) || return 1
+    if [[ -z $rows ]]; then echo '[]'; return 0; fi
+    printf '%s\n' "$rows" | jq -Rn --argjson limit "$limit" '
         [inputs | split("\t") | {number: (.[0] | tonumber), date: .[1], storePath: .[2],
             active: (.[3] == "1"), booted: (.[4] == "1"), nixosVersion: .[5], kernel: .[6]}]
         | if $limit > 0 then .[:$limit] else . end'
 }
 need_nixos() {
     local link
+    [[ -z $remote_target ]] || return 0 # the host answers for itself
     for link in "$profiles"/system-*-link; do [[ -L $link ]] && return 0; done
     die 'no NixOS system generations found (not NixOS? try: nixdatifier profiles; why: nixdatifier doctor)'
 }
@@ -333,11 +353,15 @@ running_gen() { generation_rows | awk -F'\t' '$4 == 1 {print $1; exit}'; }
 cmd_generations() {
     need_nixos
     # Same as the window: remember which config commit built this generation.
-    local repo=${NIXDATIFIER_CONFIG_REPO:-} active
-    [[ -n $repo ]] || { find_flake && repo=$flake; }
-    active=$(running_gen)
-    [[ -n $repo && -n $active ]] && "$here/config-snapshot" "$active" "$repo" >/dev/null 2>&1
-    generations_json | warn_sed='s/^([0-9]+ +[0-9-]+ [0-9:]+ +)yes/\1\x1b[33myes\x1b[0m/' render number,date,active::NEXT_BOOT,booted,nixosVersion,kernel
+    local repo=${NIXDATIFIER_CONFIG_REPO:-} active json
+    if [[ -z $remote_target ]]; then
+        [[ -n $repo ]] || { find_flake && repo=$flake; }
+        active=$(running_gen)
+        [[ -n $repo && -n $active ]] && "$here/config-snapshot" "$active" "$repo" >/dev/null 2>&1
+    fi
+    json=$(generations_json) || exit 1
+    [[ $json != '[]' ]] || [[ -z $remote_name ]] || die "$remote_name has no NixOS generations"
+    printf '%s\n' "$json" | warn_sed='s/^([0-9]+ +[0-9-]+ [0-9:]+ +)yes/\1\x1b[33myes\x1b[0m/' render number,date,active::NEXT_BOOT,booted,nixosVersion,kernel
 }
 
 # ── Updates ─────────────────────────────────────────────────────────────────
@@ -470,11 +494,14 @@ cmd_diff() {
         fi
         return
     fi
-    out=$(NOTE='Comparing closures…' "$here/details" "$profiles/system-$b-link" "$profiles/system-$a-link") || die 'diff failed'
+    out=$(NOTE='Comparing closures…' src details "$profiles/system-$b-link" "$profiles/system-$a-link") || die 'diff failed'
     IFS=$'\x1e' read -r -d '' v k d size <<<"$out" || true
     d=$(sed '/^$/d' <<<"$d"); size=${size//[$'\n ']/}
-    tpath=$(readlink -f "$profiles/system-$b-link") bpath=$(readlink -f "$profiles/system-$a-link")
-    counts=$(cached generation-counts 604800 -- "$here/change-counts" "$tpath" "$bpath" 2>/dev/null) || counts='{}'
+    counts='{}' # the counts read the closures here; a host's are not measured
+    if [[ -z $remote_target ]]; then
+        tpath=$(readlink -f "$profiles/system-$b-link") bpath=$(readlink -f "$profiles/system-$a-link")
+        counts=$(cached generation-counts 604800 -- "$here/change-counts" "$tpath" "$bpath" 2>/dev/null) || counts='{}'
+    fi
     [[ -n $counts ]] || counts='{}'
     if [[ $fmt == json ]]; then
         jq -n --arg base "$a" --arg target "$b" --arg v "$v" --arg k "$k" --arg d "$d" --arg s "$size" --argjson c "$counts" '
@@ -499,7 +526,10 @@ cmd_snapshot() {
 # ── Store, health, status ───────────────────────────────────────────────────
 cmd_disk() {
     local total reclaimable free stamp out roots refs size present path
+    local scope=disk:nar-v1 ttl=1800 helper=("$here/diskusage")
+    if [[ -n $remote_target ]]; then scope="hostdisk:$remote_name" ttl=600 helper=("$here/remote" "$remote_target" diskusage); fi
     if [[ -n ${args[0]:-} ]]; then
+        [[ -z $remote_target ]] || die 'inspecting a store path works on this machine only (drop --host)'
         out=$(NOTE='Inspecting the store path…' cached "storeusage:v2:${args[0]}" 300 -- "$here/store-usage" "${args[0]}") || die 'could not inspect that path'
         IFS=$'\x1e' read -r -d '' roots refs size present path <<<"$out" || true
         jq -n --arg roots "$roots" --arg refs "$refs" --arg size "$size" --arg present "$present" --arg path "${path//$'\n'/}" '
@@ -510,17 +540,19 @@ cmd_disk() {
         return
     fi
     if [[ ${NIXDATIFIER_MEASURE_STORE:-} == off ]] && ((!refresh)); then # the slow walk is off unless asked for (--refresh): only the free space
-        free=$("$here/diskusage" --free) || die 'could not read the free space'
+        free=$(src diskusage --free) || die 'could not read the free space'
         jq -n --argjson f "$free" '{freeBytes: $f}' | kv '"free\t\(.freeBytes | hb)", "note\tstore measurement is off; disk --refresh measures once"'
         return
     fi
-    IFS=$'\x1e' read -r total reclaimable free stamp < <(NOTE='Measuring the store…' cached disk:nar-v1 1800 -- "$here/diskusage") || die 'could not measure the store'
+    IFS=$'\x1e' read -r total reclaimable free stamp < <(NOTE='Measuring the store…' cached "$scope" "$ttl" -- "${helper[@]}") || die 'could not measure the store'
     jq -n --argjson t "$total" --argjson r "$reclaimable" --argjson f "$free" --argjson s "${stamp:-0}" \
         '{storeBytes: $t, reclaimableBytes: $r, freeBytes: $f, measuredAt: $s}' |
         kv '"store\t\(.storeBytes | hb)", "reclaimable\t\(.reclaimableBytes | hb)", "free\t\(.freeBytes | hb)"'
 }
 health_json() {
-    NOTE='Checking the system…' cached health 120 -- "$here/health" | jq -Rsn '
+    local scope=health helper=("$here/health")
+    if [[ -n $remote_target ]]; then scope="hosthealth:$remote_name" helper=("$here/remote" "$remote_target" health); fi
+    NOTE='Checking the system…' cached "$scope" 120 -- "${helper[@]}" | jq -Rsn '
         input | split("\u001e") as $p
         | {facts: ($p[0] | split("\n") | map(select(contains("=")) | {key: split("=")[0], value: (split("=")[1:] | join("="))}) | from_entries),
            failedUnits: ($p[1] // "" | split("\n") | map(select(length > 0) | split("\t") | {scope: .[0], unit: .[1], result: .[2], reason: .[3]})),
@@ -546,6 +578,7 @@ cve_scanner() { "$here/cve" status 2>/dev/null | sed -n 's/^scanner=//p'; }
 # The health summary: null without a scanner; the last scan of the running
 # system, never a new one (that is nixdatifier cve).
 cve_summary() {
+    [[ -z $remote_target ]] || { echo null; return; } # scans read the closure on this machine
     [[ -n $(cve_scanner) ]] || { echo null; return; }
     "$here/cve" peek /run/current-system 2>/dev/null | jq -c '{scanner, scannedAt, stale, counts, cves}' 2>/dev/null ||
         jq -nc --arg s "$(cve_scanner)" '{scanner: $s, scannedAt: null, stale: false, counts: null, cves: null}'
@@ -672,16 +705,90 @@ cmd_status() {
     gens=$(generations_json 2>/dev/null) || gens='[]'
     health=$(health_json) || health='{"facts":{},"failedUnits":[],"caches":[]}'
     ((want_updates)) && upd=$(updates_json 0 | jq 'map(select(.status == "update")) | length')
-    jq -n --argjson g "$gens" --argjson h "$health" --argjson u "${upd:-null}" '
-        {running: ($g | map(select(.active)) | .[0].number), booted: ($g | map(select(.booted)) | .[0].number), generations: ($g | length),
+    jq -n --argjson g "$gens" --argjson h "$health" --argjson u "${upd:-null}" --arg host "$remote_name" '
+        {host: $host, running: ($g | map(select(.active)) | .[0].number), booted: ($g | map(select(.booted)) | .[0].number), generations: ($g | length),
          rebootRequired: ($h.facts.reboot_required == "1"), failedUnits: ($h.failedUnits | length), updates: $u,
-         release: ($h.facts.release // null), eol: ($h.facts.eol // null)}' |
+         release: ($h.facts.release // null), eol: ($h.facts.eol // null)} | if $host == "" then .host = null else . end' |
         if [[ $fmt == json ]]; then cat; else
             jq -r '[(if .running then "gen \(.running)" else "nix" end),
                 (if .rebootRequired then "reboot needed" else empty end),
                 (if .failedUnits > 0 then "\(.failedUnits) failed units" else empty end),
                 (if .updates != null and .updates > 0 then "\(.updates) updates" else empty end)] | join(" · ")'
         fi
+}
+# ── Hosts ───────────────────────────────────────────────────────────────────
+# The machines of one flake. This machine and the hosts you mapped (config key
+# hosts) or that the flake's nixosConfigurations name; --host NAME runs a
+# command on one of them over ssh. Never a password: ssh keys or the agent.
+HOST_NAME_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'
+HOST_TARGET_RE='^[A-Za-z0-9_][][A-Za-z0-9_.@:%-]*$'
+hosts_rows() { # name<TAB>target<TAB>local<TAB>source
+    find_flake || true
+    NIXDATIFIER_REFRESH=$([[ $refresh == 1 ]] && echo 1) "$here/hosts" list "${flake:-}" "${NIXDATIFIER_HOSTS:-}" |
+        awk -F'\t' -v OFS='\t' '$2 == "" { $2 = "-" } { print }' # "-": no target (an empty field would collapse in read)
+}
+resolve_host() { # sets remote_name/remote_target for --host; nothing for this machine
+    local rows n t l
+    [[ $host =~ $HOST_NAME_RE ]] || usage_error "not a host name: $host"
+    rows=$(hosts_rows)
+    while IFS=$'\t' read -r n t l _; do
+        [[ $n == "$host" ]] || continue
+        [[ $l == 1 ]] && return 0
+        [[ $t != - ]] || die "host $n has no ssh target: nixdatifier hosts add $n user@address"
+        remote_name=$n remote_target=$t
+        return 0
+    done <<<"$rows"
+    die "unknown host: $host (known: $(cut -f1 <<<"$rows" | paste -sd' ' -)); see: nixdatifier hosts"
+}
+hosts_map_save() { # hosts_map_save MAP
+    [[ -z ${NIXDATIFIER_HOSTS_ENV:-} ]] || die 'hosts are set by the environment (NIXDATIFIER_HOSTS); change them there'
+    config_file_put hosts "$1"
+}
+hosts_map_valid() { # every name=target entry well formed
+    local entry
+    for entry in ${1//,/ }; do
+        [[ $entry == *=* && ${entry%%=*} =~ $HOST_NAME_RE && ${entry#*=} =~ $HOST_TARGET_RE ]] || return 1
+    done
+}
+hosts_status_json() { # one JSON array: a probe per host, all at once
+    local rows dir n t l src i=0
+    rows=$(hosts_rows)
+    dir=$(mktemp -d) || die 'no temp directory'
+    while IFS=$'\t' read -r n t l src; do
+        [[ $host == auto || $host == "$n" ]] || continue
+        if [[ $l == 1 ]]; then t=-; elif [[ $t == - ]]; then t=''; fi
+        i=$((i + 1))
+        "$here/hosts" status "$n" "$t" "${flake:-}" >"$dir/$(printf %03d $i).json" 2>/dev/null &
+    done <<<"$rows"
+    wait
+    local files=("$dir"/*.json)
+    [[ -e ${files[0]} ]] || { rm -rf "$dir"; die "unknown host: $host"; }
+    jq -s . "${files[@]}"
+    rm -rf "$dir"
+}
+cmd_hosts() {
+    local sub=${args[0]:-status} map entry name target
+    map=${NIXDATIFIER_HOSTS:-}
+    case $sub in
+        list)
+            hosts_rows | jq -Rn '[inputs | split("\t") | {name: .[0], target: (if .[1] == "-" then "" else .[1] end), local: (.[2] == "1"), source: .[3]}]' | render name,target,local,source ;;
+        status)
+            note 'Asking the hosts…'
+            hosts_status_json | { unnote; cat; } | warn_sed='' render name,state,target,activeGeneration::NEXT_BOOT,bootedGeneration::BOOTED,rebootRequired::REBOOT,behind::BEHIND,lastSeen:t ;;
+        add)
+            name=${args[1]:-} target=${args[2]:-}
+            [[ $name =~ $HOST_NAME_RE && $target =~ $HOST_TARGET_RE ]] || usage_error 'usage: nixdatifier hosts add NAME TARGET   (TARGET: user@address or an ssh config name)'
+            map=$(config_file_get hosts)
+            map=$(printf '%s\n' ${map//,/ } | grep -v "^$name=" | paste -sd, -)
+            hosts_map_save "${map:+$map,}$name=$target"; msg "$name saved" ;;
+        rm)
+            name=${args[1]:-}
+            [[ -n $name ]] || usage_error 'usage: nixdatifier hosts rm NAME'
+            map=$(config_file_get hosts)
+            [[ ,$map, == *",$name="* ]] || die "no mapping for $name (see: nixdatifier config get hosts)"
+            hosts_map_save "$(printf '%s\n' ${map//,/ } | grep -v "^$name=" | paste -sd, -)"; msg "$name removed" ;;
+        *) unknown_name 'hosts subcommand' "$sub" 'status list add rm' ;;
+    esac
 }
 cmd_history() {
     case ${args[0]:-list} in
@@ -691,7 +798,7 @@ cmd_history() {
     esac
 }
 cmd_info() {
-    "$here/sysinfo" | jq -Rsn '
+    src sysinfo | jq -Rsn '
         input | split("---\n") | map(rtrimstr("\n"))
         | {hostname: .[0], nixosVersion: .[1], uptime: .[2], lastActivation: .[3], isNixOS: (.[5] == "1")}' |
         kv 'to_entries[] | "\(.key)\t\(.value)"'
@@ -823,6 +930,7 @@ privilege() { # echoes the privilege prefix ("" when root or --priv none)
 change() { # change <action> <label> <generation|-1> <script> [args...]; the script runs commands as $PRIV (root) or $RUN
     local action=$1 text=${label:-$2} gen=$3 script=$4 out rc kept sink p
     shift 4
+    [[ -z $remote_name ]] || text="$text [$remote_name]"
     p=$(privilege) || exit 1
     # A dry run executes the same script with every command turned into an echo.
     if ((dry)); then
@@ -850,6 +958,18 @@ change() { # change <action> <label> <generation|-1> <script> [args...]; the scr
     return "$rc"
 }
 resolved() { command -v "$1" 2>/dev/null || echo "$1"; } # sudo/pkexec reset PATH
+on_host() { [[ -z $remote_name ]] || printf ' on %s' "$remote_name"; }
+# A change on the host (--host): the same flow as here (ask, lock, history), the
+# command running there over ssh. @PRIV@ stands for the host's sudo or doas.
+rchange() { # rchange <action> <label> <generation|-1> <command line for the host>
+    local cmdline=$4 p=''
+    case $priv in doas) p=doas ;; none) ;; *) p=sudo ;; esac
+    [[ $remote_target == root@* ]] && p=''
+    cmdline=${cmdline//@PRIV@/$p}
+    # The local privilege is not needed for work that happens over there.
+    # shellcheck disable=SC2016
+    priv=none change "$1" "$2" "$3" '$RUN "$@"' "$here/remote" -x -t "$remote_target" "$cmdline"
+}
 check_gens() { # every argument a number of an existing generation
     local nums n
     nums=$(generation_rows | cut -f1)
@@ -902,7 +1022,13 @@ cmd_switch() { # switch (live) or boot (next boot)
     ((${#args[@]} == 1)) || usage_error "$cmd takes one generation"
     local n=${args[0]} mode=$cmd
     [[ $mode == switch ]] || mode=boot
-    confirm "$([[ $mode == switch ]] && echo "Activate generation $n now?" || echo "Boot generation $n next time?")"
+    confirm "$([[ $mode == switch ]] && echo "Activate generation $n$(on_host) now?" || echo "Boot generation $n$(on_host) next time?")"
+    if [[ -n $remote_target ]]; then
+        rchange "$([[ $mode == switch ]] && echo switch || echo rollback)" \
+            "$([[ $mode == switch ]] && echo "Activating generation…" || echo "Setting next boot…")" "$n" \
+            "@PRIV@ nix-env --profile $profiles/system --switch-generation $n && @PRIV@ $profiles/system/bin/switch-to-configuration $mode"
+        return
+    fi
     # shellcheck disable=SC2016
     change "$([[ $mode == switch ]] && echo switch || echo rollback)" \
         "$([[ $mode == switch ]] && echo "Activating generation…" || echo "Setting next boot…")" "$n" \
@@ -935,14 +1061,19 @@ cmd_delete() {
     for n in "${args[@]}"; do
         grep -qx "$n" <<<"$protected" && die "generation $n is the running or booted one and cannot be deleted"
     done
-    confirm "Delete generation(s) ${args[*]}?"
+    confirm "Delete generation(s) ${args[*]}$(on_host)?"
+    if [[ -n $remote_target ]]; then
+        rchange delete 'Deleting generation…' "${args[0]}" "@PRIV@ nix-env --profile $profiles/system --delete-generations ${args[*]}"
+        return
+    fi
     # shellcheck disable=SC2016
     change delete 'Deleting generation…' "${args[0]}" '$PRIV "$1" --profile "$2/system" --delete-generations "${@:3}"' \
         "$(resolved nix-env)" "$profiles" "${args[@]}"
 }
 
 cmd_clean() {
-    if (for l in "$profiles"/system-*-link; do [[ -L $l ]] && exit 0; done; exit 1); then
+    ((!want_optimise)) || [[ -z $remote_target ]] || usage_error '--optimise works on this machine only (drop --host)'
+    if [[ -n $remote_target ]] || (for l in "$profiles"/system-*-link; do [[ -L $l ]] && exit 0; done; exit 1); then
         keep=${keep:-5}
         [[ -n $older ]] || older=14
         args=()
@@ -958,7 +1089,11 @@ cmd_gc() {
     local flag=() mode=gc
     if ((all)); then flag=(-d); mode=gc-all
     elif [[ -n $older ]]; then flag=(--delete-older-than "${older}d"); mode=gc-${older}d; fi
-    confirm "Collect garbage${flag[*]:+ (${flag[*]})}?"
+    confirm "Collect garbage${flag[*]:+ (${flag[*]})}$(on_host)?"
+    if [[ -n $remote_target ]]; then
+        rchange "$mode" 'Cleaning Nix store…' -1 "@PRIV@ nix-collect-garbage ${flag[*]}"
+        return
+    fi
     # shellcheck disable=SC2016
     change "$mode" 'Cleaning Nix store…' -1 '$PRIV "$@"' "$(resolved nix-collect-garbage)" "${flag[@]}"
 }
@@ -1093,10 +1228,39 @@ nh_supports() { # nh_supports FLAG: whether this nh knows the option
 }
 # rebuild_plan MODE TTY: sets rb_source (custom, nh, nixos-rebuild or empty),
 # rb_cmd (the command to run, privilege included) and rb_display (as typed).
+# A rebuild of another machine: your own command only when it says where ({host}
+# is the name, {target} the ssh destination; it would rebuild this machine
+# otherwise), else nh or nixos-rebuild with --target-host.
+rebuild_plan_host() { # rebuild_plan_host MODE CUSTOM
+    local mode=$1 custom=$2 tool
+    if [[ -n $custom ]]; then
+        [[ $custom == *'{host}'* || $custom == *'{target}'* ]] ||
+            die "your rebuild command does not say which machine ({host} or {target} missing), so it would rebuild this one: add {host} to it, or remove the command to use nh/nixos-rebuild"
+        custom=${custom//\{host\}/$remote_name}; custom=${custom//\{target\}/$remote_target}
+        rb_source=custom rb_cmd=(env "NIXDATIFIER_REBUILD_MODE=$mode" "NIXDATIFIER_HOST=$remote_name" "NIXDATIFIER_HOST_TARGET=$remote_target" bash -c "$custom") rb_display=$custom
+        return 0
+    fi
+    [[ -n $flake ]] || die 'a rebuild of another machine needs the flake: pass --flake DIR (or save a command labelled rebuild with {host})'
+    tool=$(rebuild_tool)
+    [[ -n $tool ]] || return 0
+    rb_source=$tool
+    if [[ $tool == nh ]]; then
+        if [[ $mode == dry-build ]]; then rb_cmd=(nh os build "$flake" --dry --hostname "$remote_name")
+        else rb_cmd=(nh os "$mode" "$flake" --hostname "$remote_name" --target-host "$remote_target"); fi
+    else
+        rb_cmd=("$(resolved nixos-rebuild)" "$mode" --flake "$flake#$remote_name")
+        if [[ $mode != dry-build ]]; then
+            rb_cmd+=(--target-host "$remote_target")
+            [[ $remote_target == root@* ]] || rb_cmd+=(--use-remote-sudo)
+        fi
+    fi
+    rb_display="${rb_cmd[*]}"
+}
 rebuild_plan() {
     local mode=$1 tty=$2 custom tool p='' elev
     rb_cmd=() rb_display='' rb_source=''
     custom=$(rebuild_custom)
+    if [[ -n $remote_target ]]; then rebuild_plan_host "$mode" "$custom"; return; fi
     if [[ -n $custom ]]; then
         rb_source=custom rb_cmd=(env "NIXDATIFIER_REBUILD_MODE=$mode" bash -c "$custom") rb_display=$custom
         return 0
@@ -1171,10 +1335,10 @@ cmd_rebuild() {
             [[ $m == "$mode" ]] && src=$rb_source
             json=$(jq -c --arg m "$m" --arg t "$term" --arg p "$panel" '.[$m] = {terminal: $t, panel: $p}' <<<"$json")
         done
-        jq -n --arg mode "$mode" --arg source "$src" --arg flake "$flake" --argjson commands "$json" \
+        jq -n --arg mode "$mode" --arg source "$src" --arg flake "$flake" --argjson commands "$json" --arg host "$remote_name" \
             --argjson nh "$(command -v nh >/dev/null && echo true || echo false)" --argjson nom "$(command -v nom >/dev/null && echo true || echo false)" \
             --arg custom "$(rebuild_custom)" --arg modes "$REBUILD_MODES" \
-            '{mode: $mode, source: $source, custom: ($custom != ""), flake: $flake, nh: $nh, nom: $nom, modes: ($modes | split(" ")),
+            '{mode: $mode, host: (if $host == "" then null else $host end), source: $source, custom: ($custom != ""), flake: $flake, nh: $nh, nom: $nom, modes: ($modes | split(" ")),
               command: $commands[$mode], commands: $commands}' |
             kv '"source\t\(.source)", "flake\t\(.flake)", "nh\t\(.nh)", "nom\t\(.nom)", (.modes[] as $m | "\($m)\t\(.commands[$m].terminal)")'
         return 0
@@ -1190,15 +1354,15 @@ cmd_rebuild() {
     fi
     ((custom_mode)) && msg "Running your rebuild command as saved; it gets the mode in NIXDATIFIER_REBUILD_MODE=$mode."
     case $mode in
-        switch) confirm "Rebuild and switch with: $rb_display?"; text='Rebuilding…' ;;
-        boot) confirm "Rebuild for the next boot with: $rb_display?"; text='Rebuilding for next boot…' ;;
-        test) confirm "Rebuild and activate until reboot with: $rb_display?"; text='Rebuilding (test)…' ;;
-        dry-build) confirm "Dry build with: $rb_display?"; text='Dry build…' ;;
+        switch) confirm "Rebuild and switch$(on_host) with: $rb_display?"; text='Rebuilding…' ;;
+        boot) confirm "Rebuild$(on_host) for the next boot with: $rb_display?"; text='Rebuilding for next boot…' ;;
+        test) confirm "Rebuild$(on_host) and activate until reboot with: $rb_display?"; text='Rebuilding (test)…' ;;
+        dry-build) confirm "Dry build$(on_host) with: $rb_display?"; text='Dry build…' ;;
     esac
     # shellcheck disable=SC2016
     change rebuild "$text" -1 'cd "$1" && shift && "$@"' "$dir" "$here/rebuild" exec "$mode" "$rb_source" "$rb_display" -- "${rb_cmd[@]}"
     rc=$?
-    ((rc == 0 && ! dry)) && [[ $mode == switch ]] && { (cmd_snapshot) >/dev/null 2>&1 || true; }
+    ((rc == 0 && ! dry)) && [[ $mode == switch && -z $remote_target ]] && { (cmd_snapshot) >/dev/null 2>&1 || true; }
     return "$rc"
 }
 
@@ -1391,7 +1555,7 @@ cmd_persist() {
 # The window keeps these settings in its own store (KDE config, a JSON file),
 # so it mirrors them into the config file through `config sync`: the terminal
 # view and the window then show and change the same values. GUI name:file key.
-GUI_MAP="flakePath:flake configRepoPath:config_repo secretsPath:secrets secretsSourcePath:secrets_source impermanencePaths:persist checkInterval:check_interval customCommands:commands showNotifications:notifications githubTokenFile:github_token_file githubUseGh:github_use_gh checkTarballs:check_tarballs deepInputCheck:deep_inputs ignoredInputs:ignored_inputs measureStore:measure_store previewWarnMiB:preview_warn cveNixRun:cve_nix_run cveWhitelist:cve_whitelist"
+GUI_MAP="flakePath:flake configRepoPath:config_repo secretsPath:secrets secretsSourcePath:secrets_source impermanencePaths:persist checkInterval:check_interval customCommands:commands showNotifications:notifications githubTokenFile:github_token_file githubUseGh:github_use_gh checkTarballs:check_tarballs deepInputCheck:deep_inputs ignoredInputs:ignored_inputs measureStore:measure_store previewWarnMiB:preview_warn cveNixRun:cve_nix_run cveWhitelist:cve_whitelist hostTargets:hosts"
 config_file_put() { # config_file_put KEY VALUE: set it, or remove it when empty
     mkdir -p "$(dirname "$CONFIG_FILE")" || die "cannot create $(dirname "$CONFIG_FILE")"
     { grep -v "^$1=" "$CONFIG_FILE" 2>/dev/null; [[ -z $2 ]] || echo "$1=$2"; } >"$CONFIG_FILE.new" && mv "$CONFIG_FILE.new" "$CONFIG_FILE"
@@ -1474,6 +1638,7 @@ cmd_config() {
             [[ $key != github_use_gh || -z $v || $v =~ ^(on|off)$ ]] || usage_error 'github_use_gh takes on or off'
             [[ $key != cve_nix_run || -z $v || $v =~ ^(on|off)$ ]] || usage_error 'cve_nix_run takes on or off'
             [[ $key != check_tarballs && $key != deep_inputs && $key != measure_store || -z $v || $v =~ ^(on|off)$ ]] || usage_error "$key takes on or off"
+            [[ $key != hosts || -z $v ]] || hosts_map_valid "$v" || usage_error 'hosts takes name=target entries separated by commas: server=me@server.lan,laptop=laptop.local'
             [[ $key != preview_warn || -z $v || $v =~ ^[0-9]+$ ]] || usage_error 'preview_warn takes a download size in MiB (0 turns the warning off)'
             [[ $key != check_interval || -z $v || $v =~ ^[1-9][0-9]*[mhd]$ ]] || usage_error 'check_interval takes minutes, hours or days: 30m, 6h, 1d'
             mkdir -p "$(dirname "$CONFIG_FILE")" || die "cannot create $(dirname "$CONFIG_FILE")"
@@ -1667,8 +1832,20 @@ completion_install() {
     msg "Done: open a new $sh (or: exec $sh) and press Tab after 'nixdatifier'."
 }
 
+# --host runs a command on another machine; the others stay on this one.
+REMOTE_CMDS="generations diff disk health status info switch boot rollback delete clean gc rebuild"
+remote_name='' remote_target=''
+if [[ $host != auto && $host != local ]]; then
+    case " $REMOTE_CMDS " in
+        *" $cmd "*) resolve_host ;;
+        *) if ((host_explicit)) && [[ $cmd != preview && $cmd != hosts ]]; then
+               usage_error "--host does not apply to '$cmd' (it works with: $REMOTE_CMDS)"
+           fi ;;
+    esac
+fi
 case $cmd in
     generations) cmd_generations ;;
+    hosts) cmd_hosts ;;
     updates) cmd_updates ;;
     diff) cmd_diff ;;
     disk) cmd_disk ;;

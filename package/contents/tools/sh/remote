@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Usage:
+#   remote TARGET SCRIPT [ARGS...]   run one of our read helpers on TARGET over ssh
+#   remote -x [-t] TARGET COMMAND    run a shell command on TARGET (-t: with a terminal, for sudo)
+# TARGET is an ssh destination (user@host, an ssh config alias) or "local",
+# which runs the helper here without ssh. The helper script travels over ssh's
+# stdin, so nothing has to be installed on the host. Never a password: ssh
+# runs in BatchMode, with the agent and keys, and a timeout (default 8s,
+# NIXDATIFIER_SSH_TIMEOUT) so an unreachable host cannot hang a window.
+# NIXDATIFIER_SSH names another ssh program (tests use it).
+set -uo pipefail
+here=$(dirname "$(realpath "$0")")
+tty=0 exec_cmd=0
+if [[ ${1:-} == -x ]]; then exec_cmd=1; shift; fi
+if ((exec_cmd)) && [[ ${1:-} == -t ]]; then tty=1; shift; fi
+target=${1:?missing target}; shift
+[[ $target == local || $target =~ ^[A-Za-z0-9_][][A-Za-z0-9_.@:%-]*$ ]] || { echo "remote: not an ssh target: $target" >&2; exit 2; }
+sq() { printf "'%s'" "${1//\'/\'\\\'\'}"; } # single quotes, also understood by fish
+ssh_run() { # ssh_run [-t] COMMAND, stdin forwarded
+    local opts=(-o BatchMode=yes -o "ConnectTimeout=${NIXDATIFIER_SSH_TIMEOUT:-8}" -o ConnectionAttempts=1 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
+    [[ $1 == -t ]] && { opts+=(-t); shift; }
+    "${NIXDATIFIER_SSH:-ssh}" "${opts[@]}" -- "$target" "$1"
+}
+if ((exec_cmd)); then
+    script='export PATH="$PATH:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin"; '$1
+    if [[ $target == local ]]; then exec bash -c "$script"; fi
+    # Without a terminal there is nobody to type a password: fail instead of waiting.
+    if ((tty)) && [[ -t 0 ]]; then ssh_run -t "bash -c $(sq "$script")"; else ssh_run "bash -c $(sq "$script")"; fi
+    exit $?
+fi
+script=${1:?missing script}; shift
+case $script in generations | gen-summaries | details | health | diskusage | sysinfo | change-counts | host-facts) ;; *) echo "remote: not a remote helper: $script" >&2; exit 2 ;; esac
+[[ -f $here/$script ]] || { echo "remote: missing helper $script" >&2; exit 2; }
+payload() {
+    # host-facts asks for the generation list: it travels along as a function.
+    if [[ $script == host-facts ]]; then printf 'gens() (\n'; cat "$here/generations"; printf '\n)\n'; fi
+    cat "$here/$script"
+}
+if [[ $target == local ]]; then payload | bash -s -- "$@"; exit $?; fi
+args=''
+for a in "$@"; do args+=" $(sq "$a")"; done
+payload | ssh_run "bash -s --$args"

@@ -1005,6 +1005,57 @@ Item {
             compare(booted.text, "#661");
             verify(!next.visible, "When already booted, show the green generation only");
         }
+        function test_host_picker_shows_only_with_several_machines() {
+            const picker = findChild(app, "hostPicker");
+            verify(picker !== null);
+            verify(!picker.visible, "One machine: no host picker");
+            core.hosts = [
+                {
+                    name: "laptop",
+                    target: "",
+                    local: true,
+                    source: "local"
+                },
+                {
+                    name: "server",
+                    target: "me@server.lan",
+                    local: false,
+                    source: "config"
+                }
+            ];
+            wait(10);
+            verify(picker.visible);
+            core.hostStatus = {
+                "server": {
+                    name: "server",
+                    state: "offline",
+                    stale: true,
+                    lastSeen: Math.floor(Date.now() / 1000) - 7200,
+                    bootedGeneration: 41,
+                    activeGeneration: 42,
+                    rebootRequired: true,
+                    behind: 2,
+                    error: ""
+                }
+            };
+            core.hostError = "ssh: timed out";
+            core.hostStaleSince = Date.now() - 7200000;
+            core.currentHost = "server";
+            wait(10);
+            verify(findChild(app, "hostNotice").visible);
+            core.pendingGenNum = 42;
+            core.pendingAction = "switch";
+            wait(10);
+            core.pendingGenNum = -1;
+            core.pendingAction = "";
+            core.currentHost = "";
+            core.hostError = "";
+            core.hostStaleSince = 0;
+            core.hostStatus = ({});
+            core.hosts = [];
+            wait(10);
+            verify(!picker.visible);
+        }
         function test_header_flags_running_test_build() {
             const label = findChild(app, "testBuildLabel");
             verify(!label.visible);

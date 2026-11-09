@@ -292,6 +292,14 @@ var fields = [
     "type": "String"
   },
   {
+    "key": "hostTargets",
+    "tab": "Behavior",
+    "group": "Hosts",
+    "label": "ssh targets of other hosts",
+    "help": "Machines of the same flake you can look at and manage from here: name=user@address, separated by commas (laptop=me@laptop.lan,server=server). A host of the flake whose name already resolves needs no entry. Uses your ssh keys or agent (no passwords); the host picker appears once there is more than one machine.",
+    "type": "String"
+  },
+  {
     "key": "impermanencePaths",
     "tab": "Behavior",
     "group": "Impermanence",

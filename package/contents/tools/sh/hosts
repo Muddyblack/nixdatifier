@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# Usage:
+#   hosts list FLAKE MAP         name, ssh target, local, source: one row each (TSV)
+#   hosts status NAME TARGET [FLAKE]   how one host is, as JSON (TARGET "-": this machine)
+# MAP is the hosts setting: "name=user@address,other=address". Hosts come from
+# the flake's nixosConfigurations (discovered, cached for an hour) and from MAP;
+# the target of a discovered host is filled in when its name resolves. Nothing
+# here ever blocks: ssh has a connect timeout, and an offline host reports its
+# last seen state from the cache.
+set -uo pipefail
+here=$(dirname "$(realpath "$0")")
+export PATH="$PATH:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:${HOME:-/root}/.nix-profile/bin"
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/nixdatifier/hosts"
+mkdir -p "$cache" 2>/dev/null || true
+
+local_name() {
+    if [[ -n ${NIXDATIFIER_HOSTNAME:-} ]]; then echo "$NIXDATIFIER_HOSTNAME"; return; fi
+    cat /etc/hostname 2>/dev/null || hostname 2>/dev/null
+}
+
+discover() { # discover FLAKE: the nixosConfigurations names, one per line
+    local flake=$1 key f names
+    if [[ -n ${NIXDATIFIER_HOST_NAMES:-} ]]; then tr ' ,' '\n\n' <<<"$NIXDATIFIER_HOST_NAMES" | sed '/^$/d'; return 0; fi
+    [[ -n $flake && -f $flake/flake.nix ]] && command -v nix >/dev/null || return 0
+    key=$(printf '%s\n' "$flake" "$(cat "$flake/flake.lock" "$flake/flake.nix" 2>/dev/null | sha256sum)" | sha256sum | cut -c1-24)
+    f=$cache/discover-$key
+    if [[ -s $f && -z ${NIXDATIFIER_REFRESH:-} ]] && (($(date +%s) - $(stat -c %Y "$f") < 3600)); then cat "$f"; return 0; fi
+    names=$(timeout 90 nix --extra-experimental-features 'nix-command flakes' eval --json "$flake#nixosConfigurations" --apply builtins.attrNames 2>/dev/null | jq -r '.[]' 2>/dev/null) || names=''
+    [[ -z $names ]] || printf '%s\n' "$names" | tee "$f"
+}
+
+valid_name() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; }
+
+list() { # list FLAKE MAP
+    local flake=$1 map=$2 me entry name target n
+    declare -A tgt=() src=()
+    me=$(local_name)
+    for entry in ${map//,/ }; do
+        name=${entry%%=*} target=${entry#*=}
+        [[ $entry == *=* ]] && valid_name "$name" && [[ -n $target ]] || continue
+        tgt[$name]=$target src[$name]=config
+    done
+    while IFS= read -r n; do
+        valid_name "$n" || continue
+        [[ -n ${src[$n]:-} ]] || src[$n]=flake
+    done < <(discover "$flake")
+    # This machine first, then the others by name.
+    printf '%s\t\t1\tlocal\n' "$me"
+    for n in $(printf '%s\n' "${!src[@]}" | sort); do
+        [[ $n == "$me" ]] && continue
+        target=${tgt[$n]:-}
+        # An unmapped flake host works when its name already resolves.
+        if [[ -z $target && -z ${NIXDATIFIER_NO_RESOLVE:-} ]] && getent hosts "$n" >/dev/null 2>&1; then target=$n src[$n]=guess; fi
+        printf '%s\t%s\t0\t%s\n' "$n" "$target" "${src[$n]}"
+    done
+}
+
+status() { # status NAME TARGET [FLAKE]
+    local name=$1 target=$2 flake=${3:-} out err rc state='' line facts cfile now rev dirty head behind='null' me=0
+    now=$(date +%s)
+    cfile=$cache/status-$name.json
+    if [[ $target == - ]]; then me=1; target=local; fi
+    if [[ -z $target ]]; then
+        jq -n --arg n "$name" '{name: $n, target: "", local: false, state: "unmapped", lastSeen: null, stale: false, error: "no ssh target (nixdatifier config set hosts NAME=user@address)"}'
+        return 0
+    fi
+    err=$(mktemp) || return 1
+    out=$(timeout --kill-after=3s 40s "$here/remote" "$target" host-facts 2>"$err") && rc=0 || rc=$?
+    if ((rc == 0)) && [[ $out == *hostname=* ]]; then
+        facts=$(jq -Rn '[inputs | select(contains("=")) | {key: split("=")[0], value: (split("=")[1:] | join("="))}] | from_entries' <<<"$out")
+        rev=$(jq -r '.rev // ""' <<<"$facts"); dirty=false
+        if [[ $rev == *-dirty ]]; then dirty=true; rev=${rev%-dirty}; fi
+        if [[ -n $rev && -d $flake ]] && git -C "$flake" cat-file -e "$rev^{commit}" 2>/dev/null; then
+            behind=$(git -C "$flake" rev-list --count "$rev..HEAD" 2>/dev/null || echo null)
+            [[ $behind =~ ^[0-9]+$ ]] || behind=null
+        fi
+        head=''
+        [[ -d $flake ]] && head=$(git -C "$flake" rev-parse HEAD 2>/dev/null)
+        jq -n --arg n "$name" --arg t "$([[ $me == 1 ]] && echo '' || echo "$target")" --argjson me "$me" --argjson f "$facts" --argjson now "$now" \
+            --arg rev "$rev" --argjson dirty "$dirty" --arg head "$head" --argjson behind "$behind" '
+            def num: if . == null or . == "" then null else (tonumber? // null) end;
+            {name: $n, target: $t, local: ($me == 1), state: "online", lastSeen: $now, stale: false,
+             nixosVersion: ($f.version // ""), kernel: ($f.kernel // ""), uptimeSeconds: ($f.uptime | num),
+             activeGeneration: ($f.active | num), bootedGeneration: ($f.booted | num), newestGeneration: ($f.newest | num),
+             generations: ($f.count | num), rebootRequired: (if ($f.reboot // "") == "" then null else $f.reboot == "1" end),
+             failedUnits: ($f.failed | num), rev: $rev, revDirty: $dirty, localHead: $head, behind: $behind, error: ""}' | tee "$cfile.new"
+        mv -f "$cfile.new" "$cfile" 2>/dev/null || true
+        rm -f "$err"
+        return 0
+    fi
+    line=$(grep -v '^\s*$' "$err" | tail -1); rm -f "$err"
+    case $line in
+        *"Permission denied"* | *"Host key verification failed"* | *"REMOTE HOST IDENTIFICATION"*) state=auth ;;
+        *"timed out"* | *"Connection refused"* | *"No route to host"* | *"Network is unreachable"* | *"closed by remote host"* | *"Connection reset"*) state=offline ;;
+        *) state=unreachable ;;
+    esac
+    if [[ -s $cfile ]]; then
+        jq --arg s "$state" --arg e "${line:-no answer}" '. + {state: $s, stale: true, error: $e}' "$cfile"
+    else
+        jq -n --arg n "$name" --arg t "$target" --arg s "$state" --arg e "${line:-no answer}" '{name: $n, target: $t, local: false, state: $s, lastSeen: null, stale: false, error: $e}'
+    fi
+}
+
+case ${1:-} in
+    list) list "${2:-}" "${3:-}" ;;
+    status) status "${2:?name}" "${3-}" "${4:-}" ;;
+    *) echo 'Usage: hosts list FLAKE MAP | hosts status NAME TARGET [FLAKE]' >&2; exit 2 ;;
+esac

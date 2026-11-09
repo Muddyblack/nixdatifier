@@ -49,6 +49,7 @@ Item {
         name: "SharedEngine"
         when: windowShown
         function init() {
+            resetHosts();
             core.isNixOS = true;
             core.systemDetected = true;
             jobs = [];
@@ -202,6 +203,166 @@ Item {
             // The list is read again once the change is done.
             verify(jobs.some(job => job.cmd.indexOf("--json profile") >= 0));
             core.activeViewMode = "tools";
+        }
+        function useHosts() {
+            core.hosts = [
+                {
+                    name: "laptop",
+                    target: "",
+                    local: true,
+                    source: "local"
+                },
+                {
+                    name: "server",
+                    target: "me@server.lan",
+                    local: false,
+                    source: "config"
+                },
+                {
+                    name: "nas",
+                    target: "",
+                    local: false,
+                    source: "flake"
+                }
+            ];
+        }
+        function resetHosts() {
+            core.currentHost = "";
+            core.hosts = [];
+            core.hostStatus = ({});
+            core.hostGenerationCache = ({});
+            core.hostError = "";
+            core.hostStaleSince = 0;
+        }
+        function test_hosts_stay_hidden_until_there_is_another_machine() {
+            compare(core.hasHosts, false);
+            core.hosts = [
+                {
+                    name: "laptop",
+                    target: "",
+                    local: true,
+                    source: "local"
+                },
+                {
+                    name: "nas",
+                    target: "",
+                    local: false,
+                    source: "flake"
+                }
+            ];
+            compare(core.hasHosts, false); // a host with no ssh target cannot be looked at
+            useHosts();
+            compare(core.hasHosts, true);
+            resetHosts();
+        }
+        function test_hosts_are_listed_from_the_helper() {
+            core.settings.hostTargets = "server=me@server.lan";
+            core.refreshHosts();
+            const job = jobs[jobs.length - 1];
+            verify(job.cmd.indexOf("/hosts' list " + core.shq(core.flakePath) + " 'server=me@server.lan'") >= 0);
+            job.callback(job.cmd, "laptop\t\t1\tlocal\nnas\t\t0\tflake\nserver\tme@server.lan\t0\tconfig\n", "", 0);
+            compare(core.hosts.length, 3);
+            compare(core.localHostName, "laptop");
+            compare(core.hasHosts, true);
+            core.settings.hostTargets = "";
+            resetHosts();
+        }
+        function test_choosing_a_host_runs_the_read_helpers_over_ssh() {
+            useHosts();
+            core.generations = [
+                {
+                    number: 5,
+                    active: true,
+                    booted: true
+                }
+            ];
+            core.selectHost("nas"); // no ssh target: refused
+            compare(core.currentHost, "");
+            core.selectHost("server");
+            compare(core.currentHost, "server");
+            compare(core.isRemote, true);
+            compare(core.generations.length, 0); // nothing of the other machine is kept
+            const job = jobs[jobs.length - 1];
+            compare(job.cmd, "'" + core.scriptDir + "remote' 'me@server.lan' 'generations'");
+            core.isLoadingGens = false;
+            jobs = [];
+            core.probeHealth(true);
+            verify(jobs[0].cmd.indexOf("cached 'hosthealth:server' 0 -- '" + core.scriptDir + "remote' 'me@server.lan' 'health'") >= 0);
+            core.isProbingHealth = false;
+            jobs = [];
+            core.probeFreeDiskSpace();
+            verify(jobs[0].cmd.indexOf("/remote' 'me@server.lan' 'diskusage' --free") >= 0);
+            core._diskFreeProbeRunning = false;
+            resetHosts();
+            compare(core.helper("health"), "'" + core.scriptDir + "health'");
+        }
+        function test_changes_on_a_host_pass_its_name_to_the_cli() {
+            useHosts();
+            core.currentHost = "server";
+            core.generations = [
+                {
+                    number: 3,
+                    active: false,
+                    booted: false
+                }
+            ];
+            core.executeAction(3, "switch");
+            verify(jobs[jobs.length - 1].cmd.indexOf(" --host 'server' switch 3") >= 0);
+            core.isBusy = false;
+            jobs = [];
+            core.executeCleanup("gc");
+            verify(jobs[0].cmd.indexOf(" --host 'server' gc") >= 0);
+            core.isBusy = false;
+            jobs = [];
+            core.executeCleanup("optimise"); // this machine only
+            compare(jobs.length, 0);
+            core.toasts = [];
+            core.currentHost = "";
+            core.generations = [
+                {
+                    number: 3,
+                    active: false,
+                    booted: false
+                }
+            ];
+            core.executeAction(3, "switch");
+            verify(jobs[jobs.length - 1].cmd.indexOf("--host") < 0);
+            core.isBusy = false;
+            resetHosts();
+        }
+        function test_an_unreachable_host_keeps_its_last_answer_greyed() {
+            useHosts();
+            core.currentHost = "server";
+            const text = "/nix/store/aaa-system\n/nix/store/aaa-system\n2026-11-01 10:00:00.0 +0100 '/nix/var/nix/profiles/system-5-link' -> '/nix/store/aaa-system'\n";
+            core.applyRemoteGenerations(text, 0, "");
+            compare(core.generations.length, 1);
+            compare(core.hostError, "");
+            core.applyRemoteGenerations("", 255, "ssh: connect to host server.lan port 22: Connection timed out");
+            compare(core.generations.length, 1);
+            verify(core.hostError.indexOf("timed out") >= 0);
+            verify(core.hostStaleSince > 0);
+            core.applyRemoteGenerations(text, 0, "");
+            compare(core.hostStaleSince, 0);
+            resetHosts();
+            core.generations = [];
+        }
+        function test_the_recorded_config_commits_belong_to_this_machine_only() {
+            useHosts();
+            core.currentHost = "server";
+            core.generations = [
+                {
+                    number: 3,
+                    active: false,
+                    booted: false
+                }
+            ];
+            jobs = [];
+            core.loadConfigDiff(3);
+            compare(jobs.length, 0);
+            compare(core.configDiffCache[3].status, "unavailable");
+            core.snapshotActiveConfig();
+            compare(jobs.length, 0);
+            resetHosts();
         }
         function test_non_nixos_startup_and_guards() {
             core.isNixOS = false;

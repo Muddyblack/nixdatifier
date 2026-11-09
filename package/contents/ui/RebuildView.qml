@@ -25,6 +25,7 @@ FocusScope {
     property bool enableMotion: true
     property string iconStyle: "colored"
     property string mode: "switch"
+    property string hostName: ""   // rebuilding another machine over ssh
     readonly property bool custom: !!(plan && plan.custom)
     readonly property var modes: [
         {
@@ -109,7 +110,7 @@ FocusScope {
             }
             Text {
                 Layout.fillWidth: true
-                text: qsTr("Rebuild")
+                text: view.hostName !== "" ? qsTr("Rebuild %1").arg(view.hostName) : qsTr("Rebuild")
                 color: view.textColor
                 font.pixelSize: 14 * view.fs
                 font.weight: Font.Medium
@@ -144,7 +145,7 @@ FocusScope {
                     Layout.fillWidth: true
                     Layout.topMargin: 6
                     Layout.bottomMargin: 16
-                    text: view.custom ? qsTr("Runs your command labelled “rebuild” exactly as saved, from your flake directory.") : qsTr("Build your configuration and make it the running system.")
+                    text: view.hostName !== "" ? (view.custom ? qsTr("Runs your command labelled “rebuild” for %1, with {host} replaced by its name.").arg(view.hostName) : qsTr("Build the configuration of %1 here and activate it on %1 over ssh.").arg(view.hostName)) : view.custom ? qsTr("Runs your command labelled “rebuild” exactly as saved, from your flake directory.") : qsTr("Build your configuration and make it the running system.")
                     color: "#9bacc4"
                     font.pixelSize: UI.Theme.fontPx(11, view.fs)
                     wrapMode: Text.Wrap

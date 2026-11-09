@@ -1863,7 +1863,7 @@ class Cli(HelperCase):
         tools = self.root / "tools"
         shutil.copytree(HELPERS, tools)
         self.profiles = self.root / "profiles"
-        for name in ("nixdatifier", "generations", "why", "doctor"):
+        for name in ("nixdatifier", "generations", "gen-summaries", "why", "doctor"):
             path = tools / name
             path.write_text(
                 path.read_text()
@@ -2595,6 +2595,294 @@ class Cli(HelperCase):
         text = self.cli_run("--color", "never", "--flake", str(flake), "preview", "nixpkgs").stdout
         self.assertIn("Known vulnerabilities (CVEs): fixes 1 (1 critical) · introduces 0", text)
         self.assertIn("fixed       CVE-2026-1  critical 9.8  openssl 3.6.5 → 3.6.6", text)
+
+
+class Hosts(HelperCase):
+    """Several machines in one flake: discovery, status over ssh, --host."""
+
+    def setUp(self):
+        super().setUp()
+        tools = self.root / "tools"
+        shutil.copytree(HELPERS, tools)
+        self.profiles = self.root / "profiles"
+        for name in ("nixdatifier", "generations", "gen-summaries"):
+            path = tools / name
+            path.write_text(
+                path.read_text()
+                .replace("/nix/var/nix/profiles", str(self.profiles))
+                .replace("/run/booted-system", str(self.root / "booted"))
+            )
+        self.cli = str(tools / "nixdatifier")
+        self.profiles.mkdir()
+        for number in (1, 2, 3):
+            store = self.root / f"store{number}"
+            store.mkdir()
+            (store / "nixos-version").write_text(f"25.05.{number}")
+            (self.profiles / f"system-{number}-link").symlink_to(store)
+        (self.profiles / "system").symlink_to("system-3-link")
+        (self.root / "booted").symlink_to(self.root / "store2")
+        self.calls = self.root / "calls"
+        self.ssh_mode = self.root / "ssh-mode"
+        # A stand-in for ssh: records what it was asked, then runs the command here,
+        # or fails the way ssh does while the mode file says so.
+        self.script(
+            self.root / "fakessh",
+            f"""
+echo "$*" >> '{self.calls}'
+if [ -s '{self.ssh_mode}' ]; then cat '{self.ssh_mode}' >&2; exit 255; fi
+while [ "$1" != -- ]; do shift; done; shift; shift
+exec bash -c "$1"
+""",
+        )
+        self.env.update(
+            XDG_CONFIG_HOME=str(self.root / "config"),
+            NIXDATIFIER_SSH=str(self.root / "fakessh"),
+            NIXDATIFIER_HOST_NAMES="laptop server nas",
+            NIXDATIFIER_HOSTNAME="laptop",
+            NIXDATIFIER_NO_RESOLVE="1",
+        )
+        self.env.pop("NIXDATIFIER_CONFIG", None)
+        self.env.pop("NIXDATIFIER_HOST", None)
+        self.env.pop("NIXDATIFIER_HOSTS", None)
+        for name in ("nix-env", "nix-collect-garbage"):
+            self.script(self.bin / name, f"echo \"{name} $*\" >> '{self.root / 'sudo-calls'}'; echo done\n")
+
+    def cli_run(self, *args):
+        return subprocess.run([self.cli, *args], env=self.env, text=True, capture_output=True, timeout=30, check=False)
+
+    def hosts(self, *args):
+        return json.loads(self.cli_run("--json", "hosts", *args).stdout)
+
+    def test_single_host_has_nothing_to_pick(self):
+        self.env["NIXDATIFIER_HOST_NAMES"] = "laptop"
+        rows = self.hosts("list")
+        self.assertEqual([(r["name"], r["local"]) for r in rows], [("laptop", True)])
+
+    def test_hosts_come_from_the_flake_and_the_mapping(self):
+        self.assertEqual(self.cli_run("hosts", "add", "server", "me@server.lan").returncode, 0)
+        rows = {r["name"]: r for r in self.hosts("list")}
+        self.assertEqual(list(rows), ["laptop", "nas", "server"])
+        self.assertTrue(rows["laptop"]["local"])
+        self.assertEqual(rows["server"]["target"], "me@server.lan")
+        self.assertEqual(rows["server"]["source"], "config")
+        self.assertEqual(rows["nas"]["target"], "")  # discovered, nothing to reach it with yet
+        self.assertEqual(self.cli_run("config", "get", "hosts").stdout.strip(), "server=me@server.lan")
+        self.assertEqual(self.cli_run("hosts", "rm", "server").returncode, 0)
+        self.assertEqual(self.cli_run("config", "get", "hosts").stdout.strip(), "")
+
+    def test_a_name_that_resolves_needs_no_mapping(self):
+        del self.env["NIXDATIFIER_NO_RESOLVE"]
+        self.script(self.bin / "getent", 'test "$2" = server\n')
+        rows = {r["name"]: r for r in self.hosts("list")}
+        self.assertEqual(rows["server"]["target"], "server")
+        self.assertEqual(rows["nas"]["target"], "")
+
+    def test_mapping_is_validated(self):
+        for bad in ("server", "server=", "-x=me@host", "a=b c;d"):
+            with self.subTest(bad=bad):
+                self.assertEqual(self.cli_run("config", "set", "hosts", bad).returncode, 2)
+        self.assertEqual(self.cli_run("hosts", "add", "x", "-oProxyCommand=evil").returncode, 2)
+
+    def test_mapping_is_shared_with_the_window(self):
+        self.cli_run("config", "sync", "pull", json.dumps({"hostTargets": "server=me@server.lan"}))
+        self.assertEqual(self.cli_run("config", "get", "hosts").stdout.strip(), "server=me@server.lan")
+        self.assertEqual(
+            json.loads(self.cli_run("config", "sync", "pull", "{}").stdout)["hostTargets"], "server=me@server.lan"
+        )
+
+    def test_status_reports_this_machine_and_a_host_over_ssh(self):
+        self.cli_run("hosts", "add", "server", "me@server.lan")
+        rows = {r["name"]: r for r in self.hosts()}
+        self.assertEqual(rows["server"]["state"], "online")
+        self.assertEqual(rows["server"]["bootedGeneration"], 2)
+        self.assertEqual(rows["server"]["activeGeneration"], 3)
+        self.assertEqual(rows["server"]["generations"], 3)
+        self.assertTrue(rows["laptop"]["local"])
+        self.assertEqual(rows["nas"]["state"], "unmapped")
+        calls = self.calls.read_text()
+        self.assertIn("BatchMode=yes", calls)  # never a password prompt
+        self.assertIn("ConnectTimeout=", calls)  # an unreachable host cannot hang the window
+        self.assertIn("-- me@server.lan bash -s --", calls)
+
+    def test_offline_host_keeps_its_last_answer(self):
+        self.cli_run("hosts", "add", "server", "me@server.lan")
+        first = next(r for r in self.hosts() if r["name"] == "server")
+        self.assertEqual(first["state"], "online")
+        self.ssh_mode.write_text("ssh: connect to host server.lan port 22: Connection timed out\n")
+        later = next(r for r in self.hosts() if r["name"] == "server")
+        self.assertEqual(later["state"], "offline")
+        self.assertTrue(later["stale"])
+        self.assertEqual(later["lastSeen"], first["lastSeen"])
+        self.assertEqual(later["bootedGeneration"], 2)
+        self.ssh_mode.write_text("me@server.lan: Permission denied (publickey).\n")
+        self.assertEqual(next(r for r in self.hosts() if r["name"] == "server")["state"], "auth")
+        self.ssh_mode.write_text("ssh: Could not resolve hostname server.lan\n")
+        self.assertEqual(next(r for r in self.hosts() if r["name"] == "server")["state"], "unreachable")
+
+    def test_status_counts_commits_behind_your_head(self):
+        flake = self.root / "flake"
+        flake.mkdir()
+        (flake / "flake.nix").write_text("{}")
+        git = ["git", "-C", str(flake), "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run([*git[:3], "init", "-q"], check=True)
+        revs = []
+        for n in range(3):
+            (flake / "f").write_text(str(n))
+            subprocess.run([*git, "add", "."], check=True)
+            subprocess.run([*git, "commit", "-q", "-m", str(n)], check=True)
+            revs.append(
+                subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+            )
+        self.script(self.bin / "nixos-version", f"echo {revs[0]}\n")
+        self.cli_run("hosts", "add", "server", "me@server.lan")
+        row = next(
+            r
+            for r in json.loads(self.cli_run("--json", "--flake", str(flake), "hosts").stdout)
+            if r["name"] == "server"
+        )
+        self.assertEqual(row["rev"], revs[0])
+        self.assertEqual(row["behind"], 2)
+        self.assertEqual(row["localHead"], revs[2])
+
+    def test_generations_of_a_host_are_read_over_ssh(self):
+        self.cli_run("hosts", "add", "server", "me@server.lan")
+        out = self.cli_run("--json", "--host", "server", "generations")
+        rows = json.loads(out.stdout)
+        self.assertEqual([r["number"] for r in rows], [3, 2, 1])
+        self.assertEqual([r["booted"] for r in rows], [False, True, False])
+        self.assertEqual(rows[0]["nixosVersion"], "25.05.3")
+        self.assertIn("me@server.lan", self.calls.read_text())
+        status = json.loads(self.cli_run("--json", "--host", "server", "status").stdout)
+        self.assertEqual(status["host"], "server")
+        self.assertIsNone(json.loads(self.cli_run("--json", "status").stdout)["host"])
+
+    def test_unreachable_host_fails_with_a_reason(self):
+        self.cli_run("hosts", "add", "server", "me@server.lan")
+        self.ssh_mode.write_text("ssh: connect to host server.lan port 22: Connection refused\n")
+        result = self.cli_run("--host", "server", "generations")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("cannot read the generations of server", result.stderr)
+
+    def test_host_names_are_checked(self):
+        self.cli_run("hosts", "add", "server", "me@server.lan")
+        unknown = self.cli_run("--host", "nope", "generations")
+        self.assertEqual(unknown.returncode, 1)
+        self.assertIn("known: laptop nas server", unknown.stderr)
+        unmapped = self.cli_run("--host", "nas", "generations")
+        self.assertIn("has no ssh target", unmapped.stderr)
+        local = self.cli_run("--json", "--host", "laptop", "generations")
+        self.assertEqual(json.loads(local.stdout)[0]["number"], 3)
+        self.assertFalse(self.calls.exists())  # this machine is never reached over ssh
+        elsewhere = self.cli_run("--host", "server", "updates")
+        self.assertEqual(elsewhere.returncode, 2)
+        self.assertIn("--host does not apply to 'updates'", elsewhere.stderr)
+
+    def test_the_chosen_host_can_come_from_the_environment_or_a_file(self):
+        self.cli_run("hosts", "add", "server", "me@server.lan")
+        self.env["NIXDATIFIER_HOST"] = "server"
+        self.cli_run("--json", "generations")
+        self.assertIn("me@server.lan", self.calls.read_text())
+        self.calls.unlink()
+        del self.env["NIXDATIFIER_HOST"]
+        chosen = self.root / "chosen"
+        chosen.write_text("server\n")
+        self.env["NIXDATIFIER_HOST_FILE"] = str(chosen)
+        self.cli_run("--json", "generations")
+        self.assertIn("me@server.lan", self.calls.read_text())
+        # A command that stays on this machine ignores the choice instead of failing.
+        self.assertEqual(self.cli_run("--json", "doctor").returncode in (0, 1), True)
+
+    def test_changes_on_a_host_name_it_and_run_there(self):
+        self.cli_run("hosts", "add", "server", "me@server.lan")
+        asked = self.cli_run("--host", "server", "switch", "2")
+        self.assertEqual(asked.returncode, 1)
+        self.assertIn("Activate generation 2 on server now?", asked.stderr)
+        dry = self.cli_run("--dry-run", "--host", "server", "switch", "2").stdout
+        self.assertIn("-x -t me@server.lan sudo nix-env --profile", dry)
+        self.assertIn("--switch-generation 2", dry)
+        self.assertIn("switch-to-configuration switch", dry)
+        self.assertFalse((self.root / "sudo-calls").exists())
+        boot = self.cli_run("--dry-run", "--host", "server", "boot", "1").stdout
+        self.assertIn("switch-to-configuration boot", boot)
+        delete = self.cli_run("--host", "server", "delete", "1")
+        self.assertIn("Delete generation(s) 1 on server?", delete.stderr)
+        protected = self.cli_run("--yes", "--host", "server", "delete", "3")
+        self.assertIn("running or booted", protected.stderr)
+        gc = self.cli_run("--dry-run", "--host", "server", "gc", "--all").stdout
+        self.assertIn("-t me@server.lan sudo nix-collect-garbage -d", gc)
+        asked_gc = self.cli_run("--host", "server", "gc")
+        self.assertIn("Collect garbage on server?", asked_gc.stderr)
+        # a root login needs no sudo
+        self.cli_run("hosts", "add", "box", "root@box")
+        self.assertNotIn("sudo", self.cli_run("--dry-run", "--host", "box", "gc").stdout)
+
+    def test_remote_changes_are_recorded_with_the_host(self):
+        self.cli_run("hosts", "add", "server", "me@server.lan")
+        self.cli_run("--yes", "--host", "server", "delete", "1")
+        history = json.loads(self.cli_run("--json", "history").stdout)
+        self.assertIn("[server]", history[0]["label"])
+
+    def test_rebuild_of_a_host_names_the_machine(self):
+        flake = self.root / "flake"
+        flake.mkdir()
+        (flake / "flake.nix").write_text("{}")
+        self.cli_run("hosts", "add", "server", "me@server.lan")
+        self.script(self.bin / "nixos-rebuild", "true\n")
+        self.env["NIXDATIFIER_REBUILD_TOOL"] = "nixos-rebuild"
+        plan = self.cli_run("--dry-run", "--yes", "--flake", str(flake), "--host", "server", "rebuild", "boot").stdout
+        self.assertIn(f"--flake {flake}#server", plan)
+        self.assertIn("--target-host me@server.lan", plan)
+        self.assertIn("--use-remote-sudo", plan)
+        asked = self.cli_run("--flake", str(flake), "--host", "server", "rebuild")
+        self.assertIn("Rebuild and switch on server with:", asked.stderr)
+        # nothing remote about a dry build
+        dry = self.cli_run(
+            "--dry-run", "--yes", "--flake", str(flake), "--host", "server", "rebuild", "dry-build"
+        ).stdout
+        self.assertNotIn("--target-host", dry)
+
+    def test_your_rebuild_command_must_say_which_machine(self):
+        flake = self.root / "flake"
+        flake.mkdir()
+        (flake / "flake.nix").write_text("{}")
+        self.cli_run("hosts", "add", "server", "me@server.lan")
+        self.cli_run("commands", "add", "rebuild", "make deploy")
+        refused = self.cli_run("--dry-run", "--yes", "--flake", str(flake), "--host", "server", "rebuild")
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("{host}", refused.stderr)
+        self.cli_run("commands", "add", "rebuild", "deploy .#{host} --ssh-opts {target}")
+        ok = self.cli_run("--dry-run", "--yes", "--flake", str(flake), "--host", "server", "rebuild").stdout
+        self.assertIn("deploy .#server --ssh-opts me@server.lan", ok)
+        # this machine is unaffected by the placeholder rule
+        self.cli_run("commands", "add", "rebuild", "make switch")
+        local = self.cli_run("--dry-run", "--yes", "--flake", str(flake), "rebuild").stdout
+        self.assertIn("make switch", local)
+
+    def test_remote_helper_only_runs_known_scripts(self):
+        remote = str(self.root / "tools" / "remote")
+        for args in (["local", "rm"], ["local", "../hosts"], ["-bad", "generations"], ["bad target", "generations"]):
+            with self.subTest(args=args):
+                result = subprocess.run(
+                    [remote, *args], env=self.env, text=True, capture_output=True, timeout=10, check=False
+                )
+                self.assertEqual(result.returncode, 2)
+        ok = subprocess.run(
+            [remote, "local", "generations"], env=self.env, text=True, capture_output=True, timeout=10, check=False
+        )
+        self.assertEqual(ok.returncode, 0)
+        self.assertIn("system-3-link", ok.stdout)
+
+    def test_remote_arguments_survive_the_remote_shell(self):
+        self.script(
+            self.root / "fakessh-args",
+            f'while [ "$1" != -- ]; do shift; done; shift; shift; printf "%s" "$1" > \'{self.root / "sent"}\'\ncat >/dev/null\n',
+        )
+        self.env["NIXDATIFIER_SSH"] = str(self.root / "fakessh-args")
+        remote = str(self.root / "tools" / "remote")
+        subprocess.run(
+            [remote, "me@h", "details", "a b", "it's"], env=self.env, check=True, capture_output=True, timeout=10
+        )
+        self.assertEqual((self.root / "sent").read_text(), "bash -s -- 'a b' 'it'\\''s'")
 
 
 if __name__ == "__main__":

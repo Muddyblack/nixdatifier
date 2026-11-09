@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Runs on the host itself (through `remote`, which defines gens first): one
+# round trip that answers "how is this machine". key=value lines.
+export PATH="$PATH:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin"
+printf 'hostname=%s\n' "$(cat /etc/hostname 2>/dev/null || hostname 2>/dev/null)"
+printf 'version=%s\n' "$(cat /run/current-system/nixos-version 2>/dev/null)"
+printf 'kernel=%s\n' "$(uname -r 2>/dev/null)"
+printf 'uptime=%s\n' "$(awk '{print int($1)}' /proc/uptime 2>/dev/null)"
+printf 'rev=%s\n' "$(nixos-version --configuration-revision 2>/dev/null)"
+printf 'failed=%s\n' "$(systemctl --failed --no-legend --plain 2>/dev/null | grep -c . || true)"
+if [ -e /run/booted-system ] && [ -e /run/current-system ]; then
+    needs=0
+    for part in kernel initrd kernel-modules; do
+        b=$(readlink -f "/run/booted-system/$part" 2>/dev/null) c=$(readlink -f "/run/current-system/$part" 2>/dev/null)
+        [ -n "$b" ] && [ -n "$c" ] && [ "$b" != "$c" ] && needs=1
+    done
+    printf 'reboot=%s\n' "$needs"
+fi
+raw=$(gens 2>/dev/null)
+active_path=$(printf '%s\n' "$raw" | sed -n 1p)
+booted_path=$(printf '%s\n' "$raw" | sed -n 2p)
+active='' booted='' newest='' count=0
+while IFS= read -r line; do
+    [[ $line =~ system-([0-9]+)-link\'\ -\>\ \'([^\']+)\' ]] || continue
+    n=${BASH_REMATCH[1]} p=${BASH_REMATCH[2]}
+    count=$((count + 1))
+    [ -z "$newest" ] || [ "$n" -gt "$newest" ] && newest=$n
+    if [ "$p" = "$active_path" ] && { [ -z "$active" ] || [ "$n" -gt "$active" ]; }; then active=$n; fi
+    if [ "$p" = "$booted_path" ] && { [ -z "$booted" ] || [ "$n" -gt "$booted" ]; }; then booted=$n; fi
+done <<<"$raw"
+printf 'active=%s\nbooted=%s\nnewest=%s\ncount=%s\n' "$active" "$booted" "$newest" "$count"
+exit 0
