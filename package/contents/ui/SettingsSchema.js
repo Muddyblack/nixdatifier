@@ -162,6 +162,24 @@ var fields = [
     "type": "String"
   },
   {
+    "key": "rebuildOutput",
+    "tab": "Commands",
+    "group": "Terminal & cleanup",
+    "label": "Run rebuild in",
+    "help": "Terminal suits scripts that ask questions. The output panel streams the output into the window with a progress bar; it needs a command that never prompts.",
+    "type": "String",
+    "choices": [
+      {
+        "value": "terminal",
+        "label": "External terminal"
+      },
+      {
+        "value": "panel",
+        "label": "Built-in output panel"
+      }
+    ]
+  },
+  {
     "key": "usePkexec",
     "tab": "Behavior",
     "group": "Permissions",

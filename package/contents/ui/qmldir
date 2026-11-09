@@ -12,6 +12,7 @@ HistoryTab 1.0 HistoryTab.qml
 ImpermanenceTab 1.0 ImpermanenceTab.qml
 PlasmaProcess 1.0 PlasmaProcess.qml
 ProfileTab 1.0 ProfileTab.qml
+RebuildView 1.0 RebuildView.qml
 ProjectInfoPane 1.0 ProjectInfoPane.qml
 SecretsTab 1.0 SecretsTab.qml
 Settings 1.0 Settings.qml

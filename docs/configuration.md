@@ -45,6 +45,7 @@ reason; the widget also shows a notification when an upstream cannot be reached.
 | **Commands** | *see below* | Up to four terminal commands, run from your flake directory. |
 | **Show Commands button in the footer** | `true` | Shows the footer launcher for the Commands panel. |
 | **Terminal emulator** | `""` | Empty detects the desktop default. Supports konsole, kitty, foot, alacritty, wezterm, ghostty, gnome-terminal, ptyxis, and xterm. |
+| **Run rebuild in** | `terminal` | Where the Rebuild panel shows output: your terminal (interactive, for scripts that prompt) or the built-in output panel (live log and progress bar; the command must not prompt). |
 | **Custom cleanup command** | `""` | Adds your own command to the cleanup menu. |
 
 ## Behavior

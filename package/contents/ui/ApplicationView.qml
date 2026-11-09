@@ -119,6 +119,18 @@ FullView {
         engine.detailsCache = cache;
         engine.loadGenDetails(genNum);
     }
+    rebuildPlan: engine.rebuildPlan
+    rebuildState: engine.rebuildState
+    rebuildRunning: engine.rebuildRunning
+    rebuildInTerminal: engine.rebuildInTerminal
+    isLoadingRebuildPlan: engine.isLoadingRebuildPlan
+    rebuildFraction: engine.rebuildFraction
+    rebuildProgressLabel: engine.rebuildProgressLabel
+    rebuildOutput: engine.settings.rebuildOutput || "terminal"
+    onRebuildPlanRequested: engine.loadRebuildPlan()
+    onRebuildStartRequested: mode => engine.startRebuild(mode)
+    onRebuildOutputPicked: output => engine.settings.rebuildOutput = output
+    onRebuildLogCopyRequested: engine.copyRebuildLog()
     onRunCommand: (cmd, label) => engine.runCustomCommand(cmd, label)
     onCopyToClipboard: t => engine.copyToClipboard(t)
     onDismissToast: function (idx) {
