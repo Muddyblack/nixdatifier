@@ -51,6 +51,16 @@ FullView {
     deployedSecrets: engine.deployedSecrets
     sourceSecrets: engine.sourceSecrets
     hostname: engine.hostname
+    hosts: engine.hosts
+    hostStatus: engine.hostStatus
+    currentHost: engine.currentHost
+    localHostName: engine.localHostName
+    hasHosts: engine.hasHosts
+    isProbingHosts: engine.isProbingHosts
+    hostError: engine.hostError
+    hostStaleSince: engine.hostStaleSince
+    onHostSelected: name => engine.selectHost(name)
+    onHostsRefreshRequested: engine.probeHostStatuses("")
     userFacePath: engine.userFacePath
     nixosVersion: engine.nixosVersion
     lastActivationTime: engine.lastActivationTime

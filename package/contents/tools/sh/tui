@@ -236,6 +236,7 @@ status_line() { # status_line [--updates]; the header every screen starts with
         --arg Y "$Y" --arg D "$D" --arg B "$B" --arg X "$X" '
         "  \($D)│\($X)  " as $sep
         | ([ "\($B)\($C)❄ nix\($V)dati\($P)fier\($X) \($D)\($ver)\($X)",
+             (if .host then "\($Y)@ \(.host)\($X)" else empty end),
              (if .running then "\($O)◆\($X) next boot \($B)\(.running)\($X)" else "not NixOS" end),
              (if .booted then "\($G)⏻\($X) booted \(.booted)" else empty end)
            ] | join($sep)),
@@ -763,6 +764,7 @@ settings_desc() { # settings_desc KEY: what it is
         preview_warn) echo 'Update previews warn when a download is larger than this many MiB, here and in the window (metered connection?). 0: never warn. Empty: 2048.' ;;
         cve_nix_run) echo 'on: without vulnix installed, run it with nix run nixpkgs#vulnix (downloads it) for Vulnerabilities and the CVE comparison in update previews. Empty: off.' ;;
         cve_whitelist) echo 'A vulnix whitelist (TOML or YAML file, or a URL) with CVEs you have checked; they are left out of the counts. Empty: ~/.config/vulnix/whitelist.toml when it exists.' ;;
+        hosts) echo 'ssh targets of the other machines of your flake: name=user@address, separated by commas (laptop=me@laptop.lan,server=server). A flake host whose name already resolves needs none. Shown in Hosts once there is more than one; the window uses the same list.' ;;
         ignored_inputs) echo 'Flake inputs to skip when checking for updates: names separated by commas, globs allowed (nur, my-private/*). Empty: check them all.' ;;
         theme) echo 'Colour theme: deep, marina, midnight, full, plain or your own (see docs/cli.md). Enter cycles.' ;;
         layout) echo 'roomy: boxed sections with the logo. compact: no boxes. Enter switches.' ;;
@@ -982,6 +984,65 @@ disk_screen() {
         --bind 'backward-eof:abort' </dev/null >/dev/null
 }
 
+# ── Hosts ───────────────────────────────────────────────────────────────────
+# Which machine of the flake every other screen looks at. The choice is a file
+# the CLI reads (NIXDATIFIER_HOST_FILE), so each screen's calls follow it; with
+# one machine there is nothing to pick and none of this shows.
+host_now() { cat "$NXD_STATE/host" 2>/dev/null; }
+host_count() { # machines you can look at: this one and those with an ssh target
+    "$NXD_CLI" --json hosts list 2>/dev/null | jq '[.[] | select(.local or .target != "")] | length' 2>/dev/null || echo 1
+}
+host_rows() { # name<TAB>display, probing every host (in parallel, with a timeout)
+    local now
+    now=$(host_now)
+    "$NXD_CLI" --json hosts 2>/dev/null | jq -r --arg now "$now" --arg G "$G" --arg R "$R" --arg Y "$Y" --arg D "$D" --arg B "$B" --arg X "$X" --arg P "$P" '
+        def ago: (now - .) as $s | if $s < 90 then "just now" elif $s < 5400 then "\($s / 60 | floor) min ago" elif $s < 172800 then "\($s / 3600 | floor) h ago" else "\($s / 86400 | floor) days ago" end;
+        .[] | ((.local and $now == "") or .name == $now) as $here
+        | (if .state == "online" then "\($G)●\($X)" elif .state == "auth" then "\($Y)●\($X)" elif .state == "unmapped" then "\($D)○\($X)" else "\($R)○\($X)" end) as $dot
+        | "\(.name)\t\($dot) \($B)\(.name)\($X)  \(if .local then "\($D)this machine\($X)" elif .state == "unmapped" then "\($D)no ssh target\($X)" else "\($D)\(.target)\($X)" end)  \(.state)"
+          + (if .state == "online" or .stale then
+               "\($D) · next boot \(.activeGeneration // "-") · booted \(.bootedGeneration // "-")\($X)"
+               + (if .rebootRequired then "  \($Y)⟳ reboot\($X)" else "" end)
+               + (if (.behind // 0) > 0 then "  \($Y)\(.behind) commit\(if .behind > 1 then "s" else "" end) behind\($X)" else "" end)
+               + (if .stale and .lastSeen then "  \($D)last seen \(.lastSeen | ago)\($X)" else "" end)
+             else "" end)
+          + (if $here then "  \($P)◀ viewing\($X)" else "" end)'
+}
+host_preview() { # host_preview NAME
+    local json
+    json=$("$NXD_CLI" --json hosts --host "$1" 2>/dev/null | jq '.[0]') || json=''
+    [[ -n $json ]] || { echo "${R}could not ask $1${X}"; return; }
+    jq -r --arg D "$D" --arg X "$X" --arg B "$B" --arg R "$R" --arg Y "$Y" '
+        "\($B)\(.name)\($X)  \(.state)\(if .stale then " (last answer)" else "" end)",
+        (if .error != "" and .error != null then "\($R)\(.error)\($X)" else empty end),
+        (if .state == "auth" then "\($Y)ssh needs a key or agent login (nothing asks for a password): ssh-add, or authorize this machine on the host.\($X)" else empty end),
+        (if (.nixosVersion // "") != "" then "NixOS \(.nixosVersion)  ·  linux \(.kernel)" else empty end),
+        (if (.rev // "") != "" then "flake revision \(.rev[:9])\(if .revDirty then " (dirty)" else "" end)\(if .behind then "  ·  \(.behind) commits behind your flake" else "" end)" else empty end),
+        (if .failedUnits then "\(.failedUnits) failed units" else empty end)' <<<"$json"
+    echo
+    printf '%sEnter looks at this machine in Generations, Compare, Health and Disk; changes ask first and name it.%s\n' "$D" "$X"
+}
+host_pick() { # host_pick NAME: look at that machine from now on
+    local info
+    info=$("$NXD_CLI" --json hosts list 2>/dev/null | jq -r --arg n "$1" '.[] | select(.name == $n) | "\(.local)\t\(.target)"')
+    case $info in
+        true*) rm -f "$NXD_STATE/host" ;;
+        false$'\t') printf '\n  %s%s has no ssh target: nixdatifier hosts add %s user@address%s\n' "$R" "$1" "$1" "$X" >/dev/tty; sleep 2; return 0 ;;
+        false*) printf '%s\n' "$1" >"$NXD_STATE/host" ;;
+    esac
+    rm -f "$NXD_STATE"/*.json "$NXD_STATE/header"
+}
+hosts_screen() {
+    fzf "${FZF_BASE[@]}" --with-nth 2 --no-sort --delimiter $'\t' --list-label ' Hosts ' --input-label ' Search ' --ghost 'host' \
+        --header "$(header_cached)" --header-label ' System ' \
+        --footer "$(keys 'Enter=look at it' 'Ctrl-R=ask again' 'Esc/⌫=back')" \
+        --preview '$NXD_TUI _hostpv {1}' --preview-label ' Host ' \
+        --bind 'start:reload($NXD_TUI _hostrows)' \
+        --bind 'enter:execute-silent($NXD_TUI _hostpick {1})+abort' \
+        --bind 'ctrl-r:reload($NXD_TUI _hostrows)+refresh-preview' \
+        --bind 'backward-eof:abort' </dev/null >/dev/null
+}
+
 # ── Home ────────────────────────────────────────────────────────────────────
 # key, icon, colour, title, description, what Enter does (the preview label)
 home_rows() {
@@ -992,6 +1053,8 @@ home_rows() {
     item compare '⇄' "$P" Compare 'pick any two generations' 'Enter: choose two to compare'
     item updates '↑' "$O" Updates 'flake inputs behind upstream' 'Enter: inputs, notes, update'
     item rebuild '⟳' "$G" Rebuild 'switch, boot, test or dry build' 'Enter: pick how to rebuild'
+    # Only with another machine to look at: with one, nothing about hosts shows.
+    (($(host_count) > 1)) && item hosts '⌘' "$C" Hosts 'this machine and the others of your flake' 'Enter: pick the machine to look at'
     item health '✚' "$G" Health 'release, reboot, units, caches' 'Enter: full screen'
     # Only with a scanner (vulnix, or cve_nix_run on): otherwise nothing changes.
     if "$NXD_CLI" --json cve status 2>/dev/null | jq -e '.scanner != ""' >/dev/null 2>&1; then
@@ -1024,6 +1087,7 @@ home_preview() { # home_preview KEY
             if [[ -n $json ]]; then printf '%s\n' "$json"
             else printf '%sNo generations found. What was checked:%s\n\n' "$B" "$X"; cli doctor; fi ;;
         settings) settings_rows | cut -f2- ;;
+        hosts) host_rows | cut -f2- ;;
         about) about_card ;;
         diff)
             json=$(diff_json) || { echo "${R}diff failed${X}"; return; }
@@ -1069,6 +1133,7 @@ home_enter() { # home_enter KEY
             elif [[ $1 != updates && -n $(gen_rows) ]]; then if [[ $1 == compare ]]; then compare_screen; else generations_screen; fi
             else working Doctor; home_preview "$1" | page "Why $1 is empty"; fi ;;
         settings) settings_screen ;;
+        hosts) working Hosts; hosts_screen ;;
         about) working About; about_card fetch | page 'About' ;;
         diff) changes_screen '' '' 'newest vs previous' ;;
         history) history_screen ;;
@@ -1094,6 +1159,7 @@ home() {
         --bind 'enter:transform:[[ {1} == quit ]] && echo abort || echo "execute(\$NXD_TUI _enter {1})+refresh-preview+bg-transform-header(\$NXD_TUI _header)"' \
         --bind 'ctrl-r:execute-silent(rm -f "$NXD_STATE"/*.json)+refresh-preview+bg-transform-header($NXD_TUI _header --updates --refresh)' \
         --bind 'alt-k:execute($NXD_TUI _cmds)' \
+        --bind 'alt-h:execute($NXD_TUI _hostscreen)+bg-transform-header($NXD_TUI _header)+refresh-preview' \
         --bind 'alt-c:execute-silent($NXD_TUI _cycle theme)+abort,ctrl-t:execute-silent($NXD_TUI _cycle theme)+abort,f2:execute-silent($NXD_TUI _cycle theme)+abort' \
         --bind 'alt-l:execute-silent($NXD_TUI _cycle layout)+abort,ctrl-y:execute-silent($NXD_TUI _cycle layout)+abort,f3:execute-silent($NXD_TUI _cycle layout)+abort' \
         --bind 'click-footer:transform:case "$FZF_CLICK_FOOTER_WORD" in *preview*|Alt-P) echo toggle-preview ;; *colour*|Alt-C|Ctrl-T) echo "execute-silent(\$NXD_TUI _cycle theme)+abort" ;; *layout*|Alt-L|Ctrl-Y) echo "execute-silent(\$NXD_TUI _cycle layout)+abort" ;; *) $NXD_TUI _click "$FZF_CLICK_FOOTER_WORD" ;; esac' \
@@ -1106,7 +1172,7 @@ help_text() {
     printf '%s%sKeys%s\n\n' "$B" "$C" "$X"
     printf '  %-16s %s\n' 'Enter' 'open the highlighted item or run it' 'Esc' 'back (quits on the home screen)' \
         'Backspace' 'back, when the search is empty' 'type' 'filter the list' 'Ctrl-R' 'refresh' \
-        'Alt-K' 'your commands and Rebuild (home screen)' 'Ctrl-A  Ctrl-U  Alt-U  Ctrl-D  Alt-G' 'Profiles: install, upgrade, upgrade all, remove, clean old versions' 'Alt-X' 'dismiss the updates banner' 'Alt-P  Ctrl-/' 'show or hide the preview (click it in the footer too)' 'Shift-↑↓' 'scroll the preview' 'Alt-↑↓' 'page the preview'
+        'Alt-K' 'your commands and Rebuild (home screen)' 'Alt-H' 'pick the machine to look at (with several hosts)' 'Ctrl-A  Ctrl-U  Alt-U  Ctrl-D  Alt-G' 'Profiles: install, upgrade, upgrade all, remove, clean old versions' 'Alt-X' 'dismiss the updates banner' 'Alt-P  Ctrl-/' 'show or hide the preview (click it in the footer too)' 'Shift-↑↓' 'scroll the preview' 'Alt-↑↓' 'page the preview'
     printf '\n%s%sGenerations%s\n\n' "$B" "$P" "$X"
     printf '  %-16s %s\n' 'Enter' 'package changes of that generation' 'Tab' 'mark; two marks compare each other' \
         'Ctrl-O' 'compare against previous / booted / next boot' 'Ctrl-S  Ctrl-B' 'switch now / boot next time' \
@@ -1166,6 +1232,10 @@ case ${1:-} in
     _enter) home_enter "$2" ;;
     _help) help_text ;;
     _cmds) commands_screen ;;
+    _hostscreen) (($(host_count) > 1)) && hosts_screen ;;
+    _hostrows) host_rows ;;
+    _hostpv) host_preview "$2" ;;
+    _hostpick) host_pick "$2" ;;
     _diskrows) disk_rows ;;
     _diskpv) disk_preview "$2" ;;
     _diskact) disk_act "$2" ;;
@@ -1229,6 +1299,7 @@ case ${1:-} in
         mkdir -p "$NXD_CACHE" || NXD_CACHE=$NXD_STATE
         find "$NXD_CACHE" -name 'diff-*' -mtime +60 -delete 2>/dev/null
         export NXD_STATE NXD_CACHE
+        export NIXDATIFIER_HOST_FILE=$NXD_STATE/host # the machine being looked at (see Hosts)
         # The scratch directory is in /tmp (often RAM): remove it however we end, and
         # sweep the ones a killed session left behind.
         trap 'rm -rf "$NXD_STATE"' EXIT

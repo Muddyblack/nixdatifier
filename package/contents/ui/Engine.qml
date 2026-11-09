@@ -121,6 +121,33 @@ Item {
     readonly property string terminalApp: root.settings.commandTerminal || ""
     readonly property string iconStyle: root.settings.iconStyle || "colored"
 
+    // ── Hosts: the other machines of the flake ────────────────────────────────
+    // Empty currentHost = this machine. Choosing another re-scopes Generations,
+    // Compare, Health and Store: those read helpers run over ssh (tools/sh/remote)
+    // and changes go through `nixdatifier --host`, which names the machine.
+    property var hosts: []              // [{ name, target, local, source }]
+    property var hostStatus: ({})       // name -> JSON of `hosts status`
+    property string currentHost: ""
+    property bool isLoadingHosts: false
+    property bool isProbingHosts: false
+    property string hostError: ""       // why the chosen machine could not be read
+    property double hostStaleSince: 0   // epoch ms of the data shown when it could not be read
+    property var hostGenerationCache: ({})
+    readonly property var reachableHosts: hosts.filter(h => h.local || h.target !== "")
+    // Nothing about hosts shows until there is another machine to look at.
+    readonly property bool hasHosts: reachableHosts.length > 1
+    readonly property var currentHostInfo: hosts.find(h => h.name === currentHost) || null
+    readonly property string currentHostTarget: currentHostInfo ? currentHostInfo.target : ""
+    readonly property bool isRemote: currentHost !== "" && currentHostTarget !== ""
+    readonly property string localHostName: (hosts.find(h => h.local) || {
+            name: ""
+        }).name
+    // Helper scripts that read the system: here, or on the chosen machine.
+    function helper(name, args) {
+        const base = root.isRemote ? shq(root.scriptDir + "remote") + " " + shq(root.currentHostTarget) + " " + shq(name) : shq(root.scriptDir + name);
+        return base + (args ? " " + args : "");
+    }
+
     // ── Generations state ─────────────────────────────────────────────────────
     property var generations: []
     onGenerationsChanged: pruneGenerationCaches()
@@ -477,9 +504,10 @@ Item {
     // share one implementation of every change. The CLI takes the system-operation
     // lock and records the run in the history; the window only asks (--yes) and
     // translates the label.
-    function cli(args, flakeDir) {
+    // `onHost`: the command acts on the chosen machine (--host) instead of this one.
+    function cli(args, flakeDir, onHost) {
         const label = root.currentActionType ? " --label " + shq(root.currentActionType) : "";
-        return shq(root.scriptDir + "nixdatifier") + " --yes --priv " + (root.settings.usePkexec ? "pkexec" : "none") + label + (flakeDir ? " --flake " + shq(flakeDir) : "") + " " + args;
+        return shq(root.scriptDir + "nixdatifier") + " --yes --priv " + (root.settings.usePkexec ? "pkexec" : "none") + label + (flakeDir ? " --flake " + shq(flakeDir) : "") + (onHost && root.isRemote ? " --host " + shq(root.currentHost) : "") + " " + args;
     }
 
     // ── Operations ────────────────────────────────────────────────────────────
@@ -488,8 +516,15 @@ Item {
         if (!root.isNixOS || root.isLoadingGens)
             return;
         root.isLoadingGens = true;
-        sh(shq(root.scriptDir + "generations"), function (cmd, out, err, code) {
+        const host = root.currentHost;
+        sh(root.helper("generations"), function (cmd, out, err, code) {
             root.isLoadingGens = false;
+            if (host !== root.currentHost)
+                return; // another machine was chosen meanwhile
+            if (root.isRemote) {
+                root.applyRemoteGenerations((out || "").trim(), code, (err || "").trim());
+                return;
+            }
             // Activation time and version follow the generation list.
             root.probeSysInfo();
             const text = (out || "").trim();
@@ -506,9 +541,140 @@ Item {
     }
 
     function probeSysInfo() {
-        sh(shq(root.scriptDir + "sysinfo"), function (cmd, out, err, code) {
-            root.parseSysInfo(out || "");
+        const host = root.currentHost;
+        sh(root.helper("sysinfo"), function (cmd, out, err, code) {
+            if (host === root.currentHost && code === 0)
+                root.parseSysInfo(out || "", root.isRemote);
         });
+    }
+
+    // A machine's answer, or why there is none. The last answer stays on screen,
+    // greyed, with when it was seen.
+    function applyRemoteGenerations(text, code, error) {
+        const name = root.currentHost;
+        if (code === 0 && text) {
+            const cache = Object.assign({}, root.hostGenerationCache);
+            cache[name] = {
+                text: text,
+                at: Date.now()
+            };
+            root.hostGenerationCache = cache;
+            root.hostError = "";
+            root.hostStaleSince = 0;
+            root.parseGenerations(text);
+            root.probeSysInfo();
+            if (root.expanded)
+                root.probeDiskUsage(false);
+            return;
+        }
+        const last = root.hostGenerationCache[name];
+        root.hostError = error || qsTr("%1 did not answer.").arg(name);
+        if (last) {
+            root.hostStaleSince = last.at;
+            root.parseGenerations(last.text);
+        } else {
+            root.generations = [];
+            root.activeGenNum = -1;
+            root.bootedGenNum = -1;
+        }
+        root.probeHostStatuses(name);
+    }
+
+    // ── Choosing the machine ──────────────────────────────────────────────────
+    function selectHost(name) {
+        const h = root.hosts.find(x => x.name === name);
+        if (!h || (h.local ? root.currentHost === "" : h.name === root.currentHost) || (!h.local && h.target === ""))
+            return;
+        if (root.isBusy) {
+            root.pushToast(qsTr("Already running another action — please wait."), true);
+            return;
+        }
+        root.currentHost = h.local ? "" : h.name;
+        // Everything shown belonged to the other machine.
+        root.generations = [];
+        root.activeGenNum = -1;
+        root.bootedGenNum = -1;
+        root.selectedGenNum = -1;
+        root.runningTestBuild = false;
+        root.detailsCache = ({});
+        root.pairDiffCache = ({});
+        root.configDiffCache = ({});
+        root.generationCounts = ({});
+        root.countsQueue = [];
+        root.healthResult = null;
+        root.rebuildPlan = null;
+        root.diskStoreBytes = 0;
+        root.diskReclaimableBytes = 0;
+        root.diskFreeBytes = 0;
+        root.diskUsageError = "";
+        root._lastDiskProbeMs = 0;
+        root.hostError = "";
+        root.hostStaleSince = 0;
+        root.isLoadingGens = false;
+        root.refreshGenerations();
+        if (root.activeViewMode === "tools" || root.activeViewMode === "updates")
+            root.activeViewMode = root.settings.defaultView || "timeline";
+        if (root.expanded)
+            root.probeDiskUsage(true);
+    }
+
+    // Names and ssh targets: this machine, the flake's hosts, and your mapping.
+    function refreshHosts() {
+        if (root.isLoadingHosts || !root.isNixOS)
+            return;
+        root.isLoadingHosts = true;
+        sh(shq(root.scriptDir + "hosts") + " list " + shq(root.flakePath) + " " + shq(root.settings.hostTargets || ""), function (cmd, out, err, code) {
+            root.isLoadingHosts = false;
+            const list = [];
+            for (const line of (out || "").split("\n")) {
+                const f = line.split("\t");
+                if (f.length >= 3 && f[0])
+                    list.push({
+                        name: f[0],
+                        target: f[1] || "",
+                        local: f[2] === "1",
+                        source: f[3] || ""
+                    });
+            }
+            if (code === 0 && JSON.stringify(list) !== JSON.stringify(root.hosts))
+                root.hosts = list;
+            // The chosen machine was removed from the list: back to this one.
+            if (root.currentHost !== "" && !list.some(h => h.name === root.currentHost && h.target !== ""))
+                root.selectHost(root.localHostName);
+            if (root.hasHosts && root.expanded)
+                root.probeHostStatuses("");
+        });
+    }
+
+    // How each machine is: online, offline, unreachable or auth needed, its
+    // generations, reboot, flake revision against HEAD, last seen. One probe per
+    // host, in parallel, each with a timeout; `only` limits it to one name.
+    function probeHostStatuses(only) {
+        if (!root.hasHosts)
+            return;
+        root.isProbingHosts = true;
+        let pending = 0;
+        for (const h of root.reachableHosts) {
+            if (only && h.name !== only)
+                continue;
+            pending++;
+            sh(shq(root.scriptDir + "hosts") + " status " + shq(h.name) + " " + shq(h.local ? "-" : h.target) + " " + shq(root.flakePath), function (cmd, out, err, code) {
+                pending--;
+                let info = null;
+                try {
+                    info = JSON.parse(out || "null");
+                } catch (e) {}
+                if (info && info.name) {
+                    const next = Object.assign({}, root.hostStatus);
+                    next[info.name] = info;
+                    root.hostStatus = next;
+                }
+                if (pending === 0)
+                    root.isProbingHosts = false;
+            }, false, true);
+        }
+        if (pending === 0)
+            root.isProbingHosts = false;
     }
 
     // Database sizes avoid walking store files. The shared cache also watches
@@ -546,8 +712,11 @@ Item {
         root._diskProbeManual = false;
         root._diskProbeRunning = true;
         root._lastDiskRequestMs = Date.now();
-        sh(shq(root.scriptDir + "run") + " cached disk:nar-v1 " + (refresh ? 0 : Math.round(root.diskProbeTtlMs / 1000)) + " -- " + shq(root.scriptDir + "diskusage"), function (cmd, out, err, code) {
+        const host = root.currentHost;
+        sh(shq(root.scriptDir + "run") + " cached " + (root.isRemote ? "hostdisk:" + host + " " + (refresh ? 0 : 600) : "disk:nar-v1 " + (refresh ? 0 : Math.round(root.diskProbeTtlMs / 1000))) + " -- " + root.helper("diskusage"), function (cmd, out, err, code) {
             root._diskProbeRunning = false;
+            if (host !== root.currentHost)
+                return;
             // A mutation/forced refresh arrived during this snapshot. Do not
             // display it or lose the request; run one fresh probe afterward.
             if (root._diskProbeDirty) {
@@ -578,8 +747,11 @@ Item {
         if (root._diskFreeProbeRunning)
             return;
         root._diskFreeProbeRunning = true;
-        sh(shq(root.scriptDir + "diskusage") + " --free", function (cmd, out, err, code) {
+        const host = root.currentHost;
+        sh(root.helper("diskusage", "--free"), function (cmd, out, err, code) {
             root._diskFreeProbeRunning = false;
+            if (host !== root.currentHost)
+                return;
             const value = (out || "").trim();
             if (code === 0 && /^\d+$/.test(value) && isFinite(Number(value)))
                 root.diskFreeBytes = Number(value);
@@ -1589,8 +1761,11 @@ Item {
         if (root.isProbingHealth)
             return;
         root.isProbingHealth = true;
-        sh(shq(root.scriptDir + "run") + " cached " + shq("health") + " " + (force ? 0 : 120) + " -- " + shq(root.scriptDir + "health"), function (cmd, out, err, code) {
+        const host = root.currentHost;
+        sh(shq(root.scriptDir + "run") + " cached " + shq(root.isRemote ? "hosthealth:" + host : "health") + " " + (force ? 0 : 120) + " -- " + root.helper("health"), function (cmd, out, err, code) {
             root.isProbingHealth = false;
+            if (host !== root.currentHost)
+                return;
             root.healthResult = code === 0 ? root.parseHealth(out) : {
                 isError: true,
                 value: (err || out || qsTr("Could not check the system")).trim()
@@ -1903,7 +2078,8 @@ Item {
     }
     function requestGenerationCounts(genNum) {
         const pair = countPair(genNum);
-        if (!pair)
+        // The counts read the closures on this machine.
+        if (!pair || root.isRemote)
             return;
         const existing = generationCounts[genNum];
         if (existing && existing.key === pair.key && (existing.status !== "error" || Date.now() - existing.checked < 60000))
@@ -1956,6 +2132,20 @@ Item {
     function loadConfigDiff(genNum) {
         if (root.configDiffCache[genNum] !== undefined)
             return;
+        if (root.isRemote) {
+            // The recorded configuration commits are on this machine only.
+            const cache = Object.assign({}, root.configDiffCache);
+            cache[genNum] = {
+                status: "unavailable",
+                message: qsTr("Configuration changes are recorded for this machine only."),
+                repo: "",
+                commitA: "",
+                commitB: "",
+                diff: ""
+            };
+            root.configDiffCache = cache;
+            return;
+        }
         const prev = root.getPreviousGen(genNum);
         const baseNum = prev !== null ? prev : genNum;
         root.isLoadingConfigDiff = true;
@@ -2015,9 +2205,10 @@ Item {
             basePath = prev !== null ? "/nix/var/nix/profiles/system-" + prev + "-link" : link;
         }
 
-        sh(shq(root.scriptDir + "details") + " " + shq(link) + " " + shq(basePath), function (cmd, out, err, code) {
+        const host = root.currentHost;
+        sh(root.helper("details", shq(link) + " " + shq(basePath)), function (cmd, out, err, code) {
             root.isLoadingDetails = false;
-            if (!root.hasGeneration(genNum))
+            if (host !== root.currentHost || !root.hasGeneration(genNum))
                 return;
             if (code !== 0) {
                 root.pushToast(err || qsTr("Could not compare generation"), true);
@@ -2043,9 +2234,10 @@ Item {
         const linkA = "/nix/var/nix/profiles/system-" + genA + "-link";
         const linkB = "/nix/var/nix/profiles/system-" + genB + "-link";
         // base = B, target = A → diff shows what A has on top of B
-        sh(shq(root.scriptDir + "details") + " " + shq(linkA) + " " + shq(linkB), function (cmd, out, err, code) {
+        const host = root.currentHost;
+        sh(root.helper("details", shq(linkA) + " " + shq(linkB)), function (cmd, out, err, code) {
             root.isLoadingPairDiff = false;
-            if (!root.hasGeneration(genA) || !root.hasGeneration(genB))
+            if (host !== root.currentHost || !root.hasGeneration(genA) || !root.hasGeneration(genB))
                 return;
             if (code !== 0) {
                 root.pushToast(err || qsTr("Could not compare generations"), true);
@@ -2106,6 +2298,14 @@ Item {
             message: qsTr("Resolving store path…")
         };
         root.storePathCache = root.boundedCache(cache, 256);
+        if (root.isRemote) {
+            cache[key] = {
+                path: "",
+                message: qsTr("Store paths are listed for this machine only.")
+            };
+            root.storePathCache = root.boundedCache(cache, 256);
+            return;
+        }
         sh(shq(root.scriptDir + "store-path") + " " + shq(pkg.storeProfile) + " " + shq(pkg.name) + " " + shq(version), function (cmd, out, err, code) {
             const next = Object.assign({}, root.storePathCache);
             const paths = (out || "").trim().split("\n").filter(p => p.startsWith("/nix/store/"));
@@ -2184,6 +2384,15 @@ Item {
             status: "loading",
             chains: []
         };
+        if (root.isRemote) {
+            cache[key] = {
+                status: "error",
+                chains: [],
+                message: qsTr("Dependency chains are traced for this machine only.")
+            };
+            root.whyCache = root.boundedCache(cache, 64);
+            return;
+        }
         root.whyCache = root.boundedCache(cache, 64);
         sh("timeout --kill-after=5s 120s " + shq(root.scriptDir + "why") + " " + shq(pkg.storeProfile) + " " + shq(pkg.name) + " " + shq(version || "ε") + (all ? " all" : ""), function (cmd, out, err, code) {
             const next = Object.assign({}, root.whyCache);
@@ -2892,7 +3101,7 @@ Item {
         if (!root.isNixOS || root.isLoadingRebuildPlan)
             return;
         root.isLoadingRebuildPlan = true;
-        sh(shq(root.scriptDir + "nixdatifier") + " --json --priv " + (root.settings.usePkexec ? "pkexec" : "none") + (root.flakePath ? " --flake " + shq(root.flakePath) : "") + " rebuild plan", function (cmd, out, err, code) {
+        sh(shq(root.scriptDir + "nixdatifier") + " --json --priv " + (root.settings.usePkexec ? "pkexec" : "none") + (root.flakePath ? " --flake " + shq(root.flakePath) : "") + (root.isRemote ? " --host " + shq(root.currentHost) : "") + " rebuild plan", function (cmd, out, err, code) {
             root.isLoadingRebuildPlan = false;
             let plan = null;
             try {
@@ -2949,10 +3158,10 @@ Item {
         let cmd;
         if (terminal) {
             // In a terminal sudo can ask for a password; pkexec only when chosen.
-            const command = shq(root.scriptDir + "nixdatifier") + " --yes" + (root.settings.usePkexec ? " --priv pkexec" : "") + " --label " + shq(root.currentActionType) + (root.flakePath ? " --flake " + shq(root.flakePath) : "") + " rebuild " + mode;
+            const command = shq(root.scriptDir + "nixdatifier") + " --yes" + (root.settings.usePkexec ? " --priv pkexec" : "") + " --label " + shq(root.currentActionType) + (root.flakePath ? " --flake " + shq(root.flakePath) : "") + (root.isRemote ? " --host " + shq(root.currentHost) : "") + " rebuild " + mode;
             cmd = shq(root.scriptDir + "terminal") + " " + shq(root.terminalApp) + " " + shq(root.flakePath) + " " + shq(command);
         } else {
-            cmd = cli("rebuild " + mode, root.flakePath);
+            cmd = cli("rebuild " + mode, root.flakePath, true);
         }
         sh(cmd, function (c, out, err, code) {
             root.isBusy = false;
@@ -3042,7 +3251,7 @@ Item {
             switch: "switch",
             rollback: "boot",
             delete: "delete"
-        }[action] + " " + genNum);
+        }[action] + " " + genNum, "", true);
         sh(cmd, function (c, out, err, code) {
             root.isBusy = false;
             root.loadHistory();
@@ -3076,6 +3285,10 @@ Item {
     }
 
     function executeCleanup(mode) {
+        if (root.isRemote && (mode === "optimise" || mode === "gc-custom")) {
+            root.pushToast(qsTr("That works on this machine only. Choose it in the host picker first."), true);
+            return;
+        }
         // Optimising is plain Nix: it works without NixOS too.
         if (mode === "optimise") {
             root.executeOptimise();
@@ -3102,7 +3315,7 @@ Item {
             return;
         root.isBusy = true;
         root.currentActionType = qsTr("Cleaning Nix store…");
-        sh(cli("gc" + gcArgs), function (c, out, err, code) {
+        sh(cli("gc" + gcArgs, "", true), function (c, out, err, code) {
             root.isBusy = false;
             root.loadHistory();
             root.refreshGenerations();
@@ -3200,7 +3413,10 @@ Item {
     // Eagerly populate nixos-version + kernel for all gens (no nix commands — instant).
     // Writes partial detailsCache entries so header badges appear without expanding first.
     function loadGenSummaries() {
-        sh(shq(root.scriptDir + "gen-summaries"), function (cmd, out, err, code) {
+        const host = root.currentHost;
+        sh(root.helper("gen-summaries"), function (cmd, out, err, code) {
+            if (host !== root.currentHost)
+                return;
             const records = (out || "").split("\x1d");
             const cache = Object.assign({}, root.detailsCache);
             for (let i = 0; i < records.length; i++) {
@@ -3229,7 +3445,8 @@ Item {
     // Idempotent — the tool short-circuits if (gen, commit) is already on file.
     // Only fires when a config repo is configured (or flakePath is a git repo).
     function snapshotActiveConfig() {
-        if (root.activeGenNum <= 0)
+        // The generation numbers of another machine say nothing about this repository.
+        if (root.activeGenNum <= 0 || root.isRemote)
             return;
         const repo = (root.settings.configRepoPath || root.flakePath || "").trim();
         if (!repo)
@@ -3270,12 +3487,15 @@ Item {
         root.loadMeta(diffList);
     }
 
-    function parseSysInfo(text) {
+    // `remote`: another machine's answer, which says nothing about this system.
+    function parseSysInfo(text, remote) {
         const p = text.split("---");
         root.hostname = p[0] ? p[0].trim() : "";
         root.nixosVersion = p[1] ? p[1].trim() : "";
         root.uptime = p[2] ? p[2].trim() : "";
         root.lastActivationTime = p[3] ? p[3].trim() : "";
+        if (remote)
+            return;
         root.userFacePath = p[4] ? p[4].trim() : "";
         // Detect once; subsequent probes only refresh display information.
         const flag = p[5] === undefined ? "" : p[5].trim();
@@ -3355,7 +3575,7 @@ Item {
     property bool syncSettings: false
     property bool _syncReady: false
     property bool _syncApplying: false
-    readonly property var _syncKeys: ["flakePath", "configRepoPath", "secretsPath", "secretsSourcePath", "githubTokenFile", "githubUseGh", "checkTarballs", "deepInputCheck", "measureStore", "previewWarnMiB", "cveNixRun", "cveWhitelist", "ignoredInputs", "impermanencePaths", "checkInterval", "customCommands", "showNotifications"]
+    readonly property var _syncKeys: ["flakePath", "configRepoPath", "secretsPath", "secretsSourcePath", "githubTokenFile", "githubUseGh", "checkTarballs", "deepInputCheck", "measureStore", "previewWarnMiB", "cveNixRun", "cveWhitelist", "ignoredInputs", "impermanencePaths", "checkInterval", "customCommands", "showNotifications", "hostTargets"]
     function _syncSnapshot() {
         const values = {};
         for (const key of root._syncKeys)
@@ -3462,6 +3682,10 @@ Item {
         function onCveWhitelistChanged() {
             root.schedulePushSharedSettings();
         }
+        function onHostTargetsChanged() {
+            root.schedulePushSharedSettings();
+            root.refreshHosts();
+        }
     }
     // Another scanner or whitelist: what was found no longer applies.
     Connections {
@@ -3496,6 +3720,7 @@ Item {
                 refreshGenerations();
                 probeSecrets();
                 root.refreshFlakeContext(function () {
+                    root.refreshHosts();
                     if (root.settings.showFlakeSection && root.flakePath !== "") {
                         root.bootFlakeCheck();
                         root.armCacheWatcher();
@@ -3584,6 +3809,8 @@ Item {
             root.pullSharedSettings(null);
         if (root.initialized && root.settings && root.expanded && root.autoStart) {
             root.syncFlakeContext(false);
+            if (root.hasHosts)
+                root.probeHostStatuses("");
             if (root.isNixOS && root.settings.autoRefreshOnOpen)
                 refreshGenerations();
             // The very first open always populates the disk chips; after that

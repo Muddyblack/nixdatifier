@@ -71,6 +71,17 @@ Pane {
     required property var deployedSecrets  // { path, exists, lastModified, age }
     required property var sourceSecrets    // { path, exists, lastModified, kind }
     required property string hostname
+    // Hosts: the picker and its overview show once there is more than one machine.
+    property var hosts: []
+    property var hostStatus: ({})
+    property string currentHost: ""
+    property string localHostName: ""
+    property bool hasHosts: false
+    property bool isProbingHosts: false
+    property string hostError: ""
+    property double hostStaleSince: 0
+    signal hostSelected(string name)
+    signal hostsRefreshRequested
     required property string userFacePath
     required property string nixosVersion
     required property string lastActivationTime
@@ -389,6 +400,18 @@ Pane {
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 8
+                        HostPicker {
+                            visible: fullView.hasHosts
+                            hosts: fullView.hosts.filter(h => h.local || h.target !== "")
+                            status: fullView.hostStatus
+                            current: fullView.currentHost
+                            localName: fullView.localHostName
+                            probing: fullView.isProbingHosts
+                            fs: fullView.fs
+                            textColor: fullView.textColor
+                            onChosen: name => fullView.hostSelected(name)
+                            onRefreshRequested: fullView.hostsRefreshRequested()
+                        }
                         Row {
                             objectName: "headerGenerations"
                             spacing: 6
@@ -615,7 +638,7 @@ Pane {
                         wrapMode: Text.WordWrap
                         color: fullView.textColor
                         font.pixelSize: fullView.fpx(9)
-                        text: fullView.pendingCleanup ? (fullView.pendingCleanup === "gc" ? qsTr("Collect unused store paths? Existing generations are kept.") : fullView.pendingCleanup === "gc-14d" ? qsTr("Remove generations older than 14 days from the profiles Nix can access, then collect unused paths? Each profile’s current generation is kept.") : fullView.pendingCleanup === "gc-all" ? qsTr("Remove all non-current generations from the profiles Nix can access, then collect unused paths? Removed rollback points cannot be restored by this app.") : fullView.pendingCleanup === "optimise" ? qsTr("Replace identical files in the Nix store with hard links to one copy? Nothing is deleted; it reads the whole store and can take a while.") : qsTr("Run custom cleanup: %1").arg(fullView.gcCustomCommand)) : qsTr("%1 generation #%2?").arg(fullView.pendingAction === "delete" ? qsTr("Delete") : fullView.pendingAction === "switch" ? qsTr("Activate now") : qsTr("Set next boot to")).arg(fullView.pendingGenNum)
+                        text: fullView.pendingCleanup ? (fullView.currentHost !== "" ? qsTr("On %1: ").arg(fullView.currentHost) : "") + (fullView.pendingCleanup === "gc" ? qsTr("Collect unused store paths? Existing generations are kept.") : fullView.pendingCleanup === "gc-14d" ? qsTr("Remove generations older than 14 days from the profiles Nix can access, then collect unused paths? Each profile’s current generation is kept.") : fullView.pendingCleanup === "gc-all" ? qsTr("Remove all non-current generations from the profiles Nix can access, then collect unused paths? Removed rollback points cannot be restored by this app.") : fullView.pendingCleanup === "optimise" ? qsTr("Replace identical files in the Nix store with hard links to one copy? Nothing is deleted; it reads the whole store and can take a while.") : qsTr("Run custom cleanup: %1").arg(fullView.gcCustomCommand)) : (fullView.currentHost !== "" ? qsTr("%1 generation #%2 on %3?").arg(fullView.pendingAction === "delete" ? qsTr("Delete") : fullView.pendingAction === "switch" ? qsTr("Activate now") : qsTr("Set next boot to")).arg(fullView.pendingGenNum).arg(fullView.currentHost) : qsTr("%1 generation #%2?").arg(fullView.pendingAction === "delete" ? qsTr("Delete") : fullView.pendingAction === "switch" ? qsTr("Activate now") : qsTr("Set next boot to")).arg(fullView.pendingGenNum))
                     }
                     UI.ActionButton {
                         text: qsTr("Cancel")
@@ -628,6 +651,17 @@ Pane {
                         onClicked: fullView.pendingCleanup ? fullView.confirmCleanup(fullView.pendingCleanup) : fullView.confirmPending()
                     }
                 }
+            }
+            Notice {
+                objectName: "hostNotice"
+                visible: fullView.hostError !== "" && fullView.currentHost !== ""
+                Layout.fillWidth: true
+                Layout.topMargin: visible ? 10 : 0
+                emphasis: true
+                tone: UI.Theme.changed
+                glyph: "ic_info"
+                fs: fullView.fs
+                text: fullView.hostStaleSince > 0 ? qsTr("Can't reach %1: %2 Showing its last answer from %3.").arg(fullView.currentHost).arg(fullView.hostError).arg(Qt.formatDateTime(new Date(fullView.hostStaleSince), "d MMM, hh:mm")) : qsTr("Can't reach %1: %2").arg(fullView.currentHost).arg(fullView.hostError)
             }
             Item {
                 objectName: "navigation"
@@ -705,6 +739,8 @@ Pane {
         Item {
             objectName: "viewBody"
             clip: true
+            // A machine that does not answer keeps its last answer on screen, greyed.
+            opacity: fullView.currentHost !== "" && fullView.hostStaleSince > 0 ? .55 : 1
             Layout.leftMargin: fullView.contentMargin
             Layout.rightMargin: fullView.contentMargin
             Layout.topMargin: 17
@@ -1229,6 +1265,7 @@ Pane {
         anchors.fill: parent
         visible: fullView.rebuildOpen
         plan: fullView.rebuildPlan
+        hostName: fullView.currentHost
         progress: fullView.rebuildState
         running: fullView.rebuildRunning
         inTerminal: fullView.rebuildInTerminal

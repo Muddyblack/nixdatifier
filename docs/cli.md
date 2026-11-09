@@ -39,6 +39,7 @@ Suggestions never run automatically. Missing option values also report a usage e
 | Shell | `completion install` sets up your shell in one step; `completion bash\|zsh\|fish` prints the script |
 | Commands | `commands [list\|add LABEL CMD\|rm LABEL]` manages your quick-run commands, the same four the window's Commands panel shows; `run LABEL` runs one from the flake directory, as typed; `rebuild [switch\|boot\|test\|dry-build]` runs the one labelled `rebuild` exactly as saved (it gets the mode in `NIXDATIFIER_REBUILD_MODE`), or `nh os MODE DIR` when `nh` is installed, else `nixos-rebuild MODE --flake DIR` as root; a terminal shows it through `nom` when installed. `rebuild plan` prints what each mode would run, `rebuild status` the running or last rebuild (phase, derivations built, paths fetched, download size, last lines; `--json` has `built`, `toBuild`, `fetched`, `toFetch`, `downloadBytes`, `exitCode`, `tail`), `rebuild log` its output. Status follows a rebuild started anywhere: terminal, TUI or window. All ask first and land in History |
 | Update checks | `watch on\|off\|status\|run`: a systemd user timer checks the flake inputs every `check_interval` (default `6h`) and sends a desktop notification for new updates. Off by default; also under *Update checks* in the interactive view, or `programs.nixdatifier.tui.updateCheck` in the Nix modules |
+| Hosts | `hosts [status\|list\|add NAME TARGET\|rm NAME]`: the machines of your flake and how each is (see [Hosts](#several-machines-one-flake)); `--host NAME` before `generations`, `diff`, `disk`, `health`, `status`, `info`, `switch`, `boot`, `rollback`, `delete`, `clean`, `gc` or `rebuild` runs that command on the host over ssh |
 | Cleanup | `clean` deletes old generations (keeps 5, drops older than 14 days) and collects garbage in one go |
 
 The CLI and desktop packages install Bash, zsh and fish completion scripts in
@@ -160,7 +161,70 @@ There is no config file; it is flags and environment, so it works the same in a 
 | `NIXDATIFIER_IGNORE_INPUTS` | comma-separated input names (globs allowed) to leave out of update checks (config key `ignored_inputs`; empty by default) |
 | `NIXDATIFIER_CVE_NIX_RUN` | `on` runs vulnix with `nix run nixpkgs#vulnix` when it is not installed, which downloads it (config key `cve_nix_run`, shared with the window; off by default) |
 | `NIXDATIFIER_CVE_WHITELIST` | a vulnix whitelist file (TOML or YAML) or URL (config key `cve_whitelist`, shared with the window; empty uses `~/.config/vulnix/whitelist.toml` when it exists) |
+| `NIXDATIFIER_HOSTS` | ssh targets of the other machines, `name=user@address,other=address` (config key `hosts`, shared with the window's *ssh targets of other hosts*; empty by default) |
+| `NIXDATIFIER_HOST` | the host commands act on without `--host` (the interactive view keeps its choice in `NIXDATIFIER_HOST_FILE`); commands that only work on this machine ignore it |
+| `NIXDATIFIER_SSH`, `NIXDATIFIER_SSH_TIMEOUT` | the ssh program (default `ssh`) and its connect timeout in seconds (default 8) |
 | `NIXDATIFIER_GITHUB_USE_GH` | `on` borrows the login of a signed-in `gh` when there is no token (config key `github_use_gh`; off by default, its token often has wide scopes) |
+
+## Several machines, one flake
+
+A flake often defines more than one `nixosConfigurations` machine. Nixdatifier
+lists them (`nixdatifier hosts`) and can look at, and change, the others over
+ssh. With one machine none of this shows anywhere.
+
+```console
+$ nixdatifier hosts add server me@server.lan      # or: config set hosts server=me@server.lan
+$ nixdatifier hosts
+NAME    STATE    TARGET          NEXT_BOOT  BOOTED  REBOOT  BEHIND  LAST_SEEN
+laptop  online                   312        312     -       0       2026-11-09 07:40
+server  online   me@server.lan   88         87      yes     2       2026-11-09 07:40
+nas     unmapped                                                    
+
+$ nixdatifier --host server generations           # also diff, disk, health, status, info
+$ nixdatifier --host server switch 87             # asks: Activate generation 87 on server now?
+$ nixdatifier --host server rebuild               # nixos-rebuild/nh with --target-host
+```
+
+- **Discovery.** Hosts are the flake's `nixosConfigurations` (read with
+  `nix eval`, cached for an hour) and what you mapped to an ssh target with
+  `hosts add`. A flake host whose name already resolves needs no mapping; the
+  machine named like this one is it. `hosts add` and `hosts rm` edit the `hosts`
+  config key, which the window's setting shares.
+- **Status.** `hosts` asks every host in parallel: `online`, `offline` (no
+  answer), `unreachable` (cannot be resolved or reached), `auth` (ssh did not
+  accept a key; fix it with `ssh-add` or by authorizing this machine) or
+  `unmapped` (no ssh target). It also reports the next-boot and booted
+  generation, whether a reboot is needed, the flake revision the host runs
+  (`system.configurationRevision`) and how many commits it is behind your flake's
+  HEAD, and when it was last seen: an offline host shows its last answer. JSON
+  keys: `name`, `target`, `local`, `state`, `lastSeen`, `stale`, `nixosVersion`,
+  `kernel`, `uptimeSeconds`, `activeGeneration`, `bootedGeneration`,
+  `newestGeneration`, `generations`, `rebootRequired`, `failedUnits`, `rev`,
+  `revDirty`, `localHead`, `behind` and `error`.
+- **Reading.** The read helpers travel over ssh's standard input, so nothing has
+  to be installed on the host (only `bash`). ssh runs in `BatchMode` with your
+  keys or agent, never a password, and with a connect timeout (8 seconds), so an
+  unreachable host cannot block anything. `diff --config`, `why`, store paths
+  and change counts read this machine's store and stay on it.
+- **Changing.** `switch`, `boot`, `rollback`, `delete`, `gc`, `clean` and
+  `rebuild` ask first, name the host in the question, run the command there with
+  `sudo` (or `doas`, per `--priv`; none for a `root@` target) and are recorded in
+  History with the host in the label. A change needs a terminal for the sudo
+  password; without one, give the host passwordless sudo.
+- **Rebuild.** Without a saved `rebuild` command, `nh os MODE FLAKE --hostname
+  NAME --target-host TARGET` or `nixos-rebuild MODE --flake FLAKE#NAME
+  --target-host TARGET --use-remote-sudo` builds here and activates there. Your
+  own `rebuild` command keeps priority, but it must say which machine: `{host}`
+  (the name) and `{target}` (the ssh destination) are replaced, and the host is
+  also in `NIXDATIFIER_HOST` and `NIXDATIFIER_HOST_TARGET`. A command without a
+  placeholder would rebuild this machine, so it is refused for a host.
+- **The window and the interactive view.** Once there is a second reachable
+  host, the header shows `● this-pc ▾` (and the interactive view a *Hosts*
+  entry, Alt-H). It lists every host with its state, boot state, pending reboot,
+  commits behind HEAD and last seen; choosing one re-scopes Generations, Compare,
+  Health and the Store card, and the confirmations name it. A host that stops
+  answering keeps its last generations on screen, greyed, with when they were
+  read. There are no extra tabs.
 
 ## Vulnerability scan
 

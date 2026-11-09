@@ -116,6 +116,10 @@
             <!-- vulnix whitelist file or URL — empty = ~/.config/vulnix/whitelist.toml when it exists -->
             <default></default>
         </entry>
+        <entry name="hostTargets" type="String">
+            <!-- ssh targets of the other machines of the flake: name=user@address, comma-separated — empty = only hosts whose name resolves -->
+            <default></default>
+        </entry>
         <entry name="impermanencePaths" type="String">
             <!-- extra persistent roots, colon-separated, e.g. /persist:/mnt/data — empty = auto-detect -->
             <default></default>

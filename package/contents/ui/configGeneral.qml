@@ -39,6 +39,7 @@ Kirigami.Page {
     property alias cfg_githubUseGh: state.githubUseGh
     property alias cfg_cveNixRun: state.cveNixRun
     property alias cfg_cveWhitelist: state.cveWhitelist
+    property alias cfg_hostTargets: state.hostTargets
     property alias cfg_impermanencePaths: state.impermanencePaths
     property alias cfg_impermanenceStaleDays: state.impermanenceStaleDays
     property alias cfg_impermanenceAllDisks: state.impermanenceAllDisks
@@ -95,6 +96,7 @@ Kirigami.Page {
     property alias cfg_githubUseGhDefault: defaults.githubUseGh
     property alias cfg_cveNixRunDefault: defaults.cveNixRun
     property alias cfg_cveWhitelistDefault: defaults.cveWhitelist
+    property alias cfg_hostTargetsDefault: defaults.hostTargets
     property alias cfg_impermanencePathsDefault: defaults.impermanencePaths
     property alias cfg_impermanenceStaleDaysDefault: defaults.impermanenceStaleDays
     property alias cfg_impermanenceAllDisksDefault: defaults.impermanenceAllDisks
