@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# Usage:
+#   rebuild exec MODE SOURCE DISPLAY -- COMMAND...   run COMMAND, keeping its output in the live log
+#   rebuild progress [LINES]                         the running (or last) rebuild as JSON
+#   rebuild log                                      the whole output of the running (or last) rebuild
+# One live log for every front end: a rebuild started in a terminal shows its
+# progress in the window, and one started in the window shows in `nixdatifier
+# rebuild status`. `nixdatifier rebuild` runs `exec` inside the system-operation
+# lock, so only one rebuild ever writes here.
+set -uo pipefail
+export LC_ALL=C
+dir="${XDG_CACHE_HOME:-$HOME/.cache}/nixdatifier/rebuild"
+
+# Terminal output without colours, cursor movement or the frames a progress bar
+# redraws over a carriage return.
+clean() { sed -E 's/\x1b\[[0-9;?]*[ -/]*[@-~]//g; s/\x1b\][^\x07]*\x07//g; s/\x1b[()][A-Z0-9]//g; s/\x1b[=>78]//g; s/.*\r(.)/\1/; s/\r$//'; }
+
+mode="${1:?missing mode}"; shift
+case "$mode" in
+    exec)
+        run_mode="${1:?}" source="${2:?}" display="${3:-}"; shift 3
+        [[ "${1:-}" == -- ]] && shift
+        (($#)) || exit 2
+        mkdir -p "$dir" || exit 1
+        started=$(date +%s)
+        write_state() { # write_state [EXIT]
+            {
+                printf 'pid=%s\nmode=%s\nsource=%s\nstarted=%s\n' "$$" "$run_mode" "$source" "$started"
+                printf 'command=%s\n' "${display//$'\n'/ }"
+                [[ -z ${1:-} ]] || printf 'exit=%s\nfinished=%s\n' "$1" "$(date +%s)"
+            } >"$dir/state.tmp" && mv -f "$dir/state.tmp" "$dir/state"
+        }
+        : >"$dir/log"
+        write_state
+        trap 'write_state 129; exit 129' HUP
+        trap 'write_state 130; exit 130' INT
+        trap 'write_state 143; exit 143' TERM
+        # Without a terminal nothing can answer a prompt: fail instead of waiting forever.
+        [[ -t 0 ]] || exec </dev/null
+        "$@" 2>&1 | tee -- "$dir/log"
+        rc=${PIPESTATUS[0]}
+        write_state "$rc"
+        exit "$rc"
+        ;;
+    progress)
+        lines="${1:-300}"
+        [[ "$lines" =~ ^[0-9]+$ ]] || exit 2
+        if [[ ! -f "$dir/state" ]]; then
+            jq -n '{exists: false, running: false}'
+            exit 0
+        fi
+        get() { sed -n "s/^$1=//p" "$dir/state" | tail -1; }
+        pid=$(get pid) exit_code=$(get exit) running=false interrupted=false
+        if [[ -z "$exit_code" ]]; then
+            if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then running=true; else interrupted=true; fi
+        fi
+        # Counts come from Nix's own lines ("these 12 derivations will be built",
+        # "building '…drv'", "copying path '…'"), so they work for nixos-rebuild,
+        # nh --no-nom and most custom scripts alike. nom draws its own progress;
+        # its frames carry no such lines, and the counts then stay at zero.
+        counts=$(clean <"$dir/log" 2>/dev/null | awk '
+            function bytes(n, u) {
+                if (u ~ /^K/) return n * 1024
+                if (u ~ /^M/) return n * 1048576
+                if (u ~ /^G/) return n * 1073741824
+                if (u ~ /^T/) return n * 1099511627776
+                return n
+            }
+            function download(line,   s, p) {
+                if (match(line, /\([0-9.]+ [KMGT]?i?B download/)) {
+                    s = substr(line, RSTART + 1, RLENGTH - 1); split(s, p, " ")
+                    dl += bytes(p[1] + 0, p[2])
+                }
+            }
+            BEGIN { phase = "evaluating" }
+            /^these [0-9]+ derivations will be built/ { toBuild += $2; if (phase == "evaluating") phase = "building" }
+            /^this derivation will be built/ { toBuild += 1; if (phase == "evaluating") phase = "building" }
+            /^these [0-9]+ paths will be fetched/ { toFetch += $2; download($0); if (phase == "evaluating") phase = "building" }
+            /^this path will be fetched/ { toFetch += 1; download($0); if (phase == "evaluating") phase = "building" }
+            /^building \047\/nix\/store\/[^\047]+\.drv\047/ {
+                built++; c = $0; sub(/^building \047\/nix\/store\/[a-z0-9]+-/, "", c); sub(/\.drv\047.*/, "", c); current = c; phase = "building"
+            }
+            /^copying path \047\/nix\/store\// {
+                fetched++; c = $0; sub(/^copying path \047\/nix\/store\/[a-z0-9]+-/, "", c); sub(/\047.*/, "", c); current = c; phase = "building"
+            }
+            /activating the configuration|Activating configuration|^setting up \/etc|^(stopping|starting|restarting|reloading) the following units|^updating GRUB|^installing the GRUB|systemd-boot/ { phase = "activating"; current = "" }
+            /^error:/ && error == "" { error = $0; sub(/^error:[ ]*/, "", error) }
+            END {
+                gsub(/\037/, " ", current); gsub(/\037/, " ", error)
+                printf "%s\037%d\037%d\037%d\037%d\037%.0f\037%s\037%s\037%d\n", phase, built, toBuild, fetched, toFetch, dl, current, error, NR
+            }')
+        IFS=$'\x1f' read -r phase built to_build fetched to_fetch dl current error count <<<"$counts"
+        [[ "$running" == true ]] || phase="done"
+        clean <"$dir/log" 2>/dev/null | tail -n "$lines" | jq -Rn \
+            --argjson running "$running" --argjson interrupted "$interrupted" \
+            --arg mode "$(get mode)" --arg source "$(get source)" --arg command "$(get command)" \
+            --arg started "$(get started)" --arg finished "$(get finished)" --arg exit "$exit_code" \
+            --arg phase "${phase:-evaluating}" --arg current "$current" --arg error "$error" \
+            --argjson built "${built:-0}" --argjson toBuild "${to_build:-0}" --argjson fetched "${fetched:-0}" \
+            --argjson toFetch "${to_fetch:-0}" --argjson dl "${dl:-0}" --argjson count "${count:-0}" '
+            def num: if . == "" then null else tonumber end;
+            {exists: true, running: $running, interrupted: $interrupted, mode: $mode, source: $source, command: $command,
+             startedAt: ($started | num), finishedAt: ($finished | num), exitCode: ($exit | num),
+             phase: $phase, built: $built, toBuild: $toBuild, fetched: $fetched, toFetch: $toFetch,
+             downloadBytes: $dl, current: $current, error: $error, lineCount: $count, tail: [inputs]}'
+        ;;
+    log)
+        [[ -f "$dir/log" ]] || exit 1
+        clean <"$dir/log"
+        ;;
+    *)
+        echo "Unknown mode: $mode" >&2
+        exit 2
+        ;;
+esac

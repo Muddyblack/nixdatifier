@@ -242,6 +242,29 @@ Pane {
     signal popOutRequested
     signal configureRequested
 
+    // ── Rebuild panel state (from Engine) ────────────────────────────────────
+    property var rebuildPlan: null
+    property var rebuildState: null
+    property bool rebuildRunning: false
+    property bool rebuildInTerminal: false
+    property bool isLoadingRebuildPlan: false
+    property real rebuildFraction: -1
+    property string rebuildProgressLabel: ""
+    property string rebuildOutput: "terminal"
+    signal rebuildPlanRequested
+    signal rebuildStartRequested(string mode)
+    signal rebuildOutputPicked(string output)
+    signal rebuildLogCopyRequested
+    property bool rebuildOpen: false
+    function openRebuild() {
+        commandsOpen = false;
+        rebuildOpen = true;
+        rebuildView.focusBack();
+    }
+    function closeRebuild() {
+        rebuildOpen = false;
+        rebuildButton.forceActiveFocus(Qt.OtherFocusReason);
+    }
     property bool commandsOpen: false
     function openCommands() {
         commandsOpen = true;
@@ -251,8 +274,10 @@ Pane {
         commandsOpen = false;
         commandsButton.forceActiveFocus(Qt.OtherFocusReason);
     }
-    onUiActiveChanged: if (!uiActive)
-        commandsOpen = false
+    onUiActiveChanged: if (!uiActive) {
+        commandsOpen = false;
+        rebuildOpen = false;
+    }
 
     property bool isPopOutOpen: false
     property var updatingInputs: []
@@ -331,7 +356,7 @@ Pane {
     ColumnLayout {
         objectName: "mainPage"
         anchors.fill: parent
-        visible: !fullView.commandsOpen && !fullView.toolsOverlayOpen
+        visible: !fullView.commandsOpen && !fullView.rebuildOpen && !fullView.toolsOverlayOpen
         spacing: 0
         ColumnLayout {
             Layout.fillWidth: true
@@ -1142,6 +1167,16 @@ Pane {
                     }
                 }
                 UI.ActionButton {
+                    id: rebuildButton
+                    objectName: "rebuildButton"
+                    visible: fullView.isNixOS
+                    text: qsTr("Rebuild ›")
+                    glyph: svg("ic_rebuild")
+                    flatStyle: true
+                    font.pixelSize: 9 * fullView.fs
+                    onClicked: fullView.openRebuild()
+                }
+                UI.ActionButton {
                     id: commandsButton
                     objectName: "commandsButton"
                     visible: fullView.isNixOS && fullView.showCommandButtons
@@ -1165,12 +1200,19 @@ Pane {
                 Rectangle {
                     id: progress
                     property real sweep: 0
-                    width: parent.width * (fullView.enableMotion ? .35 : 1)
+                    readonly property bool determinate: fullView.rebuildFraction >= 0
+                    width: determinate ? parent.width * fullView.rebuildFraction : parent.width * (fullView.enableMotion ? .35 : 1)
                     height: parent.height
-                    x: fullView.enableMotion ? (parent.width + width) * sweep - width : 0
+                    x: determinate ? 0 : fullView.enableMotion ? (parent.width + width) * sweep - width : 0
+                    Behavior on width {
+                        enabled: progress.determinate
+                        NumberAnimation {
+                            duration: 300
+                        }
+                    }
                     color: fullView.accentColor
                     NumberAnimation on sweep {
-                        running: fullView.isSpinning && fullView.uiActive && fullView.enableMotion && !fullView.commandsOpen
+                        running: fullView.isSpinning && fullView.uiActive && fullView.enableMotion && !fullView.commandsOpen && !fullView.rebuildOpen && !progress.determinate
                         from: 0
                         to: 1
                         duration: 1600
@@ -1179,6 +1221,41 @@ Pane {
                     }
                 }
             }
+        }
+    }
+    RebuildView {
+        id: rebuildView
+        objectName: "rebuildView"
+        anchors.fill: parent
+        visible: fullView.rebuildOpen
+        plan: fullView.rebuildPlan
+        progress: fullView.rebuildState
+        running: fullView.rebuildRunning
+        inTerminal: fullView.rebuildInTerminal
+        outputPanel: fullView.rebuildOutput === "panel"
+        isBusy: fullView.isBusy
+        isLoadingPlan: fullView.isLoadingRebuildPlan
+        fraction: fullView.rebuildFraction
+        progressLabel: fullView.rebuildProgressLabel
+        textColor: fullView.textColor
+        accentColor: fullView.accentColor
+        fs: fullView.fs
+        working: fullView.isSpinning && fullView.uiActive
+        enableMotion: fullView.enableMotion
+        iconStyle: fullView.iconStyle
+        onCloseRequested: fullView.closeRebuild()
+        onPlanRequested: fullView.rebuildPlanRequested()
+        onStartRequested: mode => fullView.rebuildStartRequested(mode)
+        onOutputPanelToggled: panel => fullView.rebuildOutputPicked(panel ? "panel" : "terminal")
+        onCopyLogRequested: fullView.rebuildLogCopyRequested()
+        onCopyRequested: text => fullView.copyToClipboard(text)
+        onHistoryRequested: {
+            fullView.closeRebuild();
+            fullView.viewModeChanged("history");
+        }
+        onConfigureRequested: {
+            fullView.closeRebuild();
+            fullView.configureRequested();
         }
     }
     CommandsView {
@@ -1210,7 +1287,7 @@ Pane {
         id: toolsOverlay
         objectName: "toolsOverlay"
         anchors.fill: parent
-        visible: fullView.toolsOverlayOpen
+        visible: fullView.toolsOverlayOpen && !fullView.rebuildOpen && !fullView.commandsOpen
         ColumnLayout {
             anchors.fill: parent
             spacing: 0

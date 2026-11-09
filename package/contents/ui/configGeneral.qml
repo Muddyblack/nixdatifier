@@ -24,6 +24,7 @@ Kirigami.Page {
     property alias cfg_customCommands: state.customCommands
     property alias cfg_showCommandButtons: state.showCommandButtons
     property alias cfg_commandTerminal: state.commandTerminal
+    property alias cfg_rebuildOutput: state.rebuildOutput
     property alias cfg_usePkexec: state.usePkexec
     property alias cfg_enableLiveSwitch: state.enableLiveSwitch
     property alias cfg_confirmBeforeRollback: state.confirmBeforeRollback
@@ -79,6 +80,7 @@ Kirigami.Page {
     property alias cfg_customCommandsDefault: defaults.customCommands
     property alias cfg_showCommandButtonsDefault: defaults.showCommandButtons
     property alias cfg_commandTerminalDefault: defaults.commandTerminal
+    property alias cfg_rebuildOutputDefault: defaults.rebuildOutput
     property alias cfg_usePkexecDefault: defaults.usePkexec
     property alias cfg_enableLiveSwitchDefault: defaults.enableLiveSwitch
     property alias cfg_confirmBeforeRollbackDefault: defaults.confirmBeforeRollback

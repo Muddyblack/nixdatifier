@@ -64,7 +64,7 @@ Item {
     property bool initialized: false
     property int activeJobs: 0
     signal configureRequested
-    readonly property string busyLabel: isBusy ? (currentActionType || qsTr("Running command…")) : isCheckingFlake ? qsTr("Checking flake inputs…") : isDryRunning ? qsTr("Previewing package changes…") : isLoadingDetails || isLoadingPairDiff ? qsTr("Loading package changes…") : isProbingHash ? qsTr("Calculating hash…") : isProbingStoreUsage ? qsTr("Inspecting store path…") : isProbingDevEnv ? qsTr("Inspecting development environment…") : isLoadingSecrets ? qsTr("Inspecting secrets…") : isImpermanenceBusy ? qsTr("Inspecting persistent folders…") : _diskProbeRunning ? qsTr("Measuring Nix store…") : countingChanges ? qsTr("Counting package changes…") : activeJobs > 0 ? qsTr("Refreshing system information…") : ""
+    readonly property string busyLabel: rebuildRunning ? rebuildProgressLabel : isBusy ? (currentActionType || qsTr("Running command…")) : isCheckingFlake ? qsTr("Checking flake inputs…") : isDryRunning ? qsTr("Previewing package changes…") : isLoadingDetails || isLoadingPairDiff ? qsTr("Loading package changes…") : isProbingHash ? qsTr("Calculating hash…") : isProbingStoreUsage ? qsTr("Inspecting store path…") : isProbingDevEnv ? qsTr("Inspecting development environment…") : isLoadingSecrets ? qsTr("Inspecting secrets…") : isImpermanenceBusy ? qsTr("Inspecting persistent folders…") : _diskProbeRunning ? qsTr("Measuring Nix store…") : countingChanges ? qsTr("Counting package changes…") : activeJobs > 0 ? qsTr("Refreshing system information…") : ""
 
     // ── Script directory ──────────────────────────────────────────────────────
     readonly property string scriptDir: Qt.resolvedUrl("../tools/sh/").toString().replace("file://", "")
@@ -140,7 +140,7 @@ Item {
     property bool isLoadingConfigDiff: false
 
     // ── Active spinner state (panel spinner spins if any action or probe is running) ──
-    readonly property bool isSpinning: root.activeJobs > 0 || root._diskProbeRunning || root.isBusy || root.isLoadingGens || root.isLoadingDetails || root.isLoadingPairDiff || root.isCheckingFlake || root.isDryRunning || root.isProbingHash || root.isProbingStoreUsage || root.isProbingDevEnv || root.isLoadingSecrets || root.isLoadingConfigDiff || root.isImpermanenceBusy
+    readonly property bool isSpinning: root.activeJobs > 0 || root._diskProbeRunning || root.isBusy || root.rebuildRunning || root.isLoadingGens || root.isLoadingDetails || root.isLoadingPairDiff || root.isCheckingFlake || root.isDryRunning || root.isProbingHash || root.isProbingStoreUsage || root.isProbingDevEnv || root.isLoadingSecrets || root.isLoadingConfigDiff || root.isImpermanenceBusy
 
     property var detailsCache: ({})
     property string diffMode: "prev"
@@ -424,7 +424,9 @@ Item {
     // The Component itself is compiled once and reused: sh() is on the hot path
     // (every probe, every refresh, every cache read), and Qt.createComponent()
     // re-resolves and re-validates the URL on every call.
-    function sh(cmd, cb, mutation) {
+    // `untracked`: a quiet poll that must not count as work (the footer and the
+    // flake animation would flicker with every tick).
+    function sh(cmd, cb, mutation, untracked) {
         if (!root.executor || root.executor.status !== Component.Ready) {
             Qt.callLater(function () {
                 if (cb)
@@ -432,7 +434,7 @@ Item {
             });
             return;
         }
-        const tracked = cmd.indexOf(root.scriptDir) >= 0;
+        const tracked = !untracked && cmd.indexOf(root.scriptDir) >= 0;
         if (tracked)
             root.activeJobs++;
         const job = root.executor.createObject(root);
@@ -2836,6 +2838,153 @@ Item {
         }, true);
     }
 
+    // ── Rebuild ───────────────────────────────────────────────────────────────
+    // `nixdatifier rebuild` decides what runs: the command labelled "rebuild"
+    // as saved, else nh, else nixos-rebuild. It keeps a live log that
+    // tools/sh/rebuild turns into progress, whichever front end started it,
+    // so a rebuild running in a terminal shows here too.
+    readonly property var rebuildModes: ["switch", "boot", "test", "dry-build"]
+    property var rebuildPlan: null          // `rebuild plan --json`: source, custom, nh, nom, commands per mode
+    property bool isLoadingRebuildPlan: false
+    property var rebuildState: null         // `rebuild progress`: running, phase, built/toBuild, fetched/toFetch, downloadBytes, tail…
+    property bool isRebuilding: false       // started here and not finished
+    property string rebuildMode: "switch"
+    property bool rebuildInTerminal: false
+    readonly property bool rebuildRunning: root.isRebuilding || !!(root.rebuildState && root.rebuildState.running)
+    readonly property real rebuildFraction: {
+        const st = root.rebuildState;
+        if (!root.rebuildRunning || !st)
+            return -1;
+        const total = (st.toBuild || 0) + (st.toFetch || 0);
+        if (total <= 0)
+            return st.phase === "activating" ? 1 : -1;
+        return Math.min(1, ((st.built || 0) + (st.fetched || 0)) / total);
+    }
+    function rebuildModeLabel(mode) {
+        return ({
+                "switch": qsTr("Switch"),
+                "boot": qsTr("Boot"),
+                "test": qsTr("Test"),
+                "dry-build": qsTr("Dry build")
+            })[mode] || mode;
+    }
+    readonly property string rebuildProgressLabel: {
+        const st = root.rebuildState;
+        if (!st || !st.running)
+            return root.rebuildInTerminal ? qsTr("Rebuilding in your terminal…") : qsTr("Starting rebuild…");
+        const parts = [];
+        if (st.phase === "activating")
+            parts.push(qsTr("Activating"));
+        else if (st.phase === "evaluating")
+            parts.push(qsTr("Evaluating configuration"));
+        else
+            parts.push(qsTr("Rebuilding"));
+        if (st.toBuild > 0 || st.built > 0)
+            parts.push(st.toBuild > 0 ? qsTr("built %1/%2").arg(st.built).arg(st.toBuild) : qsTr("built %1").arg(st.built));
+        if (st.toFetch > 0 || st.fetched > 0)
+            parts.push(st.toFetch > 0 ? qsTr("fetched %1/%2").arg(st.fetched).arg(st.toFetch) : qsTr("fetched %1").arg(st.fetched));
+        if (st.downloadBytes > 0)
+            parts.push(qsTr("%1 download").arg(UI.Theme.formatBytes(st.downloadBytes)));
+        return parts.join(" · ");
+    }
+
+    function loadRebuildPlan() {
+        if (!root.isNixOS || root.isLoadingRebuildPlan)
+            return;
+        root.isLoadingRebuildPlan = true;
+        sh(shq(root.scriptDir + "nixdatifier") + " --json --priv " + (root.settings.usePkexec ? "pkexec" : "none") + (root.flakePath ? " --flake " + shq(root.flakePath) : "") + " rebuild plan", function (cmd, out, err, code) {
+            root.isLoadingRebuildPlan = false;
+            let plan = null;
+            try {
+                plan = code === 0 ? JSON.parse(out || "null") : null;
+            } catch (e) {}
+            root.rebuildPlan = plan && plan.commands ? plan : {
+                error: (err || out || "").trim() || qsTr("Could not tell what a rebuild would run.")
+            };
+        });
+    }
+
+    property bool _rebuildPolling: false
+    function pollRebuild() {
+        if (root._rebuildPolling)
+            return;
+        root._rebuildPolling = true;
+        sh(shq(root.scriptDir + "rebuild") + " progress 400", function (cmd, out, err, code) {
+            root._rebuildPolling = false;
+            let st = null;
+            try {
+                st = JSON.parse(out || "null");
+            } catch (e) {}
+            if (st && st.exists)
+                root.rebuildState = st;
+        }, false, true);
+    }
+    // Only while a rebuild runs and someone is looking.
+    Timer {
+        interval: 1000
+        repeat: true
+        running: root.rebuildRunning && root.uiActive
+        onTriggered: root.pollRebuild()
+    }
+
+    function startRebuild(mode) {
+        if (!root.isNixOS || root.rebuildModes.indexOf(mode) < 0)
+            return;
+        if (root.isBusy || root.rebuildRunning) {
+            root.pushToast(qsTr("Already running another action — please wait."), true);
+            return;
+        }
+        const terminal = root.settings.rebuildOutput !== "panel";
+        root.isBusy = true;
+        root.isRebuilding = true;
+        root.rebuildMode = mode;
+        root.rebuildInTerminal = terminal;
+        root.rebuildState = null;
+        root.currentActionType = ({
+                "switch": qsTr("Rebuilding…"),
+                "boot": qsTr("Rebuilding for next boot…"),
+                "test": qsTr("Rebuilding (test)…"),
+                "dry-build": qsTr("Dry build…")
+            })[mode];
+        let cmd;
+        if (terminal) {
+            // In a terminal sudo can ask for a password; pkexec only when chosen.
+            const command = shq(root.scriptDir + "nixdatifier") + " --yes" + (root.settings.usePkexec ? " --priv pkexec" : "") + " --label " + shq(root.currentActionType) + (root.flakePath ? " --flake " + shq(root.flakePath) : "") + " rebuild " + mode;
+            cmd = shq(root.scriptDir + "terminal") + " " + shq(root.terminalApp) + " " + shq(root.flakePath) + " " + shq(command);
+        } else {
+            cmd = cli("rebuild " + mode, root.flakePath);
+        }
+        sh(cmd, function (c, out, err, code) {
+            root.isBusy = false;
+            root.isRebuilding = false;
+            root.pollRebuild();
+            root.loadHistory();
+            const name = root.rebuildModeLabel(mode);
+            let message;
+            if (code === 0)
+                message = mode === "dry-build" ? qsTr("Dry build finished.") : mode === "boot" ? qsTr("Rebuild finished. Reboot to use it.") : qsTr("Rebuild finished.");
+            else if (code === 75)
+                message = qsTr("Another system change is running. Try again when it finishes.");
+            else
+                message = qsTr("Rebuild (%1) failed with status %2. %3").arg(name).arg(code).arg((err || "").trim().split("\n").slice(-3).join(" "));
+            root.pushToast(message, code !== 0);
+            root.notify(code === 0 ? qsTr("Nix — rebuild finished") : qsTr("Nix — rebuild failed"), message, code !== 0);
+            if (mode !== "dry-build") {
+                root.refreshGenerations();
+                root.probeDiskUsage(true);
+            }
+        });
+    }
+
+    function copyRebuildLog() {
+        sh(shq(root.scriptDir + "rebuild") + " log", function (cmd, out, err, code) {
+            if (code === 0 && out)
+                root.copyToClipboard(out);
+            else
+                root.pushToast(qsTr("There is no rebuild output to copy."), true);
+        });
+    }
+
     function requestAction(genNum, action) {
         if (!root.isNixOS)
             return;
@@ -3427,6 +3576,9 @@ Item {
     }
 
     onExpandedChanged: {
+        // A rebuild started in a terminal (or by another window) shows here too.
+        if (root.expanded && root.isNixOS && root.autoStart)
+            root.pollRebuild();
         // Pick up what the terminal view changed while the popup was closed.
         if (root.expanded && root._syncReady && !syncPushTimer.running)
             root.pullSharedSettings(null);

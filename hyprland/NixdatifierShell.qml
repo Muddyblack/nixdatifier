@@ -69,6 +69,7 @@ ShellRoot {
             property string customCommands: "[{\"label\":\"update\",\"cmd\":\"nix flake update\"},{\"label\":\"upnix\",\"cmd\":\"upnix\"}]"
             property bool showCommandButtons: true
             property string commandTerminal: ""
+            property string rebuildOutput: "terminal"
             property bool usePkexec: true
             property bool enableLiveSwitch: true
             property bool confirmBeforeRollback: true

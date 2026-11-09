@@ -44,7 +44,7 @@ help_entry() {
         notes) echo "notes INPUT#upstream releases and commits between your lock and latest#GitHub only; set GITHUB_TOKEN or github_token_file to lift the rate limit." ;;
         snapshot) echo "snapshot [REPO]#remember which config commit built the running generation#Run it after a rebuild (the window does it automatically) so 'diff --config' can compare your .nix files. 'generations' records it too when a flake is found." ;;
         update) echo "update [INPUT...]#nix flake update (all inputs, or only the named ones) in the flake directory#Asks first; recorded in history." ;;
-        rebuild) echo "rebuild#rebuild and switch the system#Runs your command labelled 'rebuild' (see: help commands) from the flake directory. Without one it runs: nixos-rebuild switch --flake DIR, as root (see --priv). Asks first; recorded in history." ;;
+        rebuild) echo "rebuild [switch|boot|test|dry-build|plan|status|log]#rebuild the system (switch by default)#Runs your command labelled 'rebuild' (see: help commands) from the flake directory, exactly as saved; it gets the mode in NIXDATIFIER_REBUILD_MODE. Without one it runs nh os MODE DIR when nh is installed, else nixos-rebuild MODE --flake DIR as root (see --priv), shown through nom in a terminal when nom is installed (NIXDATIFIER_REBUILD_TOOL=nixos-rebuild skips nh). boot makes it the next boot only, test activates it until reboot, dry-build only shows what would be built and fetched. plan: what each mode would run. status: the running (or last) rebuild, whichever front end started it: phase, derivations built, paths fetched, download size and its last lines (--limit N lines). log: its whole output. Asks first; one at a time with other changes; recorded in history." ;;
         run) echo "run [LABEL|N]#run one of your saved commands#The same quick-run commands the window's Commands panel shows (shared: nixdatifier commands). Runs from the flake directory, as you typed it (add sudo yourself). Without a label it lists them, or lets you pick in a terminal. Asks first; recorded in history." ;;
         commands) echo "commands [list|add LABEL CMD|rm LABEL]#your saved quick-run commands, shared with the window#Up to four, kept in the config file (key: commands, a JSON list of {label, cmd}) and kept in step with the window's Commands setting. Run them with: nixdatifier run LABEL." ;;
         watch) echo "watch [on|off|status|run]#periodic background check for flake updates, with a notification#on/off install or remove a systemd user timer (no window needed; default off). status shows it; run does one check now and notifies when updates are new since the last notice. The interval is the check_interval setting (default 6h; minutes, hours or days: 30m, 6h, 1d)." ;;
@@ -1069,16 +1069,137 @@ cmd_run() {
     ((rc == 3)) && die "no saved command called $want (see: nixdatifier commands)"
     return $rc
 }
+# ── Rebuild ─────────────────────────────────────────────────────────────────
+# Your command labelled rebuild always wins and runs exactly as saved (it gets
+# the mode in NIXDATIFIER_REBUILD_MODE). Without one: nh when installed, else
+# nixos-rebuild. In a terminal the build shows through nom when it is there;
+# without one (the window's output panel) Nix prints plain lines that
+# `rebuild status` turns into progress. The live log is shared: `rebuild status`
+# follows a rebuild whichever front end started it.
+REBUILD_MODES="switch boot test dry-build"
+rebuild_custom() { # the saved command labelled rebuild (any case), or nothing
+    commands_json | jq -r 'map(select((.label | ascii_downcase | gsub("^\\s+|\\s+$"; "")) == "rebuild")) | .[0].cmd // empty'
+}
+rebuild_tool() { # nh or nixos-rebuild; NIXDATIFIER_REBUILD_TOOL picks one
+    local want=${NIXDATIFIER_REBUILD_TOOL:-auto} t
+    case $want in nh | nixos-rebuild) command -v "$want" >/dev/null && echo "$want"; return 0 ;; esac
+    for t in nh nixos-rebuild; do command -v "$t" >/dev/null && { echo "$t"; return 0; }; done
+    return 0
+}
+rebuild_nh_help=''
+nh_supports() { # nh_supports FLAG: whether this nh knows the option
+    [[ -n $rebuild_nh_help ]] || rebuild_nh_help=$(nh os switch --help 2>&1 || true)
+    grep -q -- "$1" <<<"$rebuild_nh_help"
+}
+# rebuild_plan MODE TTY: sets rb_source (custom, nh, nixos-rebuild or empty),
+# rb_cmd (the command to run, privilege included) and rb_display (as typed).
+rebuild_plan() {
+    local mode=$1 tty=$2 custom tool p='' elev
+    rb_cmd=() rb_display='' rb_source=''
+    custom=$(rebuild_custom)
+    if [[ -n $custom ]]; then
+        rb_source=custom rb_cmd=(env "NIXDATIFIER_REBUILD_MODE=$mode" bash -c "$custom") rb_display=$custom
+        return 0
+    fi
+    tool=$(rebuild_tool)
+    # A dry build needs no root, and nh has no dry build of its own; without a
+    # flake (channels) nixos-rebuild finds the configuration by itself.
+    [[ $tool == nh ]] && [[ $mode == dry-build || -z $flake ]] && command -v nixos-rebuild >/dev/null && tool=nixos-rebuild
+    [[ -n $tool ]] || return 0
+    rb_source=$tool
+    [[ $mode == dry-build ]] || p=$(privilege 2>/dev/null) || p=''
+    if [[ $tool == nh ]]; then
+        if [[ $mode == dry-build ]]; then rb_cmd=(nh os build "$flake" --dry); else rb_cmd=(nh os "$mode" "$flake"); fi
+        # nh asks for root itself, after building as you.
+        if [[ $mode != dry-build && $EUID -ne 0 && $priv != sudo ]]; then
+            elev=$(nh_supports --elevation-strategy && echo --elevation-strategy || { nh_supports --elevation-program && echo --elevation-program; })
+            if [[ -n $elev ]]; then
+                if [[ $priv == none ]]; then rb_cmd+=("$elev" none); else rb_cmd+=("$elev" "$(resolved "$priv")"); fi
+            fi
+        fi
+        ((tty)) || ! nh_supports --no-nom || rb_cmd+=(--no-nom)
+        rb_display="${rb_cmd[*]}"
+        return 0
+    fi
+    rb_cmd=(${p:+"$(resolved "$p")"} "$(resolved nixos-rebuild)" "$mode" ${flake:+--flake "$flake"})
+    rb_display="${p:+$p }nixos-rebuild $mode${flake:+ --flake $flake}"
+    if ((tty)) && command -v nom >/dev/null; then
+        # shellcheck disable=SC2016
+        rb_cmd=(bash -c 'set -o pipefail; "$@" --log-format internal-json -v 2>&1 | nom --json' nixdatifier "${rb_cmd[@]}")
+        rb_display+=' |& nom'
+    fi
+}
+rebuild_status_text() { # the progress JSON on stdin, for people
+    jq -r "$JQ_DEFS"'
+        if .exists | not then "No rebuild has run yet."
+        else
+            (if .running then "Rebuilding (\(.mode)) · \(.phase)"
+             elif .interrupted then "The last rebuild (\(.mode)) stopped without a result"
+             elif .exitCode == 0 then "The last rebuild (\(.mode)) finished"
+             else "The last rebuild (\(.mode)) failed (exit \(.exitCode))" end),
+            "  runs: \(.command)",
+            (if .toBuild > 0 or .built > 0 then "  built: \(.built)\(if .toBuild > 0 then "/\(.toBuild)" else "" end) \(if ([.built, .toBuild] | max) == 1 then "derivation" else "derivations" end)" else empty end),
+            (if .toFetch > 0 or .fetched > 0 then "  fetched: \(.fetched)\(if .toFetch > 0 then "/\(.toFetch)" else "" end) \(if ([.fetched, .toFetch] | max) == 1 then "path" else "paths" end)\(if .downloadBytes > 0 then " (\(.downloadBytes | hb) download)" else "" end)" else empty end),
+            (if .running and .current != "" then "  now: \(.current)" else empty end),
+            (if .error != "" then "  error: \(.error)" else empty end),
+            (if (.tail | length) > 0 then "", (.tail[] | "  │ \(.)") else empty end)
+        end'
+}
 cmd_rebuild() {
-    local rc
-    resolve_flake
-    run_saved rebuild; rc=$?
-    ((rc == 3)) || return $rc
-    command -v nixos-rebuild >/dev/null || die 'nixos-rebuild not found: save a command labelled rebuild (nixdatifier commands add rebuild "...")'
-    confirm "Rebuild and switch with nixos-rebuild switch --flake $flake?"
+    local mode=${args[0]:-switch} tty=0 rc text custom_mode=0 dir
+    case $mode in
+        status)
+            "$here/rebuild" progress "$( ((limit)) && echo "$limit" || echo 15)" | if [[ $fmt == text ]]; then rebuild_status_text; elif [[ $fmt == plain ]]; then
+                jq -r '[.running, .mode, .phase, .built, .toBuild, .fetched, .toFetch, .downloadBytes, .exitCode] | map(if . == null then "" else tostring end) | @tsv'
+            else jq .; fi
+            return 0 ;;
+        log) "$here/rebuild" log || die 'no rebuild has run yet'; return 0 ;;
+        dry | dry-run | dryrun) mode="dry-build" ;;
+    esac
+    [[ $mode == plan ]] || [[ " $REBUILD_MODES " == *" $mode "* ]] || unknown_name 'rebuild mode' "$mode" "$REBUILD_MODES plan status log"
+    # Your own command may not need a flake, and nixos-rebuild works with channels.
+    find_flake || flake=''
+    dir=${flake:-$HOME}
+    if [[ $mode == plan ]]; then
+        # What each mode would run, here (a terminal) and without one (the window's panel).
+        local m json='{}' term panel src
+        mode=${args[1]:-switch}
+        [[ " $REBUILD_MODES " == *" $mode "* ]] || unknown_name 'rebuild mode' "$mode" "$REBUILD_MODES"
+        for m in $REBUILD_MODES; do
+            rebuild_plan "$m" 1; term=$rb_display
+            rebuild_plan "$m" 0; panel=$rb_display
+            [[ $m == "$mode" ]] && src=$rb_source
+            json=$(jq -c --arg m "$m" --arg t "$term" --arg p "$panel" '.[$m] = {terminal: $t, panel: $p}' <<<"$json")
+        done
+        jq -n --arg mode "$mode" --arg source "$src" --arg flake "$flake" --argjson commands "$json" \
+            --argjson nh "$(command -v nh >/dev/null && echo true || echo false)" --argjson nom "$(command -v nom >/dev/null && echo true || echo false)" \
+            --arg custom "$(rebuild_custom)" --arg modes "$REBUILD_MODES" \
+            '{mode: $mode, source: $source, custom: ($custom != ""), flake: $flake, nh: $nh, nom: $nom, modes: ($modes | split(" ")),
+              command: $commands[$mode], commands: $commands}' |
+            kv '"source\t\(.source)", "flake\t\(.flake)", "nh\t\(.nh)", "nom\t\(.nom)", (.modes[] as $m | "\($m)\t\(.commands[$m].terminal)")'
+        return 0
+    fi
+    [[ -t 1 && -t 2 ]] && tty=1
+    rebuild_plan "$mode" "$tty"
+    [[ -n $rb_source ]] || die 'neither nh nor nixos-rebuild found: save a command labelled rebuild (nixdatifier commands add rebuild "...")'
+    [[ $rb_source == custom && ${args[0]:-switch} != switch ]] && custom_mode=1
+    if ((dry)); then
+        printf '[dry-run] cd %s && %s\n' "$dir" "$rb_display"
+        ((custom_mode)) && msg "Your rebuild command runs as saved; it gets the mode in NIXDATIFIER_REBUILD_MODE=$mode."
+        return 0
+    fi
+    ((custom_mode)) && msg "Running your rebuild command as saved; it gets the mode in NIXDATIFIER_REBUILD_MODE=$mode."
+    case $mode in
+        switch) confirm "Rebuild and switch with: $rb_display?"; text='Rebuilding…' ;;
+        boot) confirm "Rebuild for the next boot with: $rb_display?"; text='Rebuilding for next boot…' ;;
+        test) confirm "Rebuild and activate until reboot with: $rb_display?"; text='Rebuilding (test)…' ;;
+        dry-build) confirm "Dry build with: $rb_display?"; text='Dry build…' ;;
+    esac
     # shellcheck disable=SC2016
-    change rebuild 'Rebuilding…' -1 'cd "$1" && $PRIV "$2" switch --flake "$1"' "$flake" "$(resolved nixos-rebuild)" || return $?
-    ((dry)) || (cmd_snapshot) >/dev/null 2>&1 || true
+    change rebuild "$text" -1 'cd "$1" && shift && "$@"' "$dir" "$here/rebuild" exec "$mode" "$rb_source" "$rb_display" -- "${rb_cmd[@]}"
+    rc=$?
+    ((rc == 0 && ! dry)) && [[ $mode == switch ]] && { (cmd_snapshot) >/dev/null 2>&1 || true; }
+    return "$rc"
 }
 
 # ── User profile (nix profile) ──────────────────────────────────────────────
@@ -1454,6 +1575,7 @@ completion_candidates() {
                     completion) choices='bash zsh fish install' ;;
                     watch) ((${#positional[@]} == 0)) && choices='on off status run' ;;
                     commands) ((${#positional[@]} == 0)) && choices='list add rm' ;;
+                    rebuild) ((${#positional[@]} == 0)) && choices="$REBUILD_MODES plan status log" ;;
                     profile) if ((${#positional[@]} == 0)); then choices='list install remove upgrade clean'; elif [[ ${positional[0]} =~ ^(remove|rm|upgrade|update)$ ]]; then choices=$(profile_json 2>/dev/null | jq -r '.[].name'); fi ;;
                     history) ((${#positional[@]} == 0)) && choices='list clear' ;;
                     optimise | cve) ((${#positional[@]} == 0)) && choices='status' ;;

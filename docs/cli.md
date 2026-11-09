@@ -37,7 +37,7 @@ Suggestions never run automatically. Missing option values also report a usage e
 | Dev environments | `dev` (`list`, `show DIR`, `shells DIR`, `pkgs DIR SHELL`, `clear DIR`) |
 | Interactive | `nixdatifier` alone (or `menu`) opens the [interactive view](#interactive-view). `switch`, `boot` and `delete` without a number let you pick a generation from a list (fzf if installed) |
 | Shell | `completion install` sets up your shell in one step; `completion bash\|zsh\|fish` prints the script |
-| Commands | `commands [list\|add LABEL CMD\|rm LABEL]` manages your quick-run commands, the same four the window's Commands panel shows; `run LABEL` runs one from the flake directory, as typed; `rebuild` runs the one labelled `rebuild`, or `nixos-rebuild switch --flake DIR` as root when there is none. All ask first and land in History |
+| Commands | `commands [list\|add LABEL CMD\|rm LABEL]` manages your quick-run commands, the same four the window's Commands panel shows; `run LABEL` runs one from the flake directory, as typed; `rebuild [switch\|boot\|test\|dry-build]` runs the one labelled `rebuild` exactly as saved (it gets the mode in `NIXDATIFIER_REBUILD_MODE`), or `nh os MODE DIR` when `nh` is installed, else `nixos-rebuild MODE --flake DIR` as root; a terminal shows it through `nom` when installed. `rebuild plan` prints what each mode would run, `rebuild status` the running or last rebuild (phase, derivations built, paths fetched, download size, last lines; `--json` has `built`, `toBuild`, `fetched`, `toFetch`, `downloadBytes`, `exitCode`, `tail`), `rebuild log` its output. Status follows a rebuild started anywhere: terminal, TUI or window. All ask first and land in History |
 | Update checks | `watch on\|off\|status\|run`: a systemd user timer checks the flake inputs every `check_interval` (default `6h`) and sends a desktop notification for new updates. Off by default; also under *Update checks* in the interactive view, or `programs.nixdatifier.tui.updateCheck` in the Nix modules |
 | Cleanup | `clean` deletes old generations (keeps 5, drops older than 14 days) and collects garbage in one go |
 
@@ -146,6 +146,8 @@ There is no config file; it is flags and environment, so it works the same in a 
 | --- | --- |
 | `NIXDATIFIER_FLAKE` | flake directory (else `/etc/nixos`, `~/nixos-config`, `~/.config/nixos`) |
 | `NIXDATIFIER_PRIV` | `sudo`, `doas`, `pkexec` or `none` |
+| `NIXDATIFIER_REBUILD_TOOL` | `nh` or `nixos-rebuild`: which one `rebuild` uses when you saved no `rebuild` command (default: `nh` when installed) |
+| `NIXDATIFIER_REBUILD_MODE` | set for your own `rebuild` command: `switch`, `boot`, `test` or `dry-build` |
 | `NIXDATIFIER_CONFIG_REPO` | git repo whose commits `diff --config` compares (default: the flake) |
 | `NIXDATIFIER_PERSIST` | extra impermanence roots, `/a:/b` |
 | `NIXDATIFIER_SECRETS`, `NIXDATIFIER_SECRETS_SOURCE` | secrets directory and source file |

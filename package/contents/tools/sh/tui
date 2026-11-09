@@ -782,7 +782,7 @@ settings_rows() { # key<TAB>display
 settings_preview() { # settings_preview KEY
     local line
     case $1 in
-        @commands) cmd_rows | cut -f2-; printf '\n%sEnter: run, add or remove them (Rebuild is the first row). The window shows the same ones.%s\n' "$D" "$X"; return ;;
+        @commands) cmd_rows | cut -f2-; printf '\n%sEnter: run, add or remove them (Rebuild comes first). The window shows the same ones.%s\n' "$D" "$X"; return ;;
         @checks) watch_rows | cut -f2-; printf '\n%sEnter: switch background checks on or off, set how often.%s\n' "$D" "$X"; return ;;
     esac
     printf '%s%s%s\n\n%s\n' "$B" "$1" "$X" "$(settings_desc "$1")"
@@ -854,12 +854,24 @@ profile_screen() {
 # ── Commands ────────────────────────────────────────────────────────────────
 # The quick-run commands of the window's Commands panel (nixdatifier commands).
 cmd_rows() { # label<TAB>display, one per saved command; Rebuild first
-    printf '@rebuild\t%s⟳ Rebuild%s  %sswitch the system (your command labelled rebuild, else nixos-rebuild)%s\n' "$B" "$X" "$D" "$X"
+    local plan
+    plan=$("$NXD_CLI" --json rebuild plan 2>/dev/null)
+    if [[ $(jq -r '.custom // false' <<<"$plan" 2>/dev/null) == true ]]; then
+        printf '@rebuild:switch\t%s⟳ Rebuild%s  %syour command labelled rebuild, as saved%s\n' "$B" "$X" "$D" "$X"
+    else
+        printf '@rebuild:switch\t%s⟳ Rebuild%s            %sbuild and switch now%s\n' "$B" "$X" "$D" "$X"
+        printf '@rebuild:boot\t%s⟳ Rebuild for boot%s   %sbuild, make it the next boot%s\n' "$B" "$X" "$D" "$X"
+        printf '@rebuild:test\t%s⟳ Test build%s         %sbuild and activate until reboot%s\n' "$B" "$X" "$D" "$X"
+        printf '@rebuild:dry-build\t%s⟳ Dry build%s          %swhat would be built and fetched%s\n' "$B" "$X" "$D" "$X"
+    fi
     "$NXD_CLI" --json commands 2>/dev/null | jq -r --arg B "$B" --arg X "$X" --arg D "$D" '.[] | "\(.label)\t\($B)\(.label)\($X)  \($D)\(.cmd)\($X)"'
 }
 cmd_preview() { # cmd_preview LABEL
     printf '%sWhat Enter would run%s %s(in the flake directory, as typed)%s\n\n' "$B$Y" "$X" "$D" "$X"
-    if [[ $1 == @rebuild ]]; then "$NXD_CLI" "${clr[@]}" --dry-run --yes rebuild 2>&1
+    if [[ $1 == @rebuild:* ]]; then
+        "$NXD_CLI" "${clr[@]}" --dry-run --yes rebuild "${1#@rebuild:}" 2>&1
+        printf '\n%sLast rebuild%s %s(any front end; nixdatifier rebuild status)%s\n\n' "$B$Y" "$X" "$D" "$X"
+        "$NXD_CLI" "${clr[@]}" --limit 8 rebuild status 2>&1
     else "$NXD_CLI" "${clr[@]}" --dry-run --yes run "$1" 2>&1; fi
 }
 cmd_add() {
@@ -880,7 +892,7 @@ commands_screen() {
         --bind 'start:reload($NXD_TUI _cmdrows)' \
         --bind 'enter:execute($NXD_TUI _cmdrun {1})+reload($NXD_TUI _cmdrows)' \
         --bind 'ctrl-a:execute($NXD_TUI _cmdadd)+reload($NXD_TUI _cmdrows)' \
-        --bind 'ctrl-d:execute-silent([[ {1} == @rebuild ]] || $NXD_CLI commands rm {1} >/dev/null 2>&1)+reload($NXD_TUI _cmdrows)' \
+        --bind 'ctrl-d:execute-silent([[ {1} == @rebuild* ]] || $NXD_CLI commands rm {1} >/dev/null 2>&1)+reload($NXD_TUI _cmdrows)' \
         --bind 'backward-eof:abort' </dev/null >/dev/null
 }
 
@@ -979,6 +991,7 @@ home_rows() {
     item diff '±' "$P" 'What changed' 'newest generation vs previous' 'Enter: all package changes'
     item compare '⇄' "$P" Compare 'pick any two generations' 'Enter: choose two to compare'
     item updates '↑' "$O" Updates 'flake inputs behind upstream' 'Enter: inputs, notes, update'
+    item rebuild '⟳' "$G" Rebuild 'switch, boot, test or dry build' 'Enter: pick how to rebuild'
     item health '✚' "$G" Health 'release, reboot, units, caches' 'Enter: full screen'
     # Only with a scanner (vulnix, or cve_nix_run on): otherwise nothing changes.
     if "$NXD_CLI" --json cve status 2>/dev/null | jq -e '.scanner != ""' >/dev/null 2>&1; then
@@ -1020,6 +1033,11 @@ home_preview() { # home_preview KEY
                 echo; printf '%sEnter for every input, its release notes and updating it.%s\n' "$D" "$X"
             else printf '%s\n\n%sWhat was checked:%s\n\n' "$json" "$B" "$X"; cli doctor; fi ;;
         history) history_rows | head -40 | cut -f2- ;;
+        rebuild)
+            "$NXD_CLI" "${clr[@]}" --dry-run --yes rebuild 2>&1
+            printf '\n%sLast rebuild%s %s(from here, a terminal or the window)%s\n\n' "$B$Y" "$X" "$D" "$X"
+            "$NXD_CLI" "${clr[@]}" --limit 12 rebuild status 2>&1
+            printf '\n%sEnter: Switch, Boot, Test or Dry build (your command labelled rebuild runs instead, as saved).%s\n' "$D" "$X" ;;
         cve)
             # The last scan only: a preview never starts one (the first downloads the NVD database).
             cli cve status
@@ -1054,6 +1072,7 @@ home_enter() { # home_enter KEY
         about) working About; about_card fetch | page 'About' ;;
         diff) changes_screen '' '' 'newest vs previous' ;;
         history) history_screen ;;
+        rebuild) commands_screen ;;
         dev) dev_screen ;;
         persist) persist_screen ;;
         profiles) profile_screen ;;
@@ -1111,7 +1130,7 @@ numbered_menu() {
    4  What changed      newest generation vs previous
    5  Switch            pick a generation to run now
    6  Clean up          old generations and garbage
-   r  Rebuild           run your rebuild command
+   r  Rebuild           switch to your configuration (your rebuild command, else nh/nixos-rebuild)
    7  Disk              store size, what GC could free
    8  Dev environments  direnv projects and their cache
    9  History           what earlier changes did
@@ -1154,7 +1173,7 @@ case ${1:-} in
     _profpv) prof_preview "$2" ;;
     _profadd) prof_install ;;
     _cmdrows) cmd_rows ;;
-    _cmdrun) if [[ $2 == @rebuild ]]; then act rebuild; else act run "$2"; fi ;;
+    _cmdrun) if [[ $2 == @rebuild:* ]]; then act rebuild "${2#@rebuild:}"; else act run "$2"; fi ;;
     _cmdpv) cmd_preview "$2" ;;
     _cmdadd) cmd_add ;;
     _watchrows) watch_rows ;;

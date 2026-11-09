@@ -2121,8 +2121,65 @@ class Cli(HelperCase):
         self.assertIn("custom-rebuild", result.stdout)
         self.cli_run("commands", "rm", "rebuild")
         self.script(self.bin / "nixos-rebuild", f"echo \"nixos-rebuild $*\" >> '{self.calls}'\n")
+        self.env["NIXDATIFIER_REBUILD_TOOL"] = "nixos-rebuild"
         dry = self.cli_run("--dry-run", "--priv", "none", "--flake", str(flake), "rebuild")
         self.assertIn("switch --flake", dry.stdout)
+
+    def test_rebuild_modes_plan_and_live_status(self):
+        flake = self.root / "flake"
+        flake.mkdir()
+        (flake / "flake.nix").write_text("{}")
+        self.script(self.bin / "nixos-rebuild", f"echo \"nixos-rebuild $*\" >> '{self.calls}'\n")
+        env = {"NIXDATIFIER_REBUILD_TOOL": "nixos-rebuild"}
+        self.env.update(env)
+        plan = json.loads(self.cli_run("--json", "--priv", "none", "--flake", str(flake), "rebuild", "plan").stdout)
+        self.assertEqual(plan["source"], "nixos-rebuild")
+        self.assertFalse(plan["custom"])
+        self.assertEqual(plan["modes"], ["switch", "boot", "test", "dry-build"])
+        self.assertIn("nixos-rebuild boot --flake", plan["commands"]["boot"]["panel"])
+        for mode in ("boot", "test", "dry-build"):
+            dry = self.cli_run("--dry-run", "--priv", "none", "--flake", str(flake), "rebuild", mode)
+            self.assertIn(f"nixos-rebuild {mode} --flake", dry.stdout)
+        self.assertEqual(self.cli_run("--flake", str(flake), "rebuild", "bogus").returncode, 2)
+        # A real run keeps a live log that `rebuild status` reads, with Nix's own counts.
+        self.script(
+            self.bin / "nixos-rebuild",
+            "echo 'these 2 derivations will be built:'\n"
+            "echo \"building '/nix/store/aaa-foo-1.drv'...\"\n"
+            "echo \"copying path '/nix/store/bbb-bar-2' from 'https://cache.nixos.org'...\"\n"
+            "echo 'activating the configuration...'\n",
+        )
+        ran = self.cli_run("--yes", "--priv", "none", "--flake", str(flake), "rebuild")
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        state = json.loads(self.cli_run("--json", "rebuild", "status").stdout)
+        self.assertTrue(state["exists"])
+        self.assertFalse(state["running"])
+        self.assertEqual(state["exitCode"], 0)
+        self.assertEqual((state["built"], state["toBuild"], state["fetched"]), (1, 2, 1))
+        self.assertIn("activating the configuration...", state["tail"])
+        self.assertIn("finished", self.cli_run("rebuild", "status").stdout)
+        self.assertIn("building '/nix/store/aaa-foo-1.drv'", self.cli_run("rebuild", "log").stdout)
+        self.assertEqual(json.loads(self.cli_run("--json", "history").stdout)[0]["action"], "rebuild")
+
+    def test_custom_rebuild_runs_as_saved_with_the_mode(self):
+        flake = self.root / "flake"
+        flake.mkdir()
+        (flake / "flake.nix").write_text("{}")
+        self.cli_run("commands", "add", "Rebuild", 'echo "mode=$NIXDATIFIER_REBUILD_MODE"; exit 3')
+        plan = json.loads(self.cli_run("--json", "--flake", str(flake), "rebuild", "plan").stdout)
+        self.assertTrue(plan["custom"])
+        self.assertEqual(plan["source"], "custom")
+        result = self.cli_run("--yes", "--flake", str(flake), "rebuild", "test")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("mode=test", result.stdout)
+        state = json.loads(self.cli_run("--json", "rebuild", "status").stdout)
+        self.assertEqual((state["exitCode"], state["source"]), (3, "custom"))
+        self.assertFalse(self.calls.exists(), "nh and nixos-rebuild are never touched")
+
+    def test_rebuild_status_before_any_rebuild(self):
+        state = json.loads(self.cli_run("--json", "rebuild", "status").stdout)
+        self.assertFalse(state["exists"])
+        self.assertIn("No rebuild", self.cli_run("rebuild", "status").stdout)
 
     def test_typo_suggestions_do_not_run_commands(self):
         for args, suggestion in (

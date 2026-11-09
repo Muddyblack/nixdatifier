@@ -276,33 +276,74 @@ Window {
                 win.capture("commands-narrow");
             if (stage === 26) {
                 app.closeCommands();
+                win.width = 600;
+                win.height = 740;
+                core.rebuildPlan = {
+                    source: "nh",
+                    custom: false,
+                    commands: {
+                        "switch": {
+                            terminal: "nh os switch /etc/nixos",
+                            panel: "nh os switch /etc/nixos --no-nom"
+                        }
+                    }
+                };
+                cfg.rebuildOutput = "panel";
+                core.rebuildState = {
+                    exists: true,
+                    running: true,
+                    mode: "switch",
+                    command: "nh os switch /etc/nixos --no-nom",
+                    phase: "building",
+                    built: 14,
+                    toBuild: 31,
+                    fetched: 22,
+                    toFetch: 40,
+                    downloadBytes: 182000000,
+                    current: "firefox-132.0",
+                    startedAt: 1790000000,
+                    lineCount: 3,
+                    tail: ["these 31 derivations will be built:", "building '/nix/store/abc-firefox-132.0.drv'...", "copying path '/nix/store/def-glibc-2.40' from 'https://cache.nixos.org'..."]
+                };
+                core.isRebuilding = true;
+                app.openRebuild();
+            }
+            if (stage === 27)
+                win.capture("rebuild");
+            if (stage === 28) {
+                core.isRebuilding = false;
+                core.rebuildState = null;
+                app.closeRebuild();
+                cfg.rebuildOutput = "terminal";
+            }
+            if (stage === 29) {
                 core.activeViewMode = "timeline";
                 win.findObject(app, "generationSearch").text = "no matching generation";
             }
-            if (stage === 27)
+            if (stage === 30)
                 win.capture("empty-search");
-            if (stage === 28) {
+            if (stage === 31) {
                 win.findObject(app, "generationSearch").text = "";
                 win.width = 520;
                 win.height = 760;
                 core.doctorResult = core.parseDoctor(["about\tinfo\tThis system\tnixdatifier 2.2.2 · NixOS 26.05 (Yarara) · Linux 6.12 · nix (Nix) 2.34.0\t\t\t\t\t", "nixos\tok\tRunning on NixOS\tNixOS 26.05 (Yarara)\t\t\t\t\t", "tools\tok\tRequired tools\tnix, nix-store, nix-env and jq found; runs as root with sudo\t\t\t\t\t", "profiles\tfail\tProfiles readable\t/nix/var/nix/profiles exists but cannot be listed: a permission problem, not a missing system.\tIt should be readable by everyone (drwxr-xr-x root).\tls -ld /nix/var/nix/profiles\t\tls /nix/var/nix/profiles\tls: cannot open directory '/nix/var/nix/profiles': Permission denied", "flake\tfail\tFlake path\tThe configured folder /home/me/nixos does not exist.\tPick your config folder in the settings, or clear the path to search the usual places.\tnixdatifier config set flake /path/to/your/flake\tconfigure\t\t", "optional\tinfo\tOptional tools\tNot found: fzf (the terminal menu). Everything else works without them.\t\t\t\t\t"].join("\n"));
                 core.generations = [];
             }
-            if (stage === 29)
+            if (stage === 32)
                 win.capture("doctor");
-            if (stage === 30) {
+            if (stage === 33) {
                 core.flakeUpdates = [];
                 core.lastFlakeCheckTime = "";
                 core.activeViewMode = "updates";
             }
-            if (stage === 31)
+            if (stage === 34)
                 win.capture("doctor-updates");
-            if (stage === 32) {
+            if (stage === 35) {
                 win.width = 600;
                 win.height = 900;
                 core.activeViewMode = "health";
             }
-            if (stage === 33) {
+            if (stage === 36) {
                 // After the tab's own probes (the fake helpers answer nothing).
                 core.healthResult = core.parseHealth("nixos=1\nrelease=26.05\neol=2026-12-31\nreboot_required=0\nkernel_running=6.12.42\nkernel_next=6.12.42\nnix=nix (Nix) 2.34.0\x1e\x1ehttps://cache.nixos.org\tok\t120\n");
                 core.cveStatus = {
@@ -364,9 +405,9 @@ Window {
                     ]
                 };
             }
-            if (stage === 34)
+            if (stage === 37)
                 win.capture("health-cve");
-            if (stage === 35) {
+            if (stage === 38) {
                 core.flakeUpdates = [
                     {
                         input: "nixpkgs",
@@ -420,9 +461,9 @@ Window {
                     nixpkgs: true
                 };
             }
-            if (stage === 36)
+            if (stage === 39)
                 win.capture("updates-cve");
-            if (stage === 37)
+            if (stage === 40)
                 Qt.quit();
         }
     }

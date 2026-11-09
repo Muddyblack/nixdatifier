@@ -1612,6 +1612,59 @@ Item {
             compare(Object.keys(core.impermanenceListing.children).length, 0);
             verify(!timer.running, "Nothing is left to release");
         }
+        function test_rebuild_progress_shows_counts_and_fraction() {
+            core.isRebuilding = false;
+            compare(core.rebuildFraction, -1);
+            core.rebuildState = {
+                exists: true,
+                running: true,
+                phase: "building",
+                built: 2,
+                toBuild: 6,
+                fetched: 1,
+                toFetch: 2,
+                downloadBytes: 0
+            };
+            verify(core.rebuildRunning, "A rebuild started elsewhere shows as running");
+            compare(core.rebuildFraction, 3 / 8);
+            verify(core.rebuildProgressLabel.indexOf("2/6") >= 0);
+            verify(core.rebuildProgressLabel.indexOf("1/2") >= 0);
+            compare(core.busyLabel, core.rebuildProgressLabel);
+            core.rebuildState = {
+                exists: true,
+                running: false,
+                exitCode: 0,
+                phase: "done"
+            };
+            verify(!core.rebuildRunning);
+            core.rebuildState = null;
+        }
+        function test_rebuild_runs_through_the_cli_and_reports_failure() {
+            cfg.rebuildOutput = "panel";
+            core.startRebuild("boot");
+            verify(core.isBusy);
+            verify(core.isRebuilding);
+            verify(jobs[0].cmd.indexOf("nixdatifier") >= 0);
+            verify(jobs[0].cmd.indexOf("--yes") >= 0);
+            verify(jobs[0].cmd.indexOf(" rebuild boot") >= 0);
+            verify(jobs[0].cmd.indexOf("/terminal") < 0, "The output panel does not open a terminal");
+            core.startRebuild("switch");
+            compare(jobs.length, 1, "A second rebuild waits for the first");
+            jobs[0].callback(jobs[0].cmd, "", "boom", 1);
+            verify(!core.isBusy);
+            verify(!core.isRebuilding);
+            verify(core.toasts[core.toasts.length - 1].err);
+            core.toasts = [];
+            cfg.rebuildOutput = "terminal";
+            jobs = [];
+            core.startRebuild("test");
+            verify(jobs[0].cmd.indexOf("/terminal") >= 0, "Terminal output uses the terminal wrapper");
+            verify(jobs[0].cmd.indexOf("rebuild test") >= 0);
+            jobs[0].callback(jobs[0].cmd, "", "", 0);
+            verify(!core.isBusy);
+            core.startRebuild("nonsense");
+            verify(!core.isBusy, "Unknown modes are ignored");
+        }
         function test_hash_error_is_not_success() {
             core.runHashProbe("url", "https://example.invalid");
             jobs[0].callback(jobs[0].cmd, "", "network error", 1);

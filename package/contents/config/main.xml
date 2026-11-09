@@ -58,6 +58,10 @@
         <entry name="commandTerminal" type="String">
             <default></default>
         </entry>
+        <!-- Where Rebuild shows its output: "terminal" | "panel" -->
+        <entry name="rebuildOutput" type="String">
+            <default>terminal</default>
+        </entry>
 
         <!-- Rollback / Auth -->
         <entry name="usePkexec" type="Bool">
