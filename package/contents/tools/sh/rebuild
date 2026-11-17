@@ -58,7 +58,10 @@ case "$mode" in
         # "building '…drv'", "copying path '…'"), so they work for nixos-rebuild,
         # nh --no-nom and most custom scripts alike. nom draws its own progress;
         # its frames carry no such lines, and the counts then stay at zero.
-        counts=$(clean <"$dir/log" 2>/dev/null | awk '
+        # One pass over the log: this runs every second while a rebuild goes,
+        # and a long build log is megabytes. awk prints the counts line first,
+        # then the last LINES lines it kept in a ring.
+        clean <"$dir/log" 2>/dev/null | awk -v keep="$lines" '
             function bytes(n, u) {
                 if (u ~ /^K/) return n * 1024
                 if (u ~ /^M/) return n * 1048576
@@ -73,6 +76,7 @@ case "$mode" in
                 }
             }
             BEGIN { phase = "evaluating" }
+            keep > 0 { ring[NR % keep] = $0 }
             /^these [0-9]+ derivations will be built/ { toBuild += $2; if (phase == "evaluating") phase = "building" }
             /^this derivation will be built/ { toBuild += 1; if (phase == "evaluating") phase = "building" }
             /^these [0-9]+ paths will be fetched/ { toFetch += $2; download($0); if (phase == "evaluating") phase = "building" }
@@ -83,15 +87,18 @@ case "$mode" in
             /^copying path \047\/nix\/store\// {
                 fetched++; c = $0; sub(/^copying path \047\/nix\/store\/[a-z0-9]+-/, "", c); sub(/\047.*/, "", c); current = c; phase = "building"
             }
-            /activating the configuration|Activating configuration|^setting up \/etc|^(stopping|starting|restarting|reloading) the following units|^updating GRUB|^installing the GRUB|systemd-boot/ { phase = "activating"; current = "" }
+            # index() first: one regex mixing anchored and unanchored branches
+            # is several times slower in gawk, on every line of the log.
+            index($0, "activating the configuration") || index($0, "Activating configuration") || index($0, "systemd-boot") || /^(setting up \/etc|(stopping|starting|restarting|reloading) the following units|updating GRUB|installing the GRUB)/ { phase = "activating"; current = "" }
             /^error:/ && error == "" { error = $0; sub(/^error:[ ]*/, "", error) }
             END {
                 gsub(/\037/, " ", current); gsub(/\037/, " ", error)
                 printf "%s\037%d\037%d\037%d\037%d\037%.0f\037%s\037%s\037%d\n", phase, built, toBuild, fetched, toFetch, dl, current, error, NR
-            }')
-        IFS=$'\x1f' read -r phase built to_build fetched to_fetch dl current error count <<<"$counts"
+                for (i = (NR > keep ? NR - keep + 1 : 1); keep > 0 && i <= NR; i++) print ring[i % keep]
+            }' | {
+        IFS=$'\x1f' read -r phase built to_build fetched to_fetch dl current error count
         [[ "$running" == true ]] || phase="done"
-        clean <"$dir/log" 2>/dev/null | tail -n "$lines" | jq -Rn \
+        jq -Rn \
             --argjson running "$running" --argjson interrupted "$interrupted" \
             --arg mode "$(get mode)" --arg source "$(get source)" --arg command "$(get command)" \
             --arg started "$(get started)" --arg finished "$(get finished)" --arg exit "$exit_code" \
@@ -103,6 +110,7 @@ case "$mode" in
              startedAt: ($started | num), finishedAt: ($finished | num), exitCode: ($exit | num),
              phase: $phase, built: $built, toBuild: $toBuild, fetched: $fetched, toFetch: $toFetch,
              downloadBytes: $dl, current: $current, error: $error, lineCount: $count, tail: [inputs]}'
+        }
         ;;
     log)
         [[ -f "$dir/log" ]] || exit 1

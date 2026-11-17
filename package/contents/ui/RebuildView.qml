@@ -59,7 +59,8 @@ FocusScope {
     readonly property string sourceLabel: !plan ? "" : custom ? qsTr("Your command") : plan.source === "nh" ? "nh" : plan.source === "nixos-rebuild" ? "nixos-rebuild" : ""
     readonly property bool finished: !!progress && !running && progress.exists
     readonly property bool failed: finished && (progress.interrupted || progress.exitCode !== 0)
-    readonly property string logText: progress && progress.tail ? progress.tail.join("\n") : ""
+    // Only while shown: the log is replaced on every poll of a running rebuild.
+    readonly property string logText: visible && progress && progress.tail ? progress.tail.join("\n") : ""
 
     signal closeRequested
     signal startRequested(string mode)
