@@ -649,9 +649,12 @@ Item {
     // How each machine is: online, offline, unreachable or auth needed, its
     // generations, reboot, flake revision against HEAD, last seen. One probe per
     // host, in parallel, each with a timeout; `only` limits it to one name.
+    property double _lastHostProbeMs: 0
     function probeHostStatuses(only) {
         if (!root.hasHosts)
             return;
+        if (!only)
+            root._lastHostProbeMs = Date.now();
         root.isProbingHosts = true;
         let pending = 0;
         for (const h of root.reachableHosts) {
@@ -3114,12 +3117,18 @@ Item {
     }
 
     property bool _rebuildPolling: false
+    property string _rebuildRaw: ""
     function pollRebuild() {
         if (root._rebuildPolling)
             return;
         root._rebuildPolling = true;
         sh(shq(root.scriptDir + "rebuild") + " progress 400", function (cmd, out, err, code) {
             root._rebuildPolling = false;
+            // Nothing new (a long build step, a quiet activation): keep the
+            // object, so the progress bindings and the 400-line log stay put.
+            if (out === root._rebuildRaw && root.rebuildState)
+                return;
+            root._rebuildRaw = out || "";
             let st = null;
             try {
                 st = JSON.parse(out || "null");
@@ -3809,7 +3818,8 @@ Item {
             root.pullSharedSettings(null);
         if (root.initialized && root.settings && root.expanded && root.autoStart) {
             root.syncFlakeContext(false);
-            if (root.hasHosts)
+            // Every machine is asked over ssh: not on every open.
+            if (root.hasHosts && Date.now() - root._lastHostProbeMs > 60000)
                 root.probeHostStatuses("");
             if (root.isNixOS && root.settings.autoRefreshOnOpen)
                 refreshGenerations();

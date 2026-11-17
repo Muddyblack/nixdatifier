@@ -227,7 +227,8 @@ Item {
     }
 
     // ── Detail panel ──────────────────────────────────────────────────────────
-    Rectangle {
+    // Built only while open: a list holds hundreds of rows, and most stay closed.
+    Loader {
         id: detailPanel
         anchors {
             left: parent.left
@@ -236,282 +237,285 @@ Item {
             topMargin: 2
             leftMargin: 18
         }
+        active: root.isOpen
         visible: root.isOpen
-        implicitHeight: detailCol.implicitHeight + 12
-        radius: 5
-        color: "transparent"
-        border.width: 0
+        sourceComponent: Rectangle {
+            implicitHeight: detailCol.implicitHeight + 12
+            radius: 5
+            color: "transparent"
+            border.width: 0
 
-        ColumnLayout {
-            id: detailCol
-            anchors {
-                left: parent.left
-                right: parent.right
-                top: parent.top
-                margins: 8
-            }
-            spacing: 5
-
-            Text {
-                Layout.fillWidth: true
-                text: root.pkgName
-                color: root.textColor
-                wrapMode: Text.WrapAnywhere
-                font.pixelSize: 10 * root.fs
-                font.weight: Font.Medium
-            }
-
-            // Version row — upgrade
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 8
-                visible: root.pkgType !== "added" && root.pkgType !== "removed" && root.pkgOldVersion !== "" && root.pkgNewVersion !== ""
-                Text {
-                    text: qsTr("Version")
-                    color: root.textColor
-                    opacity: 0.65
-                    font.pixelSize: root.fpx(8)
-                    Layout.minimumWidth: 65
+            ColumnLayout {
+                id: detailCol
+                anchors {
+                    left: parent.left
+                    right: parent.right
+                    top: parent.top
+                    margins: 8
                 }
+                spacing: 5
+
                 Text {
-                    text: root.pkgOldVersion + "  →  " + root.pkgNewVersion
-                    color: root.textColor
-                    opacity: 0.92
-                    font.pixelSize: root.fpx(8.5)
-                    font.family: UI.Theme.fixedWidthFont.family
-                    font.bold: true
                     Layout.fillWidth: true
-                    elide: Text.ElideRight
+                    text: root.pkgName
+                    color: root.textColor
+                    wrapMode: Text.WrapAnywhere
+                    font.pixelSize: 10 * root.fs
+                    font.weight: Font.Medium
                 }
-            }
 
-            // Version row — added
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 8
-                visible: root.pkgType === "added" && root.pkgNewVersion !== ""
-                Text {
-                    text: qsTr("Version")
-                    color: root.textColor
-                    opacity: 0.65
-                    font.pixelSize: root.fpx(8)
-                    Layout.minimumWidth: 65
-                }
-                Text {
-                    text: root.pkgNewVersion
-                    color: root.sigil
-                    opacity: 0.92
-                    font.pixelSize: root.fpx(8.5)
-                    font.family: UI.Theme.fixedWidthFont.family
-                    font.bold: true
-                }
-            }
-
-            // Version row — removed
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 8
-                visible: root.pkgType === "removed" && root.pkgOldVersion !== ""
-                Text {
-                    text: qsTr("Version")
-                    color: root.textColor
-                    opacity: 0.65
-                    font.pixelSize: root.fpx(8)
-                    Layout.minimumWidth: 65
-                }
-                Text {
-                    text: root.pkgOldVersion
-                    color: root.sigil
-                    opacity: 0.92
-                    font.pixelSize: root.fpx(8.5)
-                    font.family: UI.Theme.fixedWidthFont.family
-                    font.bold: true
-                }
-            }
-
-            // Size delta
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 8
-                visible: root.pkgSize !== ""
-                Text {
-                    text: qsTr("Size delta")
-                    color: root.textColor
-                    opacity: 0.65
-                    font.pixelSize: root.fpx(8)
-                    Layout.minimumWidth: 65
-                }
-                Text {
-                    text: root.pkgSize
-                    color: root.sigil
-                    opacity: 0.92
-                    font.pixelSize: root.fpx(8.5)
-                    font.family: UI.Theme.fixedWidthFont.family
-                    font.bold: true
-                }
-            }
-
-            // Store path + copy
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 8
-                Text {
-                    text: qsTr("Store path")
-                    color: root.textColor
-                    opacity: 0.65
-                    font.pixelSize: root.fpx(8)
-                    Layout.minimumWidth: 65
-                }
-                Text {
-                    id: storePath
-                    text: root.pathResult ? root.pathResult.path || root.pathResult.message : root.pkg.storeProfile ? qsTr("Resolving store path…") : qsTr("Not built yet")
-                    color: root.textColor
-                    opacity: 0.8
-                    font.pixelSize: 9 * root.fs
-                    font.family: UI.Theme.fixedWidthFont.family
-                    elide: Text.ElideMiddle
+                // Version row — upgrade
+                RowLayout {
                     Layout.fillWidth: true
-                }
-                Rectangle {
-                    implicitWidth: 20
-                    implicitHeight: 17
-                    radius: 4
-                    color: copyMa.containsMouse ? Qt.rgba(1, 1, 1, 0.10) : Qt.rgba(1, 1, 1, 0.04)
-                    border.color: Qt.rgba(1, 1, 1, 0.14)
-                    border.width: 1
-                    Behavior on color {
-                        ColorAnimation {
-                            duration: 100
-                        }
+                    spacing: 8
+                    visible: root.pkgType !== "added" && root.pkgType !== "removed" && root.pkgOldVersion !== "" && root.pkgNewVersion !== ""
+                    Text {
+                        text: qsTr("Version")
+                        color: root.textColor
+                        opacity: 0.65
+                        font.pixelSize: root.fpx(8)
+                        Layout.minimumWidth: 65
                     }
-                    UI.Icon {
-                        anchors.centerIn: parent
-                        source: root.svg("ic_copy")
-                        implicitWidth: 10
-                        implicitHeight: 10
-                        isMask: true
+                    Text {
+                        text: root.pkgOldVersion + "  →  " + root.pkgNewVersion
+                        color: root.textColor
+                        opacity: 0.92
+                        font.pixelSize: root.fpx(8.5)
+                        font.family: UI.Theme.fixedWidthFont.family
+                        font.bold: true
+                        Layout.fillWidth: true
+                        elide: Text.ElideRight
+                    }
+                }
+
+                // Version row — added
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    visible: root.pkgType === "added" && root.pkgNewVersion !== ""
+                    Text {
+                        text: qsTr("Version")
+                        color: root.textColor
+                        opacity: 0.65
+                        font.pixelSize: root.fpx(8)
+                        Layout.minimumWidth: 65
+                    }
+                    Text {
+                        text: root.pkgNewVersion
+                        color: root.sigil
+                        opacity: 0.92
+                        font.pixelSize: root.fpx(8.5)
+                        font.family: UI.Theme.fixedWidthFont.family
+                        font.bold: true
+                    }
+                }
+
+                // Version row — removed
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    visible: root.pkgType === "removed" && root.pkgOldVersion !== ""
+                    Text {
+                        text: qsTr("Version")
+                        color: root.textColor
+                        opacity: 0.65
+                        font.pixelSize: root.fpx(8)
+                        Layout.minimumWidth: 65
+                    }
+                    Text {
+                        text: root.pkgOldVersion
+                        color: root.sigil
+                        opacity: 0.92
+                        font.pixelSize: root.fpx(8.5)
+                        font.family: UI.Theme.fixedWidthFont.family
+                        font.bold: true
+                    }
+                }
+
+                // Size delta
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    visible: root.pkgSize !== ""
+                    Text {
+                        text: qsTr("Size delta")
+                        color: root.textColor
+                        opacity: 0.65
+                        font.pixelSize: root.fpx(8)
+                        Layout.minimumWidth: 65
+                    }
+                    Text {
+                        text: root.pkgSize
+                        color: root.sigil
+                        opacity: 0.92
+                        font.pixelSize: root.fpx(8.5)
+                        font.family: UI.Theme.fixedWidthFont.family
+                        font.bold: true
+                    }
+                }
+
+                // Store path + copy
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Text {
+                        text: qsTr("Store path")
+                        color: root.textColor
+                        opacity: 0.65
+                        font.pixelSize: root.fpx(8)
+                        Layout.minimumWidth: 65
+                    }
+                    Text {
+                        id: storePath
+                        text: root.pathResult ? root.pathResult.path || root.pathResult.message : root.pkg.storeProfile ? qsTr("Resolving store path…") : qsTr("Not built yet")
                         color: root.textColor
                         opacity: 0.8
+                        font.pixelSize: 9 * root.fs
+                        font.family: UI.Theme.fixedWidthFont.family
+                        elide: Text.ElideMiddle
+                        Layout.fillWidth: true
                     }
-                    MouseArea {
-                        id: copyMa
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        enabled: !!root.pathResult && !!root.pathResult.path
-                        onClicked: root.copyRequested(root.pathResult.path)
-                        ToolTip.text: qsTr("Copy store path")
-                        ToolTip.visible: containsMouse
-                        ToolTip.delay: 400
-                    }
-                }
-            }
-
-            // Why is this package here? Only for packages in an installed generation.
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 8
-                visible: !!root.pkg.storeProfile
-                Text {
-                    Layout.alignment: Qt.AlignTop
-                    text: qsTr("Why here")
-                    color: root.textColor
-                    opacity: 0.65
-                    font.pixelSize: root.fpx(8)
-                    Layout.minimumWidth: 65
-                }
-                UI.ActionButton {
-                    objectName: "whyButton"
-                    visible: !root.whyResult
-                    text: qsTr("Why is this here?")
-                    flatStyle: true
-                    implicitHeight: 22 * root.fs
-                    font.pixelSize: 9 * root.fs
-                    tip: qsTr("Show the dependency chain that pulls %1 into this generation").arg(root.pkgName)
-                    onClicked: root.whyRequested(root.pkg, false)
-                }
-                WhyChain {
-                    visible: !!root.whyResult
-                    Layout.fillWidth: true
-                    entry: root.whyResult || null
-                    allEntry: root.whyAllResult || null
-                    metaCache: root.metaCache
-                    fs: root.fs
-                    textColor: root.textColor
-                    accentColor: root.accentColor
-                    onShowAllRequested: root.whyRequested(root.pkg, true)
-                    onCopyRequested: text => root.copyRequested(text)
-                }
-                Item {
-                    Layout.fillWidth: true
-                    visible: !root.whyResult
-                }
-            }
-
-            // Upstream / source link.
-            // Prefers (in order):
-            //   1) meta.homepage from nixpkgs  → real upstream project page
-            //   2) Website from a plasmoid metadata.json → user-built widget repo
-            //   3) nixpkgs search fallback     → at least lets the user find the derivation
-            RowLayout {
-                id: sourceRow
-                Layout.fillWidth: true
-                spacing: 8
-                readonly property var metaEntry: root.metaCache && root.pkgName ? root.metaCache[root.pkgName] : undefined
-                // The URL ultimately comes from either nixpkgs meta.homepage or a
-                // plasmoid metadata.json's Website field — both are upstream-controlled
-                // strings. Restrict to http(s) so a malicious entry can't open
-                // file:// / javascript: / data: / etc. via Qt.openUrlExternally.
-                readonly property string rawUrl: metaEntry && metaEntry.url ? metaEntry.url : ""
-                readonly property string metaUrl: /^https?:\/\//i.test(rawUrl) ? rawUrl : ""
-                readonly property string metaSource: metaUrl !== "" && metaEntry && metaEntry.source ? metaEntry.source : ""
-                readonly property string searchUrl: "https://github.com/NixOS/nixpkgs/search?q=" + encodeURIComponent(root.pkgName)
-                readonly property string activeUrl: metaUrl !== "" ? metaUrl : searchUrl
-
-                // Short label that hints at the link's origin
-                readonly property string label: {
-                    if (metaSource === "plasmoid")
-                        return qsTr("upstream");
-                    if (metaSource === "nixpkgs")
-                        return qsTr("homepage");
-                    return "nixpkgs";
-                }
-
-                // Pretty-printed host + path for the link text
-                readonly property string displayUrl: {
-                    const u = activeUrl;
-                    const stripped = u.replace(/^https?:\/\//, "").replace(/\/$/, "");
-                    return stripped.length > 48 ? stripped.substring(0, 45) + "…" : stripped;
-                }
-
-                Text {
-                    text: parent.label
-                    color: root.textColor
-                    opacity: 0.65
-                    font.pixelSize: root.fpx(8)
-                    Layout.minimumWidth: 65
-                }
-                Text {
-                    text: parent.displayUrl + "  ↗"
-                    color: root.accentColor
-                    opacity: ghMa.containsMouse ? 1.0 : 0.72
-                    font.pixelSize: root.fpx(8)
-                    elide: Text.ElideRight
-                    Layout.fillWidth: true
-                    Behavior on opacity {
-                        NumberAnimation {
-                            duration: 100
+                    Rectangle {
+                        implicitWidth: 20
+                        implicitHeight: 17
+                        radius: 4
+                        color: copyMa.containsMouse ? Qt.rgba(1, 1, 1, 0.10) : Qt.rgba(1, 1, 1, 0.04)
+                        border.color: Qt.rgba(1, 1, 1, 0.14)
+                        border.width: 1
+                        Behavior on color {
+                            ColorAnimation {
+                                duration: 100
+                            }
+                        }
+                        UI.Icon {
+                            anchors.centerIn: parent
+                            source: root.svg("ic_copy")
+                            implicitWidth: 10
+                            implicitHeight: 10
+                            isMask: true
+                            color: root.textColor
+                            opacity: 0.8
+                        }
+                        MouseArea {
+                            id: copyMa
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            enabled: !!root.pathResult && !!root.pathResult.path
+                            onClicked: root.copyRequested(root.pathResult.path)
+                            ToolTip.text: qsTr("Copy store path")
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 400
                         }
                     }
-                    MouseArea {
-                        id: ghMa
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: Qt.openUrlExternally(sourceRow.activeUrl)
-                        ToolTip.text: sourceRow.activeUrl
-                        ToolTip.visible: containsMouse
-                        ToolTip.delay: 400
+                }
+
+                // Why is this package here? Only for packages in an installed generation.
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    visible: !!root.pkg.storeProfile
+                    Text {
+                        Layout.alignment: Qt.AlignTop
+                        text: qsTr("Why here")
+                        color: root.textColor
+                        opacity: 0.65
+                        font.pixelSize: root.fpx(8)
+                        Layout.minimumWidth: 65
+                    }
+                    UI.ActionButton {
+                        objectName: "whyButton"
+                        visible: !root.whyResult
+                        text: qsTr("Why is this here?")
+                        flatStyle: true
+                        implicitHeight: 22 * root.fs
+                        font.pixelSize: 9 * root.fs
+                        tip: qsTr("Show the dependency chain that pulls %1 into this generation").arg(root.pkgName)
+                        onClicked: root.whyRequested(root.pkg, false)
+                    }
+                    WhyChain {
+                        visible: !!root.whyResult
+                        Layout.fillWidth: true
+                        entry: root.whyResult || null
+                        allEntry: root.whyAllResult || null
+                        metaCache: root.metaCache
+                        fs: root.fs
+                        textColor: root.textColor
+                        accentColor: root.accentColor
+                        onShowAllRequested: root.whyRequested(root.pkg, true)
+                        onCopyRequested: text => root.copyRequested(text)
+                    }
+                    Item {
+                        Layout.fillWidth: true
+                        visible: !root.whyResult
+                    }
+                }
+
+                // Upstream / source link.
+                // Prefers (in order):
+                //   1) meta.homepage from nixpkgs  → real upstream project page
+                //   2) Website from a plasmoid metadata.json → user-built widget repo
+                //   3) nixpkgs search fallback     → at least lets the user find the derivation
+                RowLayout {
+                    id: sourceRow
+                    Layout.fillWidth: true
+                    spacing: 8
+                    readonly property var metaEntry: root.metaCache && root.pkgName ? root.metaCache[root.pkgName] : undefined
+                    // The URL ultimately comes from either nixpkgs meta.homepage or a
+                    // plasmoid metadata.json's Website field — both are upstream-controlled
+                    // strings. Restrict to http(s) so a malicious entry can't open
+                    // file:// / javascript: / data: / etc. via Qt.openUrlExternally.
+                    readonly property string rawUrl: metaEntry && metaEntry.url ? metaEntry.url : ""
+                    readonly property string metaUrl: /^https?:\/\//i.test(rawUrl) ? rawUrl : ""
+                    readonly property string metaSource: metaUrl !== "" && metaEntry && metaEntry.source ? metaEntry.source : ""
+                    readonly property string searchUrl: "https://github.com/NixOS/nixpkgs/search?q=" + encodeURIComponent(root.pkgName)
+                    readonly property string activeUrl: metaUrl !== "" ? metaUrl : searchUrl
+
+                    // Short label that hints at the link's origin
+                    readonly property string label: {
+                        if (metaSource === "plasmoid")
+                            return qsTr("upstream");
+                        if (metaSource === "nixpkgs")
+                            return qsTr("homepage");
+                        return "nixpkgs";
+                    }
+
+                    // Pretty-printed host + path for the link text
+                    readonly property string displayUrl: {
+                        const u = activeUrl;
+                        const stripped = u.replace(/^https?:\/\//, "").replace(/\/$/, "");
+                        return stripped.length > 48 ? stripped.substring(0, 45) + "…" : stripped;
+                    }
+
+                    Text {
+                        text: parent.label
+                        color: root.textColor
+                        opacity: 0.65
+                        font.pixelSize: root.fpx(8)
+                        Layout.minimumWidth: 65
+                    }
+                    Text {
+                        text: parent.displayUrl + "  ↗"
+                        color: root.accentColor
+                        opacity: ghMa.containsMouse ? 1.0 : 0.72
+                        font.pixelSize: root.fpx(8)
+                        elide: Text.ElideRight
+                        Layout.fillWidth: true
+                        Behavior on opacity {
+                            NumberAnimation {
+                                duration: 100
+                            }
+                        }
+                        MouseArea {
+                            id: ghMa
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: Qt.openUrlExternally(sourceRow.activeUrl)
+                            ToolTip.text: sourceRow.activeUrl
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 400
+                        }
                     }
                 }
             }
