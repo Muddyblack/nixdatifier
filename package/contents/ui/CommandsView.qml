@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import "shared" as UI
+import "components"
 
 FocusScope {
     id: root
@@ -13,10 +14,22 @@ FocusScope {
     property bool working: false
     property bool enableMotion: true
     property string iconStyle: "colored"
+    // The config repository (config_repo, else the flake): commit everything and push.
+    property string configRepo: ""
+    property var gitStatus: null
+    property bool isLoadingGitStatus: false
+    property bool isPushing: false
+    property var pushResult: null
+    readonly property bool canPush: !!gitStatus && !gitStatus.isError && (!gitStatus.clean || gitStatus.ahead > 0)
     readonly property var entries: Array.isArray(commands) ? commands.filter(c => c && typeof c.cmd === "string" && c.cmd.trim()).slice(0, 4) : []
     signal closeRequested
     signal configureRequested
     signal runRequested(string command, string label)
+    signal gitStatusRequested
+    signal pushRequested(string message)
+    signal copyRequested(string text)
+    onVisibleChanged: if (visible && configRepo)
+        gitStatusRequested()
     function focusBack() {
         backButton.forceActiveFocus(Qt.TabFocusReason);
     }
@@ -84,6 +97,162 @@ FocusScope {
             ColumnLayout {
                 width: scroll.availableWidth
                 spacing: 8
+                ColumnLayout {
+                    objectName: "gitSection"
+                    visible: root.configRepo !== ""
+                    Layout.fillWidth: true
+                    Layout.topMargin: 11
+                    Layout.bottomMargin: 10
+                    spacing: 8
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Text {
+                            text: qsTr("Config repository")
+                            color: root.textColor
+                            font.pixelSize: 11 * root.fs
+                            font.weight: Font.Medium
+                        }
+                        Text {
+                            objectName: "gitBranch"
+                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignRight
+                            elide: Text.ElideLeft
+                            text: {
+                                const st = root.gitStatus;
+                                if (!st || st.isError)
+                                    return root.configRepo;
+                                const where = (st.branch || qsTr("detached HEAD")) + (st.upstream ? " → " + st.upstream : "");
+                                return st.upstream ? qsTr("%1 · %2 ahead · %3 behind").arg(where).arg(st.ahead).arg(st.behind) : qsTr("%1 · no upstream").arg(where);
+                            }
+                            textFormat: Text.PlainText
+                            color: "#9bacc4"
+                            font.family: UI.Theme.fixedWidthFont.family
+                            font.pixelSize: 9 * root.fs
+                        }
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: statusLines.implicitHeight + 18
+                        radius: 6
+                        color: "#14000000"
+                        border.color: "#0effffff"
+                        ColumnLayout {
+                            id: statusLines
+                            objectName: "gitStatusLines"
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: 9
+                            spacing: 3
+                            readonly property var files: root.gitStatus && !root.gitStatus.isError ? root.gitStatus.files : []
+                            Text {
+                                visible: !root.gitStatus || root.gitStatus.isError || root.gitStatus.clean
+                                Layout.fillWidth: true
+                                text: !root.gitStatus ? qsTr("Reading git status…") : root.gitStatus.isError ? root.gitStatus.value : root.gitStatus.ahead > 0 ? qsTr("Nothing to commit. %n commit(s) not pushed yet.", "", root.gitStatus.ahead) : qsTr("Nothing to commit, nothing to push.")
+                                textFormat: Text.PlainText
+                                color: root.gitStatus && root.gitStatus.isError ? UI.Theme.negative : "#9bacc4"
+                                font.pixelSize: 9 * root.fs
+                                wrapMode: Text.Wrap
+                            }
+                            Repeater {
+                                model: statusLines.files.slice(0, 8)
+                                RowLayout {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    spacing: 8
+                                    Text {
+                                        text: modelData.status
+                                        textFormat: Text.PlainText
+                                        color: modelData.status === "??" ? UI.Theme.positive : modelData.status.indexOf("D") >= 0 ? UI.Theme.negative : UI.Theme.changed
+                                        font.family: UI.Theme.fixedWidthFont.family
+                                        font.pixelSize: 9 * root.fs
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: modelData.path
+                                        textFormat: Text.PlainText
+                                        elide: Text.ElideMiddle
+                                        color: "#bbcbe1"
+                                        font.family: UI.Theme.fixedWidthFont.family
+                                        font.pixelSize: 9 * root.fs
+                                    }
+                                }
+                            }
+                            Text {
+                                visible: statusLines.files.length > 8
+                                text: qsTr("and %n more", "", statusLines.files.length - 8)
+                                color: "#9bacc4"
+                                font.pixelSize: 9 * root.fs
+                            }
+                        }
+                    }
+                    FieldInput {
+                        id: messageField
+                        objectName: "pushMessage"
+                        Layout.fillWidth: true
+                        fs: root.fs
+                        mono: true
+                        accent: root.accentColor
+                        placeholderText: qsTr("Commit message (default: update config)")
+                        Accessible.name: qsTr("Commit message")
+                        enabled: !root.isBusy
+                        onAccepted: if (pushButton.enabled)
+                            pushButton.clicked()
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 9
+                        UI.ActionButton {
+                            id: pushButton
+                            objectName: "pushButton"
+                            primary: true
+                            accent: root.accentColor
+                            glyph: Qt.resolvedUrl("assets/ic_push.svg")
+                            text: root.isPushing ? qsTr("Pushing…") : qsTr("Commit all & push")
+                            tip: qsTr("Runs git add -A, git commit and git push in %1").arg(root.configRepo)
+                            font.pixelSize: 10 * root.fs
+                            enabled: root.canPush && !root.isBusy
+                            onClicked: root.pushRequested(messageField.text)
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: qsTr("git add -A → commit → push")
+                            color: "#8c9db5"
+                            font.family: UI.Theme.fixedWidthFont.family
+                            font.pixelSize: 9 * root.fs
+                            elide: Text.ElideRight
+                        }
+                    }
+                    ColumnLayout {
+                        objectName: "pushFailure"
+                        visible: !!root.pushResult && !root.pushResult.ok
+                        Layout.fillWidth: true
+                        spacing: 6
+                        Text {
+                            Layout.fillWidth: true
+                            text: qsTr("Git stopped. Fix it with git in a terminal, then push again.")
+                            color: UI.Theme.negative
+                            font.pixelSize: 9 * root.fs
+                            wrapMode: Text.WordWrap
+                        }
+                        CodeBlock {
+                            Layout.fillWidth: true
+                            text: root.pushResult ? root.pushResult.output : ""
+                            fs: root.fs
+                            accent: root.accentColor
+                            maximumHeight: 140 * root.fs
+                            copyTip: qsTr("Copy git's output")
+                            onCopyRequested: t => root.copyRequested(t)
+                        }
+                    }
+                }
+                Rectangle {
+                    visible: root.configRepo !== ""
+                    Layout.fillWidth: true
+                    implicitHeight: 1
+                    color: UI.Theme.line
+                }
                 Text {
                     Layout.fillWidth: true
                     Layout.topMargin: 11

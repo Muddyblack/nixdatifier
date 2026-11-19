@@ -389,6 +389,35 @@ Item {
             core.parseSysInfo("ubuntu--- ---2h--- --- ---0");
             compare(core.activeViewMode, "health");
         }
+        function test_config_repo_status_and_push() {
+            cfg.configRepoPath = "/home/u/my config";
+            core.probeGitStatus();
+            compare(jobs.length, 1);
+            verify(jobs[0].cmd.indexOf("/git-push' status '/home/u/my config'") >= 0, jobs[0].cmd);
+            jobs[0].callback(jobs[0].cmd, "repo=/home/u/my config\nbranch=main\nupstream=origin/main\nahead=2\nbehind=0\n\x1e\n M flake.lock\n?? modules/x.nix\n", "", 0);
+            compare(core.gitStatus.branch, "main");
+            compare(core.gitStatus.ahead, 2);
+            compare(core.gitStatus.clean, false);
+            compare(core.gitStatus.files.map(f => f.status + "|" + f.path), [" M|flake.lock", "??|modules/x.nix"]);
+            jobs = [];
+            core.pushConfigRepo("-fix: it's done");
+            verify(core.isBusy);
+            verify(core.isPushing);
+            compare(jobs.length, 1);
+            compare(jobs[0].cmd.indexOf("NIXDATIFIER_CONFIG_REPO='/home/u/my config' "), 0, jobs[0].cmd);
+            verify(jobs[0].cmd.indexOf(" push --message '-fix: it'\\''s done'") >= 0, jobs[0].cmd);
+            jobs[0].callback(jobs[0].cmd, "→ git push\n ! [rejected]  main -> main (fetch first)", "", 1);
+            verify(!core.isBusy);
+            verify(!core.isPushing);
+            compare(core.pushResult.ok, false);
+            verify(core.pushResult.output.indexOf("rejected") >= 0);
+            verify(jobs.some(j => j.cmd.indexOf("/git-push' status") >= 0), "the status is read again after a push");
+            jobs[jobs.findIndex(j => j.cmd.indexOf("/git-push' status") >= 0)].callback("", "", "git-push: /home/u/my config is not a git repository", 3);
+            compare(core.gitStatus.isError, true);
+            cfg.configRepoPath = "";
+            core.gitStatus = null;
+            core.pushResult = null;
+        }
         function test_nixos_startup_waits_for_detection() {
             core.isNixOS = false;
             core.systemDetected = false;

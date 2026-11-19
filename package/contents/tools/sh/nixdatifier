@@ -15,8 +15,8 @@ here=$(dirname "$(realpath "$0")")
 profiles=/nix/var/nix/profiles
 version=$(jq -r '.KPlugin.Version // empty' "$here/../../../metadata.json" 2>/dev/null)
 
-COMMANDS="generations updates diff disk health cve doctor hosts status history info hash profiles profile secrets persist dev path why preview notes snapshot update rebuild run commands watch switch boot rollback delete clean gc optimise menu config completion help"
-OPTIONS="--json --plain --flake --yes --dry-run --refresh --priv --label --check --limit --all --older-than --keep --quiet --color --roots --secrets --source --host --days --shells --config --updates --optimise --generation --help --version"
+COMMANDS="generations updates diff disk health cve doctor hosts status history info hash profiles profile secrets persist dev path why preview notes snapshot update push rebuild run commands watch switch boot rollback delete clean gc optimise menu config completion help"
+OPTIONS="--json --plain --flake --yes --dry-run --refresh --priv --label --check --limit --all --older-than --keep --quiet --color --roots --secrets --source --host --days --shells --config --updates --optimise --generation --message --help --version"
 
 # One entry per command: "<usage>|<summary>|<detail>". The overview, `help CMD`
 # and `CMD --help` all read this.
@@ -45,6 +45,8 @@ help_entry() {
         notes) echo "notes INPUT#upstream releases and commits between your lock and latest#GitHub only; set GITHUB_TOKEN or github_token_file to lift the rate limit." ;;
         snapshot) echo "snapshot [REPO]#remember which config commit built the running generation#Run it after a rebuild (the window does it automatically) so 'diff --config' can compare your .nix files. 'generations' records it too when a flake is found." ;;
         update) echo "update [INPUT...]#nix flake update (all inputs, or only the named ones) in the flake directory#Asks first; recorded in history." ;;
+        push) echo "push [status] [--message TEXT]#commit everything in your config repository and push it#Runs git add -A, git commit -m TEXT (default: update config) and git push in the config repository (config key config_repo, else the flake directory). Nixdatifier is not a git client: it prints each git command and git's own output, and when git refuses (no upstream, the remote moved ahead, no credentials) it stops with git's message, to be fixed with git itself. status shows the branch, its upstream, commits ahead and behind, and git status --porcelain (--plain: one STATUS<TAB>PATH row per file). Asks first, showing what will be committed; recorded in history. Without a terminal git does not ask for a password: use an ssh key or a credential helper."
+            ;;
         rebuild) echo "rebuild [switch|boot|test|dry-build|plan|status|log]#rebuild the system (switch by default)#Runs your command labelled 'rebuild' (see: help commands) from the flake directory, exactly as saved; it gets the mode in NIXDATIFIER_REBUILD_MODE. Without one it runs nh os MODE DIR when nh is installed, else nixos-rebuild MODE --flake DIR as root (see --priv), shown through nom in a terminal when nom is installed (NIXDATIFIER_REBUILD_TOOL=nixos-rebuild skips nh). boot makes it the next boot only, test activates it until reboot, dry-build only shows what would be built and fetched. plan: what each mode would run. status: the running (or last) rebuild, whichever front end started it: phase, derivations built, paths fetched, download size and its last lines (--limit N lines). log: its whole output. Asks first; one at a time with other changes; recorded in history." ;;
         run) echo "run [LABEL|N]#run one of your saved commands#The same quick-run commands the window's Commands panel shows (shared: nixdatifier commands). Runs from the flake directory, as you typed it (add sudo yourself). Without a label it lists them, or lets you pick in a terminal. Asks first; recorded in history." ;;
         commands) echo "commands [list|add LABEL CMD|rm LABEL]#your saved quick-run commands, shared with the window#Up to four, kept in the config file (key: commands, a JSON list of {label, cmd}) and kept in step with the window's Commands setting. Run them with: nixdatifier run LABEL." ;;
@@ -159,7 +161,7 @@ fi
 
 fmt=text yes=0 dry=0 refresh=0 quiet=0 priv=${NIXDATIFIER_PRIV:-sudo} flake=${NIXDATIFIER_FLAKE:-} label='' check=0 all=0 limit=0
 older='' keep='' roots=${NIXDATIFIER_PERSIST:-} secrets_dir=${NIXDATIFIER_SECRETS:-} secrets_src=${NIXDATIFIER_SECRETS_SOURCE:-}
-host=auto host_explicit=0 days=180 shells=0 config=0 generation='' want_help=0 want_updates=0 want_optimise=0 color=auto args=()
+push_message='' host=auto host_explicit=0 days=180 shells=0 config=0 generation='' want_help=0 want_updates=0 want_optimise=0 color=auto args=()
 # Shells call this private, read-only endpoint with the words being completed.
 completion_words=()
 if [[ ${1:-} == _complete ]]; then
@@ -171,6 +173,7 @@ while (($#)); do
         --color | --flake | -f | --priv | --label | --older-than | --keep | --limit | --roots | --secrets | --source | --host | --days | --generation | -g)
             (($# >= 2)) && [[ -n $2 && $2 != -* ]] || usage_error "$1 needs a value"
             ;;
+        --message | -m) (($# >= 2)) && [[ -n $2 ]] || usage_error "$1 needs a value" ;; # a commit message may start with -
     esac
     case $1 in
         -j | --json) fmt=json ;;
@@ -194,6 +197,7 @@ while (($#)); do
         --host) host=${2:?--host needs a name}; host_explicit=1; shift ;;
         --days) days=${2:?--days needs a number}; shift ;;
         --generation | -g) generation=${2:?--generation needs a number}; shift ;;
+        --message | -m) push_message=${2:?--message needs text}; shift ;;
         --shells) shells=1 ;;
         --config) config=1 ;;
         --updates) want_updates=1 ;;
@@ -1153,6 +1157,57 @@ cmd_update() {
     change flake-update "Updating $label…" -1 'cd "$1" && shift && $RUN nix flake update "$@"' "$flake" ${args[@]+"${args[@]}"}
 }
 
+# ── Config repository ───────────────────────────────────────────────────────
+# Commit everything and push, with plain git (tools/sh/git-push, which the window
+# uses too). Git decides; its output is shown as it is.
+config_repo() { # the config repository: config_repo, else the flake directory
+    local repo=${NIXDATIFIER_CONFIG_REPO:-}
+    if [[ -z $repo ]]; then find_flake && repo=$flake; fi
+    [[ -n $repo ]] || die 'no config repository: set one (nixdatifier config set config_repo DIR) or pass --flake DIR'
+    [[ -d $repo ]] || die "config repository $repo does not exist"
+    realpath "$repo"
+}
+push_status_json() { # push_status_json REPO: git-push status as JSON
+    local raw
+    raw=$("$here/git-push" status "$1") || return 1
+    jq -Rs '(split("\u001e\n")) as $p
+        | ($p[0] | split("\n") | map(select(test("=")) | capture("^(?<key>[^=]+)=(?<value>.*)$")) | from_entries) as $m
+        | ($p[1] // "" | split("\n") | map(select(length > 3) | {status: .[0:2], path: .[3:]})) as $files
+        | {repo: $m.repo, branch: (if $m.branch == "" then null else $m.branch end),
+           upstream: (if $m.upstream == "" then null else $m.upstream end),
+           ahead: ($m.ahead | tonumber), behind: ($m.behind | tonumber),
+           clean: ($files | length == 0), files: $files}' <<<"$raw"
+}
+push_show() { # push_show JSON: the status in the chosen format
+    case $fmt in
+        json) jq . <<<"$1" ;;
+        plain) jq '.files' <<<"$1" | render status,path ;;
+        *) jq -r '"Repo     \(.repo)",
+            "Branch   \(.branch // "(detached HEAD)")\(if .upstream then " → \(.upstream)  (\(.ahead) ahead, \(.behind) behind)" else "  (no upstream)" end)",
+            (if .clean then "Changes  none" else "Changes  \(.files | length)", (.files[] | "  \(.status) \(.path)") end)' <<<"$1" ;;
+    esac
+}
+cmd_push() {
+    local sub=${args[0]:-} repo json message=${push_message:-update config}
+    case $sub in '' | status) ;; *) unknown_name 'push subcommand' "$sub" 'status' ;; esac
+    repo=$(config_repo) || exit 1
+    json=$(push_status_json "$repo") || die "cannot read the git status of $repo"
+    if [[ $sub == status ]]; then push_show "$json"; return 0; fi
+    if [[ $(jq '.clean and .ahead == 0 and .upstream != null' <<<"$json") == true ]]; then
+        msg "Nothing to push: $repo has no changes and is not ahead of $(jq -r .upstream <<<"$json")."
+        [[ $fmt != json ]] || jq -n '{ok: true, action: "push", exitCode: 0, generation: null}'
+        return 0
+    fi
+    [[ $fmt != text ]] || ((quiet)) || { push_show "$json"; echo; }
+    confirm "Commit all changes in $repo as '$message' and push?"
+    if ((dry)); then
+        printf '[dry-run] git -C %q %s\n' "$repo" 'add -A' "$repo" "commit -m $(printf '%q' "$message")" "$repo" push
+        return 0
+    fi
+    # shellcheck disable=SC2016
+    change push "Pushing config repository…" -1 '"$1" run "$2" "$3"' "$here/git-push" "$repo" "$message"
+}
+
 # Saved quick-run commands: the JSON list the window's Commands panel edits.
 # commands_normalize prints it compact (empty list for ""), failing on a bad shape.
 commands_normalize() {
@@ -1714,7 +1769,7 @@ completion_candidates() {
         if ((skip)); then skip=0; continue; fi
         case $word in
             --flake | -f) flake=${completion_words[i+1]:-}; skip=1; continue ;;
-            --color | --priv | --label | --older-than | --keep | --limit | --roots | --secrets | --source | --host | --days | --generation | -g) skip=1; continue ;;
+            --color | --priv | --label | --older-than | --keep | --limit | --roots | --secrets | --source | --host | --days | --generation | -g | --message | -m) skip=1; continue ;;
             -*) continue ;;
         esac
         if [[ -z $command ]]; then
@@ -1728,7 +1783,7 @@ completion_candidates() {
         --flake | -f | --roots | --secrets | --source)
             for candidate in "$current"*; do [[ -d $candidate ]] && printf '%s/\n' "${candidate%/}"; done
             return 0 ;;
-        --label | --older-than | --keep | --limit | --host | --days) return 0 ;;
+        --label | --older-than | --keep | --limit | --host | --days | --message | -m) return 0 ;;
         *)
             if [[ $current == -* ]]; then choices=$OPTIONS
             elif [[ -z $command || $command == help ]]; then choices=$COMMANDS
@@ -1743,7 +1798,7 @@ completion_candidates() {
                     rebuild) ((${#positional[@]} == 0)) && choices="$REBUILD_MODES plan status log" ;;
                     profile) if ((${#positional[@]} == 0)); then choices='list install remove upgrade clean'; elif [[ ${positional[0]} =~ ^(remove|rm|upgrade|update)$ ]]; then choices=$(profile_json 2>/dev/null | jq -r '.[].name'); fi ;;
                     history) ((${#positional[@]} == 0)) && choices='list clear' ;;
-                    optimise | cve) ((${#positional[@]} == 0)) && choices='status' ;;
+                    optimise | cve | push) ((${#positional[@]} == 0)) && choices='status' ;;
                     run) ((${#positional[@]} == 0)) && choices=$(commands_json | jq -r '.[] | select(.label != "") | .label') ;;
                     persist) ((${#positional[@]} == 0)) && choices='status sizes ls scan cleanup rm' ;;
                     dev) ((${#positional[@]} == 0)) && choices='list show shells pkgs clear' ;;
@@ -1874,6 +1929,7 @@ case $cmd in
     menu) cmd_menu ;;
     config) cmd_config ;;
     update) cmd_update ;;
+    push) cmd_push ;;
     rebuild) cmd_rebuild ;;
     run) cmd_run ;;
     commands) cmd_commands ;;

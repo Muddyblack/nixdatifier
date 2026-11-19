@@ -866,6 +866,7 @@ cmd_rows() { # label<TAB>display, one per saved command; Rebuild first
         printf '@rebuild:test\t%s⟳ Test build%s         %sbuild and activate until reboot%s\n' "$B" "$X" "$D" "$X"
         printf '@rebuild:dry-build\t%s⟳ Dry build%s          %swhat would be built and fetched%s\n' "$B" "$X" "$D" "$X"
     fi
+    printf '@push\t%s↑ Commit all & push%s  %sgit add -A, commit and push your config repo%s\n' "$B" "$X" "$D" "$X"
     "$NXD_CLI" --json commands 2>/dev/null | jq -r --arg B "$B" --arg X "$X" --arg D "$D" '.[] | "\(.label)\t\($B)\(.label)\($X)  \($D)\(.cmd)\($X)"'
 }
 cmd_preview() { # cmd_preview LABEL
@@ -874,6 +875,9 @@ cmd_preview() { # cmd_preview LABEL
         "$NXD_CLI" "${clr[@]}" --dry-run --yes rebuild "${1#@rebuild:}" 2>&1
         printf '\n%sLast rebuild%s %s(any front end; nixdatifier rebuild status)%s\n\n' "$B$Y" "$X" "$D" "$X"
         "$NXD_CLI" "${clr[@]}" --limit 8 rebuild status 2>&1
+    elif [[ $1 == @push ]]; then
+        cli push status
+        printf '\n%sEnter asks for a commit message, then runs git add -A, git commit and git push.%s\n' "$D" "$X"
     else "$NXD_CLI" "${clr[@]}" --dry-run --yes run "$1" 2>&1; fi
 }
 cmd_add() {
@@ -886,6 +890,13 @@ cmd_add() {
     [[ -n $cmd ]] || return 0
     "$NXD_CLI" commands add "$label" "$cmd" 2>&1 || sleep 2
 }
+push_flow() { # ask for the commit message, then the CLI shows what it commits and asks
+    local message
+    clear
+    printf '%sCommit all & push%s  %s(empty: update config; Ctrl-C cancels)%s\n' "$B" "$X" "$D" "$X"
+    message=$(ask 'commit message') || return 0
+    act push --message "${message:-update config}"
+}
 commands_screen() {
     fzf "${FZF_BASE[@]}" --with-nth 2 --no-sort --list-label ' Commands ' --input-label ' Search ' --ghost 'command' \
         --header "$(header_cached)" --header-label ' System ' \
@@ -894,7 +905,7 @@ commands_screen() {
         --bind 'start:reload($NXD_TUI _cmdrows)' \
         --bind 'enter:execute($NXD_TUI _cmdrun {1})+reload($NXD_TUI _cmdrows)' \
         --bind 'ctrl-a:execute($NXD_TUI _cmdadd)+reload($NXD_TUI _cmdrows)' \
-        --bind 'ctrl-d:execute-silent([[ {1} == @rebuild* ]] || $NXD_CLI commands rm {1} >/dev/null 2>&1)+reload($NXD_TUI _cmdrows)' \
+        --bind 'ctrl-d:execute-silent([[ {1} == @* ]] || $NXD_CLI commands rm {1} >/dev/null 2>&1)+reload($NXD_TUI _cmdrows)' \
         --bind 'backward-eof:abort' </dev/null >/dev/null
 }
 
@@ -1243,7 +1254,9 @@ case ${1:-} in
     _profpv) prof_preview "$2" ;;
     _profadd) prof_install ;;
     _cmdrows) cmd_rows ;;
-    _cmdrun) if [[ $2 == @rebuild:* ]]; then act rebuild "${2#@rebuild:}"; else act run "$2"; fi ;;
+    _cmdrun) if [[ $2 == @rebuild:* ]]; then act rebuild "${2#@rebuild:}"
+        elif [[ $2 == @push ]]; then push_flow
+        else act run "$2"; fi ;;
     _cmdpv) cmd_preview "$2" ;;
     _cmdadd) cmd_add ;;
     _watchrows) watch_rows ;;

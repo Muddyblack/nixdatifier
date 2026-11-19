@@ -66,6 +66,13 @@ Pane {
     required property bool showFlakeSection
     required property bool showCommandButtons
     required property var customCommands
+    property string configRepo: ""
+    property var gitStatus: null
+    property bool isLoadingGitStatus: false
+    property bool isPushing: false
+    property var pushResult: null
+    signal gitStatusRequested
+    signal pushRequested(string message)
     property string gcCustomCommand: ""
     required property string activeViewMode   // "timeline" | "updates" | "diff" | "tools" | "secrets" | "hash" | "history" | "storeusage" | "profile" | "impermanence"
     required property var deployedSecrets  // { path, exists, lastModified, age }
@@ -1319,6 +1326,14 @@ Pane {
             fullView.closeCommands();
             fullView.runCommand(cmd, label);
         }
+        configRepo: fullView.configRepo
+        gitStatus: fullView.gitStatus
+        isLoadingGitStatus: fullView.isLoadingGitStatus
+        isPushing: fullView.isPushing
+        pushResult: fullView.pushResult
+        onGitStatusRequested: fullView.gitStatusRequested()
+        onPushRequested: message => fullView.pushRequested(message)
+        onCopyRequested: t => fullView.copyToClipboard(t)
     }
     Item {
         id: toolsOverlay

@@ -277,6 +277,38 @@ Item {
             mouseClick(findChild(view, "commandsClose"));
             tryCompare(view, "visible", false);
         }
+        function test_commands_panel_commits_and_pushes_the_config_repo() {
+            cfg.configRepoPath = "";
+            cfg.customCommands = "[]";
+            mouseClick(findChild(app, "commandsButton"));
+            const view = findChild(app, "commandsView");
+            tryCompare(view, "visible", true);
+            verify(!findChild(view, "gitSection").visible, "no config repository, no git section");
+            mouseClick(findChild(view, "commandsClose"));
+            cfg.configRepoPath = "/home/u/nixos-config";
+            mouseClick(findChild(app, "commandsButton"));
+            tryCompare(view, "visible", true);
+            verify(findChild(view, "gitSection").visible);
+            const button = findChild(view, "pushButton");
+            tryVerify(() => core.gitStatus && core.gitStatus.clean);
+            verify(!button.enabled, "nothing to commit and nothing ahead");
+            core.gitStatus = core.parseGitStatus("repo=/home/u/nixos-config\nbranch=main\nupstream=origin/main\nahead=0\nbehind=0\n\x1e\n M flake.lock\n");
+            verify(button.enabled);
+            compare(findChild(view, "gitBranch").text, "main → origin/main · 0 ahead · 0 behind");
+            findChild(view, "pushMessage").text = "update inputs";
+            mouseClick(button);
+            tryVerify(() => core.pushResult !== null && core.pushResult.ok);
+            verify(!findChild(view, "pushFailure").visible);
+            core.pushResult = {
+                ok: false,
+                output: "! [rejected]"
+            };
+            verify(findChild(view, "pushFailure").visible);
+            mouseClick(findChild(view, "commandsClose"));
+            cfg.configRepoPath = "";
+            core.gitStatus = null;
+            core.pushResult = null;
+        }
         function test_commands_panel_launches_configured_command_once() {
             host.width = 380;
             host.height = 480;
