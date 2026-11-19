@@ -47,6 +47,13 @@ FullView {
     showFlakeSection: engine.settings.showFlakeSection
     showCommandButtons: engine.settings.showCommandButtons
     customCommands: engine.customCommands
+    configRepo: engine.configRepo
+    gitStatus: engine.gitStatus
+    isLoadingGitStatus: engine.isLoadingGitStatus
+    isPushing: engine.isPushing
+    pushResult: engine.pushResult
+    onGitStatusRequested: engine.probeGitStatus()
+    onPushRequested: message => engine.pushConfigRepo(message)
     activeViewMode: engine.activeViewMode
     deployedSecrets: engine.deployedSecrets
     sourceSecrets: engine.sourceSecrets

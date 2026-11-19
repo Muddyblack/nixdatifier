@@ -3050,6 +3050,83 @@ Item {
         }, true);
     }
 
+    // ── Config repository: commit everything and push ────────────────────────
+    // Plain git through tools/sh/git-push (status) and `nixdatifier push`
+    // (the change, with its lock and history). Git's output is shown as it is.
+    readonly property string configRepo: (root.settings.configRepoPath || root.flakePath || "").trim()
+    property var gitStatus: null            // {repo, branch, upstream, ahead, behind, clean, files} or {isError, value}
+    property bool isLoadingGitStatus: false
+    property bool isPushing: false
+    property var pushResult: null           // {ok, output} of the last push
+    function parseGitStatus(text) {
+        const parts = (text || "").split("\x1e");
+        const meta = {};
+        for (const line of (parts[0] || "").split("\n")) {
+            const i = line.indexOf("=");
+            if (i > 0)
+                meta[line.slice(0, i)] = line.slice(i + 1);
+        }
+        const files = (parts[1] || "").split("\n").filter(l => l.length > 3).map(l => ({
+                    status: l.slice(0, 2),
+                    path: l.slice(3)
+                }));
+        return {
+            isError: false,
+            repo: meta.repo || "",
+            branch: meta.branch || "",
+            upstream: meta.upstream || "",
+            ahead: parseInt(meta.ahead, 10) || 0,
+            behind: parseInt(meta.behind, 10) || 0,
+            clean: files.length === 0,
+            files: files
+        };
+    }
+    function probeGitStatus() {
+        const repo = root.configRepo;
+        if (!repo) {
+            root.gitStatus = null;
+            return;
+        }
+        if (root.isLoadingGitStatus)
+            return;
+        root.isLoadingGitStatus = true;
+        sh(shq(root.scriptDir + "git-push") + " status " + shq(repo), function (cmd, out, err, code) {
+            root.isLoadingGitStatus = false;
+            if (repo !== root.configRepo)
+                return;
+            root.gitStatus = code === 0 ? root.parseGitStatus(out) : {
+                isError: true,
+                value: (err || out || qsTr("Could not read the git status")).trim()
+            };
+        });
+    }
+    function pushConfigRepo(message) {
+        const repo = root.configRepo;
+        if (!repo)
+            return;
+        if (root.isBusy) {
+            root.pushToast(qsTr("Already running another action — please wait."), true);
+            return;
+        }
+        root.isBusy = true;
+        root.isPushing = true;
+        root.pushResult = null;
+        root.currentActionType = qsTr("Pushing config repository…");
+        const text = String(message || "").trim();
+        const args = "push" + (text ? " --message " + shq(text) : "");
+        sh("NIXDATIFIER_CONFIG_REPO=" + shq(repo) + " " + cli(args, root.flakePath), function (c, out, err, code) {
+            root.isBusy = false;
+            root.isPushing = false;
+            root.pushResult = {
+                ok: code === 0,
+                output: [(out || "").trim(), (err || "").trim()].filter(t => t).join("\n")
+            };
+            root.loadHistory();
+            root.probeGitStatus();
+            root.pushToast(code === 0 ? qsTr("Config repository pushed.") : qsTr("Push failed — git's output is in the Commands panel."), code !== 0);
+        });
+    }
+
     // ── Rebuild ───────────────────────────────────────────────────────────────
     // `nixdatifier rebuild` decides what runs: the command labelled "rebuild"
     // as saved, else nh, else nixos-rebuild. It keeps a live log that

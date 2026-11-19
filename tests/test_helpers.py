@@ -2597,6 +2597,153 @@ class Cli(HelperCase):
         self.assertIn("fixed       CVE-2026-1  critical 9.8  openssl 3.6.5 → 3.6.6", text)
 
 
+class ConfigPush(HelperCase):
+    """tools/sh/git-push and `nixdatifier push`: commit everything in the config repo, then push."""
+
+    def setUp(self):
+        super().setUp()
+        gitconfig = self.root / "gitconfig"
+        gitconfig.write_text("[user]\n\tname = Test\n\temail = test@example.com\n[init]\n\tdefaultBranch = main\n")
+        self.env.update(
+            GIT_CONFIG_GLOBAL=str(gitconfig),
+            GIT_CONFIG_NOSYSTEM="1",
+            XDG_CONFIG_HOME=str(self.root / "config"),
+            XDG_STATE_HOME=str(self.root / "state"),
+        )
+        self.env.pop("NIXDATIFIER_CONFIG", None)
+        self.env.pop("NIXDATIFIER_CONFIG_REPO", None)
+        self.remote = self.root / "remote.git"
+        self.repo = self.root / "nixos-config"
+        self.git("init", "-q", "--bare", str(self.remote))
+        self.git("init", "-q", str(self.repo))
+        (self.repo / "flake.nix").write_text("{ }\n")
+        self.git("-C", str(self.repo), "add", "-A")
+        self.git("-C", str(self.repo), "commit", "-qm", "init")
+        self.git("-C", str(self.repo), "remote", "add", "origin", str(self.remote))
+        self.git("-C", str(self.repo), "push", "-q", "-u", "origin", "main")
+
+    def git(self, *args):
+        return subprocess.run(
+            ["git", *args], env=self.env, text=True, capture_output=True, check=True, timeout=15
+        ).stdout
+
+    def cli(self, *args):
+        return subprocess.run(
+            [str(HELPERS / "nixdatifier"), "--color", "never", "--flake", str(self.repo), *args],
+            env=self.env,
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+
+    def change_files(self):
+        (self.repo / "flake.lock").write_text("{}\n")
+        (self.repo / "flake.nix").write_text("{ inputs = { }; }\n")
+        (self.repo / "modules").mkdir()
+        (self.repo / "modules" / "podman.nix").write_text("{ }\n")
+
+    def test_status_helper_lists_changes_and_upstream(self):
+        self.change_files()
+        result = self.run_helper("git-push", "status", str(self.repo))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        meta, files = result.stdout.split("\x1e\n")
+        self.assertIn("branch=main\n", meta)
+        self.assertIn("upstream=origin/main\n", meta)
+        self.assertIn("ahead=0\n", meta)
+        self.assertEqual(sorted(files.splitlines()), [" M flake.nix", "?? flake.lock", "?? modules/"])
+
+    def test_status_helper_refuses_a_folder_without_git(self):
+        plain = self.root / "plain"
+        plain.mkdir()
+        result = self.run_helper("git-push", "status", str(plain))
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("not a git repository", result.stderr)
+
+    def test_status_in_all_formats(self):
+        self.change_files()
+        data = json.loads(self.cli("--json", "push", "status").stdout)
+        self.assertEqual(data["branch"], "main")
+        self.assertEqual(data["upstream"], "origin/main")
+        self.assertEqual((data["ahead"], data["behind"], data["clean"]), (0, 0, False))
+        self.assertIn({"status": "??", "path": "modules/"}, data["files"])
+        plain = self.cli("--plain", "push", "status").stdout.splitlines()
+        self.assertIn("??\tmodules/", plain)
+        text = self.cli("push", "status").stdout
+        self.assertIn("main → origin/main  (0 ahead, 0 behind)", text)
+        self.assertIn("Changes  3", text)
+
+    def test_push_commits_everything_and_pushes(self):
+        self.change_files()
+        result = self.cli("--yes", "push", "--message", "-bump inputs")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("→ git add -A", result.stdout)
+        self.assertIn("→ git push", result.stdout)
+        self.assertEqual(self.git("-C", str(self.repo), "status", "--porcelain"), "")
+        self.assertEqual(
+            self.git("--git-dir", str(self.remote), "log", "-1", "--format=%s", "main").strip(), "-bump inputs"
+        )
+        tree = self.git("--git-dir", str(self.remote), "ls-tree", "-r", "--name-only", "main").split()
+        self.assertEqual(sorted(tree), ["flake.lock", "flake.nix", "modules/podman.nix"])
+        entry = json.loads(self.cli("--json", "history").stdout)[0]
+        self.assertEqual((entry["action"], entry["success"]), ("push", True))
+        again = self.cli("--json", "--yes", "push")
+        self.assertEqual(again.returncode, 0)
+        self.assertTrue(json.loads(again.stdout)["ok"])
+        self.assertIn("Nothing to push", again.stderr)
+
+    def test_push_sends_commits_that_are_only_ahead(self):
+        (self.repo / "a.nix").write_text("{ }\n")
+        self.git("-C", str(self.repo), "add", "-A")
+        self.git("-C", str(self.repo), "commit", "-qm", "local")
+        self.assertEqual(json.loads(self.cli("--json", "push", "status").stdout)["ahead"], 1)
+        result = self.cli("--json", "--yes", "push")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["exitCode"], 0)
+        self.assertEqual(self.git("--git-dir", str(self.remote), "log", "-1", "--format=%s", "main").strip(), "local")
+
+    def test_push_stops_with_gits_message_when_the_remote_moved(self):
+        other = self.root / "other"
+        self.git("clone", "-q", str(self.remote), str(other))
+        (other / "b.nix").write_text("{ }\n")
+        self.git("-C", str(other), "add", "-A")
+        self.git("-C", str(other), "commit", "-qm", "elsewhere")
+        self.git("-C", str(other), "push", "-q")
+        self.change_files()
+        result = self.cli("--yes", "push")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("rejected", result.stdout + result.stderr)
+        entry = json.loads(self.cli("--json", "history").stdout)[0]
+        self.assertEqual((entry["action"], entry["success"]), ("push", False))
+
+    def test_dry_run_and_confirmation_change_nothing(self):
+        self.change_files()
+        dry = self.cli("--dry-run", "push", "-m", "msg")
+        self.assertEqual(dry.returncode, 0, dry.stderr)
+        self.assertIn("add -A", dry.stdout)
+        self.assertIn("commit -m msg", dry.stdout)
+        refused = self.cli("push")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("pass --yes", refused.stderr)
+        self.assertNotEqual(self.git("-C", str(self.repo), "status", "--porcelain"), "")
+
+    def test_config_repo_wins_over_the_flake(self):
+        flake = self.root / "flake"
+        flake.mkdir()
+        (flake / "flake.nix").write_text("{ }\n")
+        result = subprocess.run(
+            [str(HELPERS / "nixdatifier"), "--json", "--flake", str(flake), "push", "status"],
+            env={**self.env, "NIXDATIFIER_CONFIG_REPO": str(self.repo)},
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["repo"], str(self.repo.resolve()))
+
+
 class Hosts(HelperCase):
     """Several machines in one flake: discovery, status over ssh, --host."""
 

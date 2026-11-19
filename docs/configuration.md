@@ -12,7 +12,7 @@ stop when settings close; the Info pane is released when hidden or another tab o
 | Setting | Default | Description |
 |---|---|---|
 | **System flake path** | `""` | Your NixOS flake directory. Empty detects `/etc/nixos`, `~/nixos-config`, or `~/.config/nixos`. |
-| **Configuration Git repository** | `""` | Repository whose commit is recorded for each generation. Empty uses the flake path. |
+| **Configuration Git repository** | `""` | Repository whose commit is recorded for each generation, and the one *Commit all & push* in the Commands panel commits and pushes. Empty uses the flake path. |
 | **Check updates every (seconds)** | `3600` | Flake input check interval (60–86400). |
 | **Maximum generations shown** | `10` | Generations listed in the timeline (3–200). |
 | **Detect hostname and flake configuration** | `true` | When off, previews need a flake with exactly one NixOS configuration. |
@@ -26,7 +26,7 @@ Update checks read the root inputs of the configured flake's `flake.lock`, indep
 of how many NixOS or Home Manager outputs it defines. When the flake is a wrapper (it has
 a single input, or an input of type `path`), that input's own direct inputs are checked
 too and shown as `wrapper/input`. Turn on **Check nested inputs** to follow deeper levels. **Configuration Git
-repository** only controls generation history.
+repository** only controls generation history and which repository is pushed.
 
 Git-backed inputs are checked against their upstream revision. Tarball inputs are
 resolved with `nix flake metadata --refresh` and compared by their unpacked content

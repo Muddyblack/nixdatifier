@@ -463,7 +463,50 @@ Window {
             }
             if (stage === 39)
                 win.capture("updates-cve");
-            if (stage === 40)
+            if (stage === 40) {
+                win.width = 466;
+                win.height = 666;
+                cfg.configRepoPath = "/home/you/nixos-config";
+                app.openCommands();
+            }
+            if (stage === 41)
+                core.gitStatus = {
+                    isError: false,
+                    repo: "/home/you/nixos-config",
+                    branch: "main",
+                    upstream: "origin/main",
+                    ahead: 1,
+                    behind: 0,
+                    clean: false,
+                    files: [
+                        {
+                            status: " M",
+                            path: "flake.lock"
+                        },
+                        {
+                            status: " M",
+                            path: "hosts/laptop/default.nix"
+                        },
+                        {
+                            status: " M",
+                            path: "home/zsh.nix"
+                        },
+                        {
+                            status: "??",
+                            path: "modules/podman.nix"
+                        }
+                    ]
+                };
+            if (stage === 42)
+                win.capture("commands-push");
+            if (stage === 43)
+                core.pushResult = {
+                    ok: false,
+                    output: "→ git add -A\n→ git commit -m update config\n[main 4e1f9a2] update config\n 4 files changed, 41 insertions(+), 19 deletions(-)\n→ git push\nTo github.com:you/nixos-config.git\n ! [rejected]        main -> main (fetch first)\nerror: failed to push some refs to 'github.com:you/nixos-config.git'\nhint: Updates were rejected because the remote contains work that you do not\nhint: have locally. Integrate the remote changes (e.g. 'git pull ...') before pushing again."
+                };
+            if (stage === 44)
+                win.capture("commands-push-failed");
+            if (stage === 45)
                 Qt.quit();
         }
     }

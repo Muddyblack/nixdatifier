@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Usage: git-push status REPO
+#        git-push run REPO [MESSAGE]
+#
+# The config repository, through plain git. Nixdatifier does not try to be a
+# git client: it shows what git says and runs three git commands.
+#
+# status prints key=value lines (repo, branch, upstream, ahead, behind), a
+#   \x1e line, then `git status --porcelain` rows ("XY path").
+# run commits everything (git add -A, then git commit when something is staged)
+#   and pushes. Each git command is printed before it runs; git's own output and
+#   exit status pass through unchanged.
+#
+# Exit codes: git's own; 2 bad arguments; 3 not a git repository / no git.
+set -uo pipefail
+export PATH="$PATH:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin"
+
+sub=${1:-} repo=${2:-}
+[[ $sub == status || $sub == run ]] || { echo "usage: git-push status|run REPO [MESSAGE]" >&2; exit 2; }
+[[ -n $repo && -d $repo ]] || { echo "git-push: '$repo' is not a directory" >&2; exit 3; }
+command -v git >/dev/null 2>&1 || { echo "git-push: git not on PATH" >&2; exit 3; }
+git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "git-push: $repo is not a git repository" >&2; exit 3; }
+# Without a terminal (the window) git must fail instead of waiting for a password.
+[[ -t 0 ]] || export GIT_TERMINAL_PROMPT=0
+
+case $sub in
+    status)
+        branch=$(git -C "$repo" symbolic-ref --short -q HEAD)
+        upstream=$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)
+        ahead=0 behind=0
+        if [[ -n $upstream ]]; then
+            read -r behind ahead < <(git -C "$repo" rev-list --left-right --count '@{u}...HEAD' 2>/dev/null) || true
+        fi
+        printf 'repo=%s\nbranch=%s\nupstream=%s\nahead=%s\nbehind=%s\n\x1e\n' "$repo" "$branch" "$upstream" "${ahead:-0}" "${behind:-0}"
+        git -C "$repo" status --porcelain=v1
+        ;;
+    run)
+        message=${3:-update config}
+        step() { printf '→ git %s\n' "$*"; git -C "$repo" "$@"; }
+        step add -A || exit
+        if git -C "$repo" diff --cached --quiet; then
+            echo 'Nothing new to commit.'
+        else
+            step commit -m "$message" || exit
+        fi
+        step push
+        ;;
+esac
