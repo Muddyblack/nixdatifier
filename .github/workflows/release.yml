@@ -63,7 +63,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: cachix/install-nix-action@v31
+      - uses: cachix/install-nix-action@v32
 
       - name: Lint and test
         run: nix develop --command bash -c 'bash scripts/lint.sh && bash tests/run.sh'
